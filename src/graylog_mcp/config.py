@@ -24,6 +24,10 @@ class ConfigError(Exception):
     """Invalid or incomplete configuration."""
 
 
+class MissingSecret(ConfigError):
+    """An environment variable holding a secret is not set (the instance is unusable, the config is valid)."""
+
+
 DEFAULT_TRACE_FIELDS = [
     "trace_id",
     "traceId",
@@ -118,6 +122,8 @@ class InstanceConfig:
     name: str
     url: str
     auth: str  # "token" | "basic"
+    description: str = ""
+    unavailable: str | None = None  # why the instance cannot be used (missing secret)
     token: str | None = None
     username: str | None = None
     password: str | None = None
@@ -210,6 +216,7 @@ _INVESTIGATION_KEYS = {
 }
 _INSTANCE_KEYS = {
     "url",
+    "description",
     "auth",
     "token_env",
     "username",
@@ -262,7 +269,7 @@ def _env(name: Any, where: str) -> str:
         raise ConfigError(f"{where}: expected the name of an environment variable")
     value = os.environ.get(name)
     if not value:
-        raise ConfigError(f"{where}: environment variable {name} is not set or empty")
+        raise MissingSecret(f"{where}: environment variable {name} is not set or empty")
     return value
 
 
@@ -368,18 +375,24 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     if auth not in {"token", "basic"}:
         raise ConfigError(f"{where}.auth: expected 'token' or 'basic'")
     token = username = password = None
-    if auth == "token":
-        token = _env(data.get("token_env", "GRAYLOG_TOKEN"), f"{where}.token_env")
-    else:
-        if "username_env" in data:
-            username = _env(data["username_env"], f"{where}.username_env")
+    unavailable = None
+    # A missing secret only disables this instance: a developer without a prod token can still
+    # use dev and staging. Structural mistakes stay fatal.
+    try:
+        if auth == "token":
+            token = _env(data.get("token_env", "GRAYLOG_TOKEN"), f"{where}.token_env")
         else:
-            username = data.get("username")
-        if not isinstance(username, str) or not username:
-            raise ConfigError(f"{where}: basic auth needs 'username' or 'username_env'")
-        if "password_env" not in data:
-            raise ConfigError(f"{where}: basic auth needs 'password_env'")
-        password = _env(data["password_env"], f"{where}.password_env")
+            if "username_env" in data:
+                username = _env(data["username_env"], f"{where}.username_env")
+            else:
+                username = data.get("username")
+            if "password_env" not in data:
+                raise ConfigError(f"{where}: basic auth needs 'password_env'")
+            password = _env(data["password_env"], f"{where}.password_env")
+    except MissingSecret as exc:
+        unavailable = str(exc)
+    if auth == "basic" and unavailable is None and (not isinstance(username, str) or not username):
+        raise ConfigError(f"{where}: basic auth needs 'username' or 'username_env'")
 
     verify = data.get("verify_tls", True)
     if not isinstance(verify, bool):
@@ -406,9 +419,14 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
             raise ConfigError(f"{where}.{key}: expected one of {', '.join(sorted(choices))}")
         apis[key] = value
 
+    description = data.get("description", "")
+    if not isinstance(description, str):
+        raise ConfigError(f"{where}.description: expected a string")
     return InstanceConfig(
         name=name,
         url=url,
+        description=description,
+        unavailable=unavailable,
         auth=auth,
         token=token,
         username=username,
@@ -583,10 +601,30 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+PROJECT_CONFIG_NAMES = (".graylog-mcp.toml", "graylog-mcp.toml")
+
+
+def find_project_config(start: Path | None = None) -> Path | None:
+    """A config committed in the project: the current directory or a parent, up to the repo root."""
+    current = (start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        for name in PROJECT_CONFIG_NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+        if (directory / ".git").exists():
+            break  # do not leave the repository
+    return None
+
+
 def default_config_path() -> Path | None:
+    """GRAYLOG_MCP_CONFIG, else a project config (.graylog-mcp.toml), else the user config."""
     env = os.environ.get("GRAYLOG_MCP_CONFIG")
     if env:
         return Path(env).expanduser()
+    project = find_project_config()
+    if project is not None:
+        return project
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     candidate = base / "graylog-mcp" / "config.toml"
     return candidate if candidate.is_file() else None
@@ -649,7 +687,10 @@ def parse_config(data: dict[str, Any], source: str = "env") -> Config:
             raise ConfigError(f"instances.{name}: names may only contain letters, digits, '_', '-', '.'")
         instances[name] = _parse_instance(name, inst, defaults)
 
-    default_instance = data.get("default_instance") or next(iter(instances))
+    usable = [i for i in instances.values() if i.unavailable is None]
+    if not usable:
+        raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
+    default_instance = data.get("default_instance") or usable[0].name
     if default_instance not in instances:
         raise ConfigError(f"default_instance {default_instance!r} is not defined under [instances]")
 

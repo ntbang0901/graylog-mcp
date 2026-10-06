@@ -128,3 +128,43 @@ def test_config_type_checks(monkeypatch, data, match):
     monkeypatch.setenv("T", "t")
     with pytest.raises(ConfigError, match=match):
         parse_config(data)
+
+
+async def test_instance_without_token_is_disabled_not_fatal(monkeypatch):
+    from graylog_mcp.client import GraylogError
+    from graylog_mcp.tools import App
+    from tests.fake_graylog import FakeGraylog
+
+    monkeypatch.setenv("STG_TOKEN", "s")
+    monkeypatch.delenv("PROD_TOKEN", raising=False)
+    cfg = parse_config(
+        {
+            "instances": {
+                "staging": {"url": "https://stg.test", "token_env": "STG_TOKEN", "description": "Staging"},
+                "prod": {"url": "https://prod.test", "token_env": "PROD_TOKEN", "description": "Production"},
+            }
+        }
+    )
+    assert cfg.default_instance == "staging"
+    assert "PROD_TOKEN" in cfg.instance("prod").unavailable
+    app = App.create(cfg, transport=FakeGraylog("6.1.2").transport)
+    status = {i["name"]: i for i in (await tools.list_instances(app))["instances"]}
+    assert status["staging"]["status"] == "ok" and status["staging"]["description"] == "Staging"
+    assert status["prod"]["status"].startswith("not configured") and "PROD_TOKEN" in status["prod"]["status"]
+    assert (await tools.count_logs(app, range="2h", instance="staging"))["count"] > 0
+    with pytest.raises(GraylogError, match="PROD_TOKEN"):
+        await tools.count_logs(app, range="2h", instance="prod")
+
+
+def test_all_instances_without_secrets_is_fatal(monkeypatch):
+    monkeypatch.delenv("A_TOKEN", raising=False)
+    monkeypatch.delenv("B_PW", raising=False)
+    with pytest.raises(ConfigError, match=r"A_TOKEN.*B_PW"):
+        parse_config(
+            {
+                "instances": {
+                    "a": {"url": "https://a.test", "token_env": "A_TOKEN"},
+                    "b": {"url": "https://b.test", "auth": "basic", "username": "u", "password_env": "B_PW"},
+                }
+            }
+        )

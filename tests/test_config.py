@@ -131,3 +131,40 @@ def test_validation_errors(monkeypatch, data, match):
 def test_missing_file():
     with pytest.raises(ConfigError, match="not found"):
         load_config("/nonexistent/graylog-mcp.toml")
+
+
+def test_project_config_discovery(tmp_path, monkeypatch):
+    repo = tmp_path / "app"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "services" / "api").mkdir(parents=True)
+    (repo / ".graylog-mcp.toml").write_text(
+        """
+default_instance = "staging"
+[instances.staging]
+url = "https://graylog-stg.example.com"
+token_env = "STG_TOKEN"
+description = "Staging, deployed on every merge"
+[instances.prod]
+url = "https://graylog.example.com"
+token_env = "PROD_TOKEN"
+description = "Production"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / ".graylog-mcp.toml").write_text("this is outside the repo and must be ignored", encoding="utf-8")
+    monkeypatch.setenv("STG_TOKEN", "s")
+    monkeypatch.setenv("PROD_TOKEN", "p")
+    monkeypatch.chdir(repo / "services" / "api")
+    cfg = load_config()
+    assert cfg.source.endswith(".graylog-mcp.toml") and cfg.default_instance == "staging"
+    assert cfg.instance("prod").description == "Production"
+    assert cfg.instance("staging").token == "s"
+
+
+def test_project_config_not_searched_beyond_repo(tmp_path, monkeypatch):
+    from graylog_mcp.config import find_project_config
+
+    (tmp_path / ".graylog-mcp.toml").write_text("", encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    assert find_project_config(repo) is None

@@ -33,6 +33,10 @@ Query syntax (Lucene, as in the Graylog search bar):
 - level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.
   The configured error query (see list_fields) is what error_summary and compare_periods use.
 
+Environments: each Graylog instance is usually one environment (dev, staging, prod...). Call
+list_instances to see them and their descriptions, and pass instance=<name> when the user names an
+environment. Never mix results from different instances without saying which is which.
+
 Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
 
@@ -55,7 +59,11 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempot
 # ----------------------------------------------------------------------------- shared parameter types
 
 Instance = Annotated[
-    str | None, Field(description="Graylog instance name from list_instances; default instance when omitted")
+    str | None,
+    Field(
+        description="Graylog instance (environment) from list_instances, e.g. 'staging' or 'prod'; "
+        "the default instance when omitted"
+    ),
 ]
 Query = Annotated[str, Field(description="Lucene query, '*' for everything")]
 Range = Annotated[
