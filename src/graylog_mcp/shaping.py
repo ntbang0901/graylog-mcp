@@ -184,6 +184,11 @@ class DedupGroup:
     sources: list[str] = field(default_factory=list)
 
 
+def group_key(msg: dict[str, Any]) -> str:
+    text = str(msg.get("message", ""))
+    return normalize_template(text.split("\n", 1)[0]) + "|" + str(msg.get("level", ""))
+
+
 def dedup(messages: Sequence[dict[str, Any]], max_sources: int = 5) -> list[dict[str, Any]]:
     """Group shaped messages whose text only differs in numbers, ids or timestamps.
 
@@ -192,8 +197,7 @@ def dedup(messages: Sequence[dict[str, Any]], max_sources: int = 5) -> list[dict
     """
     groups: dict[str, DedupGroup] = {}
     for msg in messages:
-        text = str(msg.get("message", ""))
-        key = normalize_template(text.split("\n", 1)[0]) + "|" + str(msg.get("level", ""))
+        key = group_key(msg)
         ts = msg.get("ts")
         group = groups.get(key)
         if group is None:

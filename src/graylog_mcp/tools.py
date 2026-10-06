@@ -21,7 +21,7 @@ from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.redact import Redactor
-from graylog_mcp.shaping import Budget, Shaper, dedup, is_error_level, is_internal, truncate
+from graylog_mcp.shaping import Budget, Shaper, dedup, dumps, group_key, is_error_level, is_internal, truncate
 from graylog_mcp.timerange import (
     TimeRange,
     choose_interval,
@@ -149,11 +149,11 @@ def _header(gl: Graylog, tr: TimeRange, **extra: Any) -> dict[str, Any]:
     return out
 
 
-def _service(fields: dict[str, Any], service_fields: tuple[str, ...]) -> str:
+def _service(app: App, fields: dict[str, Any], service_fields: tuple[str, ...]) -> str:
     for name in service_fields:
         val = fields.get(name)
         if val not in (None, ""):
-            return str(val)
+            return str(app.redact_key(name, val))
     return "unknown"
 
 
@@ -208,31 +208,47 @@ async def search_logs(
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
     budget = app.budget()
-    out = _header(gl, tr, query=query or "*", total=page.total, returned=len(shaped), offset=offset)
-    more = page.total is not None and offset + len(page.messages) < page.total
+    out = _header(gl, tr, query=query or "*", total=page.total, offset=offset)
+    if page.total is not None:
+        more_after_page = offset + len(page.messages) < page.total
+    else:
+        more_after_page = len(page.messages) == limit
+    items = dedup(shaped) if dedup_lines else shaped
+    fitted = budget.fit(items)
+    if not fitted and items:
+        # a single oversized message: return a cut-down copy so paging always moves forward
+        fitted = [_minimal(items[0])]
     if dedup_lines:
-        items = dedup(shaped)
-        fitted = budget.fit(items)
         if len(items) < len(shaped):
             out["note"] = (
                 "repeated lines grouped (count/first/last are within this page); set dedup_lines=false for raw lines"
             )
-        if budget.truncated:
-            out["omitted_groups"] = len(items) - len(fitted)
-        next_offset = offset + len(page.messages) if more else None
-        out["messages"] = fitted
+        # messages are consumed up to the first one whose group did not fit
+        shown = {group_key(item.get("sample", item)) for item in fitted}
+        consumed = next((i for i, m in enumerate(shaped) if group_key(m) not in shown), len(shaped))
     else:
-        fitted = budget.fit(shaped)
         consumed = len(fitted)
-        next_offset = offset + consumed if (budget.truncated or more) else None
-        out["messages"] = fitted
-    if page.total is None and len(page.messages) == limit:
+    if consumed < len(page.messages):
+        next_offset: int | None = offset + consumed
+    elif more_after_page:
         next_offset = offset + len(page.messages)
+    else:
+        next_offset = None
+    out["returned"] = consumed
+    out["messages"] = fitted
     out["truncated"] = budget.truncated
     out["next_offset"] = next_offset
     if not page.messages:
         out["hint"] = await _empty_hint(gl, query, tr, stream_ids)
     return out
+
+
+def _minimal(item: dict[str, Any]) -> dict[str, Any]:
+    msg = item.get("sample", item)
+    small = {k: msg[k] for k in ("ts", "source", "level", "ref") if k in msg}
+    small["message"] = truncate(str(msg.get("message", "")), 1000)
+    small["cut"] = "fields omitted to fit the size limit; use get_message with ref"
+    return {**{k: v for k, v in item.items() if k != "sample"}, "sample": small} if "sample" in item else small
 
 
 async def _empty_hint(gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...]) -> str:
@@ -304,12 +320,23 @@ async def get_message(
             msg["streams"] = [titles.get(s, s) for s in stream_ids]
         except GraylogError:
             msg["streams"] = stream_ids
-    budget = app.budget()
-    if not budget.take(msg):
-        for key, val in list(msg.items()):
-            if isinstance(val, str) and len(val) > 4000:
-                msg[key] = truncate(val, 4000)
-    return {"instance": gl.cfg.name, "message": msg}
+    out: dict[str, Any] = {"instance": gl.cfg.name, "message": msg}
+    limit = app.config.limits.max_output_chars
+    protected = {"ts", "ref", "source", "level"}
+    while len(dumps(out)) > limit:
+        candidates = [k for k in msg if k not in protected and len(dumps(msg[k])) > 200]
+        if not candidates:
+            break
+        key = max(candidates, key=lambda k: len(dumps(msg[k])))
+        size = len(dumps(msg[key]))
+        excess = len(dumps(out)) - limit
+        keep = max(100, size - excess - 50)
+        if isinstance(msg[key], str) and keep < len(msg[key]):
+            msg[key] = truncate(msg[key][:keep], keep)
+        else:
+            msg[key] = f"[omitted: {size} chars]"
+        out["truncated"] = True
+    return out
 
 
 # --------------------------------------------------------------------------- investigation tools
@@ -363,7 +390,7 @@ async def trace_request(
     timeline = []
     first_error = None
     for raw, ts in zip(page.messages, times, strict=True):
-        svc = _service(raw.fields, service_fields)
+        svc = _service(app, raw.fields, service_fields)
         err = _is_error(raw.fields)
         entry = shaper.message(raw.fields, raw.index, raw.id, limit=SAMPLE_CHARS)
         entry = {"t": f"+{_ms(t0, ts) or 0}ms", "service": svc, **entry}
@@ -446,13 +473,17 @@ async def context_around(
     before_tr = TimeRange(ts - timedelta(seconds=seconds), ts + eps, "before")
     after_tr = TimeRange(ts, ts + timedelta(seconds=seconds), "after")
     half = max(1, limit // 2)
+    # each side may contain the anchor itself; fetch one extra to detect more, one for the anchor
     before, after = await asyncio.gather(
-        gl.search(MessageQuery(query=q, timerange=before_tr, streams=stream_ids, sort_order="desc", limit=half + 1)),
-        gl.search(MessageQuery(query=q, timerange=after_tr, streams=stream_ids, sort_order="asc", limit=half + 1)),
+        gl.search(MessageQuery(query=q, timerange=before_tr, streams=stream_ids, sort_order="desc", limit=half + 2)),
+        gl.search(MessageQuery(query=q, timerange=after_tr, streams=stream_ids, sort_order="asc", limit=half + 2)),
     )
+    before_msgs = [m for m in before.messages if not (anchor.id and m.id == anchor.id)]
+    after_msgs = [m for m in after.messages if not (anchor.id and m.id == anchor.id)]
+    more_before, more_after = len(before_msgs) > half, len(after_msgs) > half
     seen: set[str] = set()
     merged: list[RawMessage] = []
-    for m in [*reversed(before.messages), *after.messages]:
+    for m in [*reversed(before_msgs[:half]), anchor, *after_msgs[:half]]:
         key = f"{m.index}/{m.id}" if m.id else repr(sorted(m.fields.items()))
         if key in seen:
             continue
@@ -476,8 +507,8 @@ async def context_around(
         "anchor": shaper.message(anchor.fields, anchor.index, anchor.id, limit=SAMPLE_CHARS),
         "scope": scope,
         "window": {"from": format_ts(before_tr.start, gl.cfg.tz), "to": format_ts(after_tr.end, gl.cfg.tz)},
-        "more_before": (before.total or 0) > half + 1 or len(before.messages) > half,
-        "more_after": (after.total or 0) > half + 1 or len(after.messages) > half,
+        "more_before": more_before,
+        "more_after": more_after,
     }
     budget.take(out)
     out["messages"] = budget.fit(lines)
@@ -746,8 +777,10 @@ async def compare_periods(
 
     a, b = counts(agg_a), counts(agg_b)
     # values that fell outside the top list of one period: get their exact count there
-    missing_a = sorted((k for k in b if k not in a), key=lambda k: -b[k])[:10] if len(a) >= fetch else []
-    missing_b = sorted((k for k in a if k not in b), key=lambda k: -a[k])[:10] if len(b) >= fetch else []
+    # (rows include the bucket of documents without the field, which also takes a slot)
+    cut_a, cut_b = len(agg_a.rows) >= fetch, len(agg_b.rows) >= fetch
+    missing_a = sorted((k for k in b if k not in a), key=lambda k: -b[k])[:10] if cut_a else []
+    missing_b = sorted((k for k in a if k not in b), key=lambda k: -a[k])[:10] if cut_b else []
     extra = await _bounded(
         app,
         [gl.count(and_queries(q, f"{escape_field(field)}:{phrase(k)}"), base, stream_ids) for k in missing_a]
