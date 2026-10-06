@@ -791,7 +791,7 @@ def detect_repo(start: Path | None = None) -> RepoInfo:
 
 
 def is_repo_path(entry: str) -> bool:
-    return entry.startswith(("/", "~", "./", "../", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", entry))
+    return entry.startswith(("/", "~", "./", "../", ".\\", "..\\", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", entry))
 
 
 def resolve_repo_path(entry: str, base_dir: Path) -> Path:
