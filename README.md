@@ -295,6 +295,7 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 | Command | What it does |
 |---------|--------------|
 | `graylog-mcp init` | Guided setup: environments, connection test, field detection, config file, client registration. `--yes --env staging=https://... --env prod=https://...` for scripts. |
+| `graylog-mcp login [INSTANCE...]` | Asks for each missing token/password, tests it, and saves it for this user in `~/.config/graylog-mcp/secrets.toml` (owner-only permissions, outside any repository). The server reads environment variables first, then this file. `graylog-mcp logout` forgets them. |
 | `graylog-mcp doctor` | Checks every environment (token set, reachable, TLS, version, readable streams, data, configured fields exist, error query matches, redaction) and prints a fix for each problem. Exit code 1 on failure, `--json` for CI. |
 | `graylog-mcp detect` | Suggests `service_fields`, `trace_fields`, `version_fields`, `latency_fields`, `error_query` (syslog numbers or words), exception/logger fields and `app_packages` from the logs, with coverage and redacted sample values. `--apply` writes them. |
 | `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). |
@@ -314,7 +315,13 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 - **Config file**: edit the TOML with validation and an automatic backup.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
-link printed at startup. It writes the config file and client configs when you ask, never a secret.
+link printed at startup. It writes the config file and client configs when you ask. A token or password
+entered in the form is saved, when you tick "Save it on this machine", to the same per-user secrets file as
+`graylog-mcp login`, never to the config file.
+
+`*_env` settings hold the **name** of a variable (`GRAYLOG_PROD_TOKEN`), never the secret: a value that is not
+a valid variable name is refused, and never echoed back, since it is most likely a secret typed into the wrong
+field.
 
 ## Groups and your own environments
 

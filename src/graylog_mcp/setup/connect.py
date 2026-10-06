@@ -32,7 +32,7 @@ def build_instance(
 
 async def test_connection(cfg: InstanceConfig, transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:
     if cfg.unavailable:
-        return {"ok": False, "error": cfg.unavailable, "fix": "export the variable, or paste a token to test"}
+        return {"ok": False, "error": cfg.unavailable, "fix": "enter the token/password to test (and save it)"}
     gl = Graylog(cfg, transport or TRANSPORT)
     try:
         await gl.ensure()

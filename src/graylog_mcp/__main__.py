@@ -98,10 +98,12 @@ async def _check(config: Config) -> int:
     return 0 if all(i["status"] == "ok" for i in status["instances"]) else 1
 
 
-SUBCOMMANDS = ("serve", "init", "doctor", "detect", "install", "ui")
+SUBCOMMANDS = ("serve", "init", "login", "logout", "doctor", "detect", "install", "ui")
 HELP = """\
 usage: graylog-mcp [serve] [options]          run the MCP server (default)
        graylog-mcp init [options]             guided setup: environments, field detection, client config
+       graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
+       graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
@@ -197,6 +199,89 @@ def _init(argv: list[str]) -> int:
         source=args.source,
     )
     return wizard.main(opts, interactive=False if args.yes else None)
+
+
+def _read_secret(prompt: str) -> str:
+    import getpass
+
+    if sys.stdin.isatty():
+        return getpass.getpass(prompt).strip()
+    return sys.stdin.readline().strip()  # piped: echo "$TOKEN" | graylog-mcp login payment/prod
+
+
+def _login(argv: list[str]) -> int:
+    import dataclasses
+
+    from graylog_mcp import secrets
+    from graylog_mcp.setup import connect
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp login",
+        description="Save tokens/passwords for this user in ~/.config/graylog-mcp/secrets.toml (outside any repo)",
+    )
+    parser.add_argument("instances", nargs="*", help="e.g. payment/prod (default: every instance without a secret)")
+    parser.add_argument("--config", "-c")
+    parser.add_argument("--no-test", action="store_true", help="save without testing the connection")
+    args = parser.parse_args(argv)
+    _setup_logging("ERROR")
+    try:
+        config = _load_for_tools(args.config)
+        targets = [config.instance(n) for n in args.instances] or list(config.instances.values())
+    except ConfigError as exc:
+        print(f"graylog-mcp login: {exc}", file=sys.stderr)
+        return 2
+    saved = 0
+    for inst in targets:
+        if not inst.secret_env:
+            continue
+        kind = "password" if inst.auth == "basic" else "token"
+        current = secrets.source(inst.secret_env)
+        if current and not args.instances:
+            print(f"✓ {inst.name}: {kind} already {'in the environment' if current == 'env' else 'saved'}")
+            continue
+        value = _read_secret(f"{kind} for {inst.name} ({inst.url}), Enter to skip: ")
+        if not value:
+            continue
+        if not args.no_test:
+            if kind == "password":
+                cfg = dataclasses.replace(inst, unavailable=None, password=value)
+            else:
+                cfg = dataclasses.replace(inst, unavailable=None, token=value)
+            result = asyncio.run(connect.test_connection(cfg))
+            if result["ok"]:
+                print(f"  ✓ Graylog {result['version']}, {result['streams']} streams")
+            else:
+                print(f"  ✗ {result['error']}")
+                if not sys.stdin.isatty() or input("  save anyway? [y/N]: ").strip().lower() not in ("y", "yes"):
+                    continue
+        where = secrets.save(inst.secret_env, value)
+        saved += 1
+        print(f"  ✓ saved as {inst.secret_env} in {where}")
+    if not saved and not args.instances:
+        print("nothing to save" if targets else "no instance configured")
+    return 0
+
+
+def _logout(argv: list[str]) -> int:
+    from graylog_mcp import secrets
+
+    parser = argparse.ArgumentParser(prog="graylog-mcp logout", description="Forget saved tokens/passwords")
+    parser.add_argument("instances", nargs="*", help="instances to forget (default: all saved)")
+    parser.add_argument("--config", "-c")
+    args = parser.parse_args(argv)
+    names: list[str] = []
+    if args.instances:
+        try:
+            config = _load_for_tools(args.config)
+            names = [config.instance(n).secret_env or "" for n in args.instances]
+        except ConfigError as exc:
+            print(f"graylog-mcp logout: {exc}", file=sys.stderr)
+            return 2
+    else:
+        names = secrets.saved_names()
+    for name in filter(None, names):
+        print(f"{'✓ forgot' if secrets.delete(name) else '- nothing saved for'} {name}")
+    return 0
 
 
 def _load_for_tools(path: str | None) -> Config:
@@ -365,6 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "serve": _serve,
         "init": _init,
+        "login": _login,
+        "logout": _logout,
         "doctor": _doctor,
         "detect": _detect,
         "install": _install,

@@ -52,7 +52,7 @@ async def check_instance(app: App, gl: Graylog) -> list[Check]:
     name = gl.cfg.name
     out: list[Check] = []
     if gl.cfg.unavailable:
-        return [Check("credentials", "fail", gl.cfg.unavailable, "export the variable, e.g. in ~/.zshrc", name)]
+        return [Check("credentials", "fail", gl.cfg.unavailable, f"graylog-mcp login {name}", name)]
     try:
         await gl.ensure()
     except GraylogError as exc:

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from graylog_mcp import secrets
 from graylog_mcp.backends import Graylog
 from graylog_mcp.config import PROJECT_CONFIG_NAMES, ConfigError
 from graylog_mcp.redact import Redactor
@@ -68,13 +68,17 @@ def _parse_env_arg(value: str) -> tuple[str, str]:
 
 
 async def _test(p: Prompter, name: str, fields: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    """Test one environment; offers to paste a token (memory only) when the variable is unset."""
+    """Test one environment. When its secret is missing, asks for it and saves it on this machine
+    (outside the repository) once the connection works."""
     secret_var = fields.get("token_env") or fields.get("password_env")
+    kind = "password" if fields.get("auth") == "basic" else "token"
     typed = None
-    if secret_var and not os.environ.get(secret_var):
-        typed = p.secret(f"  {secret_var} is not set. Paste a token to test now (not saved), or Enter to skip")
+    if secret_var and not secrets.get(secret_var):
+        typed = p.secret(
+            f"  Paste the {kind} for '{name}' (saved on this machine only, not in the repo; Enter to skip)"
+        )
         if not typed:
-            p.out(f"  - not tested: {secret_var} is not set on this machine")
+            p.out(f"  - not tested: no {kind} yet (later: graylog-mcp login {name})")
             return {"ok": False, "error": f"skipped: {secret_var} is not set"}, None
     is_basic = fields.get("auth") == "basic"
     cfg = connect.build_instance(name, fields, token=None if is_basic else typed, password=typed if is_basic else None)
@@ -84,6 +88,9 @@ async def _test(p: Prompter, name: str, fields: dict[str, Any]) -> tuple[dict[st
             f"  ✓ Graylog {result['version']}: {result['streams']} streams, {result['messages_24h']:,} messages "
             f"in 24h (messages via {result['message_api']}, aggregations via {result['aggregation_api']})"
         )
+        if typed and secret_var:
+            where = secrets.save(secret_var, typed)
+            p.out(f"  ✓ {kind} saved for this user in {where}")
     else:
         p.out(f"  ✗ {result['error']}")
         if result.get("fix"):
@@ -166,12 +173,13 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
         if auth == "basic":
             fields["username"] = p.ask("  Username", prev.get("username", ""))
             fields["password_env"] = p.ask(
-                "  Environment variable holding the password",
+                "  NAME of the environment variable that will hold the password (not the password)",
                 prev.get("password_env", configfile.default_token_env(name).replace("_TOKEN", "_PASSWORD")),
             )
         else:
             fields["token_env"] = p.ask(
-                "  Environment variable holding the token", prev.get("token_env", configfile.default_token_env(name))
+                "  NAME of the environment variable that will hold the token (not the token)",
+                prev.get("token_env", configfile.default_token_env(name)),
             )
         for key in ("verify_tls", "ca_bundle", "proxy", "timeout", "timezone"):
             if key in prev:
@@ -261,24 +269,22 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
             "claude-code",
         )
         chosen = [] if answer.strip() in ("", "none") else [c.strip() for c in answer.split(",") if c.strip()]
-    secrets = configfile.secret_envs(data, path.parent)
+    secret_names = configfile.secret_envs(data, path.parent)
     for client in chosen:
         if client not in clients.CLIENTS:
             p.out(f"  ! unknown client {client!r}, skipped")
             continue
         scope = clients.CLIENTS[client].scopes[0]
-        result = clients.install(client, scope, project_dir, path, secrets, source=opts.source)
+        result = clients.install(client, scope, project_dir, path, secret_names, source=opts.source)
         p.out(f"  ✓ {clients.CLIENTS[client].title}: {'updated' if result.replaced else 'added'} in {result.path}")
         if clients.CLIENTS[client].note:
             p.out(f"    {clients.CLIENTS[client].note}")
 
     # ---------------------------------------------------------------- next steps
-    missing = [s for s in secrets if not os.environ.get(s)]
+    missing = [s for s in secret_names if not secrets.get(s)]
     p.out("\nNext steps:")
     if missing:
-        p.out("  1. Each developer exports the tokens they have (e.g. in ~/.zshrc):")
-        for name in missing:
-            p.out(f"       export {name}=...")
+        p.out("  1. Each developer saves the tokens they have on their machine:  graylog-mcp login")
     p.out(f"  {'2' if missing else '1'}. Check everything:  graylog-mcp doctor")
     p.out(f"  {'3' if missing else '2'}. Commit {path.name}" + (" and the client config" if chosen else ""))
     return 0
