@@ -179,6 +179,7 @@ class GroupInfo:
     name: str
     description: str = ""
     default_environment: str | None = None
+    repos: tuple[str, ...] = ()  # repositories whose logs live in this group (git URLs or names)
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,8 @@ class Config:
     default_group: str | None = None
     default_environment: str | None = None
     environments: dict[str, str] = field(default_factory=dict)  # declared environments -> description
+    current_repo: str | None = None  # the repository the server runs in (normalized remote or folder name)
+    repo_group: str | None = None  # the group listing that repository
 
     def instance(self, name: str | None) -> InstanceConfig:
         """Resolve 'payment/prod', 'payment prod', 'payment' (its default environment), 'prod' (in the
@@ -660,7 +663,7 @@ _LABEL = r"[A-Za-z0-9_.-]+"
 # keys a group may set for all of its environments
 _GROUP_SHARED_KEYS = (_INSTANCE_KEYS - {"url", "description", "group", "environment", "token_env", "username_env",
                       "password_env", "username"})  # fmt: skip
-_GROUP_KEYS = _GROUP_SHARED_KEYS | {"description", "default_environment", "environments"}
+_GROUP_KEYS = _GROUP_SHARED_KEYS | {"description", "default_environment", "environments", "repos"}
 _ENVIRONMENT_KEYS = _GROUP_SHARED_KEYS | {"description"}
 
 
@@ -712,7 +715,8 @@ def _expand_groups(
         default_env = gdata.get("default_environment")
         if default_env is not None and default_env not in envs:
             raise ConfigError(f"{where}.default_environment: {default_env!r} is not one of {', '.join(envs)}")
-        groups[group] = GroupInfo(group, desc, default_env)
+        repos = _str_list(f"{where}.repos", gdata.get("repos", [])) if "repos" in gdata else ()
+        groups[group] = GroupInfo(group, desc, default_env, repos)
         shared = {k: v for k, v in gdata.items() if k in _GROUP_SHARED_KEYS}
         for env, edata in envs.items():
             if not re.fullmatch(_LABEL, env):
@@ -728,6 +732,89 @@ def _expand_groups(
             merged["group"], merged["environment"] = group, env
             instances[f"{group}/{env}"] = merged
     return groups, instances
+
+
+def normalize_repo(value: str) -> str:
+    """'git@github.com:F88/payment-api.git', 'https://github.com/f88/payment-api' -> 'github.com/f88/payment-api'"""
+    text = value.strip().lower()
+    text = re.sub(r"^[a-z+]+://", "", text)  # https://, ssh://, git://
+    text = re.sub(r"^[^@/]+@", "", text)  # git@, user:token@
+    text = re.sub(r"^([^/:]+):(?!\d+/)", r"\1/", text)  # host:org/repo (scp-like), not host:port/
+    text = re.sub(r":\d+/", "/", text)  # drop ports
+    return text.removesuffix("/").removesuffix(".git").strip("/")
+
+
+@dataclass(frozen=True)
+class RepoInfo:
+    cwd: Path
+    root: Path | None = None  # git work tree root
+    remote: str | None = None  # normalized 'origin' URL
+
+    @property
+    def label(self) -> str:
+        return self.remote or str(self.root or self.cwd)
+
+
+def detect_repo(start: Path | None = None) -> RepoInfo:
+    """The git repository containing ``start``: its root and normalized 'origin' remote."""
+    current = (start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        git = directory / ".git"
+        if not git.exists():
+            continue
+        git_dir = git
+        if git.is_file():  # worktrees and submodules: "gitdir: <path>"
+            text = git.read_text(encoding="utf-8", errors="replace").strip()
+            if text.startswith("gitdir:"):
+                git_dir = (directory / text.split(":", 1)[1].strip()).resolve()
+                common = git_dir / "commondir"
+                if common.is_file():
+                    git_dir = (git_dir / common.read_text().strip()).resolve()
+        remote = None
+        config_file = git_dir / "config"
+        if config_file.is_file():
+            urls: dict[str, str] = {}
+            section = None
+            for line in config_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                m = re.match(r'^\[remote "([^"]+)"\]$', line)
+                if m:
+                    section = m.group(1)
+                elif line.startswith("["):
+                    section = None
+                elif section and re.match(r"^url\s*=", line):
+                    urls.setdefault(section, line.split("=", 1)[1].strip())
+            raw = urls.get("origin") or next(iter(urls.values()), None)
+            remote = normalize_repo(raw) if raw else None
+        return RepoInfo(cwd=current, root=directory, remote=remote)
+    return RepoInfo(cwd=current)
+
+
+def is_repo_path(entry: str) -> bool:
+    return entry.startswith(("/", "~", "./", "../", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", entry))
+
+
+def resolve_repo_path(entry: str, base_dir: Path) -> Path:
+    path = Path(entry).expanduser()
+    return (path if path.is_absolute() else base_dir / path).resolve()
+
+
+def match_repo(groups: dict[str, GroupInfo], repo: RepoInfo, base_dir: Path) -> str | None:
+    """The group whose ``repos`` lists this repository: a local path (this folder or a parent of it), a git URL,
+    an 'org/repo' suffix of the remote, or the bare repository name."""
+    for group in groups.values():
+        for entry in group.repos:
+            if is_repo_path(entry):
+                target = resolve_repo_path(entry, base_dir)
+                if repo.cwd == target or target in repo.cwd.parents:
+                    return group.name
+                continue
+            want = normalize_repo(entry)
+            if repo.remote and (repo.remote == want or repo.remote.endswith("/" + want)):
+                return group.name
+            if "/" not in want and repo.root is not None and repo.root.name.lower() == want:
+                return group.name
+    return None
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -841,7 +928,9 @@ def default_config_path() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def load_config(path: str | os.PathLike[str] | None = None, require_usable: bool = True) -> Config:
+def load_config(
+    path: str | os.PathLike[str] | None = None, require_usable: bool = True, repo_dir: Path | None = None
+) -> Config:
     """Load and validate the configuration. Raises ``ConfigError`` on any problem."""
     file_path = Path(path).expanduser() if path else default_config_path()
     data: dict[str, Any] = {}
@@ -851,10 +940,12 @@ def load_config(path: str | os.PathLike[str] | None = None, require_usable: bool
             raise ConfigError(f"config file not found: {file_path}")
         data = read_config_file(file_path)
         source = str(file_path)
-    return parse_config(data, source=source, require_usable=require_usable)
+    return parse_config(data, source=source, require_usable=require_usable, repo_dir=repo_dir or Path.cwd())
 
 
-def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool = True) -> Config:
+def parse_config(
+    data: dict[str, Any], source: str = "env", require_usable: bool = True, repo_dir: Path | None = None
+) -> Config:
     """Validate configuration data. ``require_usable=False`` accepts a config whose secrets are not set
     in this environment (used when editing a config file for others)."""
     data = _env_overrides(data)
@@ -916,6 +1007,16 @@ def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool
         raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
+    current_repo = repo_group = None
+    if repo_dir is not None and any(g.repos for g in groups.values()):
+        repo = detect_repo(repo_dir)
+        base_dir = (
+            Path(source).parent if source not in ("env", "test", "editor") and Path(source).is_file() else repo_dir
+        )
+        current_repo = repo.label
+        repo_group = match_repo(groups, repo, base_dir.resolve())
+        if default_group is None and not data.get("default_instance"):
+            default_group = repo_group  # run inside a listed repository: its group is the default
     if default_group is not None and default_group not in groups:
         raise ConfigError(f"default_group {default_group!r} is not a configured group ({', '.join(groups) or 'none'})")
     default_instance = data.get("default_instance")
@@ -940,6 +1041,8 @@ def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool
         default_group=default_group,
         default_environment=default_environment,
         environments={e: str(d.get("description", "")) for e, d in env_defaults.items()},
+        current_repo=current_repo,
+        repo_group=repo_group,
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),

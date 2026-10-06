@@ -183,7 +183,7 @@ async def test_admin_groups(admin):
     assert saved.json()["ok"]
     state = (await client.get("/api/state")).json()
     assert state["groups"][0] == {"name": "payment", "description": "Payment", "default_environment": "uat",
-                                  "environments": ["prod", "uat"]}  # fmt: skip
+                                  "environments": ["prod", "uat"], "repos": []}  # fmt: skip
     assert state["default_group"] == "payment"
     view = {i["name"]: i for i in state["instances"]}
     assert view["payment/uat"]["group"] == "payment" and view["payment/uat"]["default"]
@@ -443,3 +443,45 @@ async def test_admin_saves_secret_and_shows_invalid_config(admin):
     assert "cajvym" not in (project / ".graylog-mcp.toml").read_text()
     bad = await client.post("/api/secrets", json={"name": "s3cret value", "value": "x"})
     assert bad.status_code == 400
+
+
+async def test_admin_settings_by_scope(admin):
+    client, _ = admin
+
+    async def put(scope: str, values: dict) -> bool:
+        return (await client.post("/api/scope", json={"scope": scope, "values": values})).json().get("ok", False)
+
+    fields = {"url": "https://gl-pay.test", "token_env": "GRAYLOG_STAGING_TOKEN"}
+    for name in ("payment/prod", "payment/uat", "erp/prod"):
+        assert (await client.post("/api/instances", json={"name": name, "fields": fields})).json()["ok"]
+    scopes = {s["scope"] for s in (await client.get("/api/scope?scope=global")).json()["scopes"]}
+    assert {"global", "group:payment", "group:erp", "env:prod", "env:uat", "instance:payment/prod"} <= scopes
+
+    assert await put("global", {"trace_fields": "traceId, reqId", "timezone": "Asia/Ho_Chi_Minh"})
+    payment = {"error_query": "level:(ERROR OR FATAL)", "group_fields.exception": "ExceptionType", "timeout": "45"}
+    assert await put("group:payment", payment)
+    assert await put("env:prod", {"description": "Production", "verify_tls": False})
+    assert await put("instance:payment/prod", {"error_query": "level:<=2"})
+
+    group = (await client.get("/api/scope?scope=group:payment")).json()
+    assert group["values"]["error_query"] == "level:(ERROR OR FATAL)"
+    assert group["effective"]["trace_fields"] == ["traceId", "reqId"]  # inherited from global
+    inst = (await client.get("/api/scope?scope=instance:payment/prod")).json()
+    assert inst["effective"]["error_query"] == "level:<=2" and inst["effective"]["timeout"] == 45
+    assert inst["effective"]["verify_tls"] is False  # from env:prod
+    uat = (await client.get("/api/scope?scope=instance:payment/uat")).json()
+    assert uat["effective"]["error_query"] == "level:(ERROR OR FATAL)" and uat["effective"]["verify_tls"] is True
+    assert (await client.get("/api/scope?scope=instance:erp/prod")).json()["effective"]["error_query"] == "level:<=3"
+
+    clear = await client.post(
+        "/api/scope", json={"scope": "group:payment", "values": {"error_query": "", "timeout": ""}}
+    )
+    assert clear.json()["ok"]
+    assert "error_query" not in (await client.get("/api/scope?scope=group:payment")).json()["values"]
+    bad = await client.post("/api/scope", json={"scope": "group:payment", "values": {"url": "https://x"}})
+    assert bad.status_code == 400
+
+    detected = (await client.post("/api/detect", json={"instance": "erp/prod"})).json()
+    applied = await client.post("/api/detect/apply", json={"suggested": detected["suggested"], "scope": "group:erp"})
+    assert applied.json()["ok"]
+    assert (await client.get("/api/scope?scope=group:erp")).json()["values"]["version_fields"] == ["app_version"]

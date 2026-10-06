@@ -386,6 +386,36 @@ How the model (and you) pick an instance, in every tool's `instance` argument:
 groups first, and the admin UI shows environments by group (instances from an included file are marked and
 edited in that file).
 
+### Repositories of a group
+
+List the repositories each group serves, as local folders (paths relative to the config file, `~` allowed) or
+git remotes (`git@gitlab.corp:f88/payment-api.git`, `f88/payment-api` or just `payment-api`):
+
+```toml
+[groups.payment]
+repos = ["~/code/payment-api", "../payment-worker", "f88/payment-gateway"]
+```
+
+When the server runs inside one of them (a folder or any subfolder, or a clone whose `origin` matches), that
+group becomes the default, so "errors on prod" means that system's production. `list_instances` and
+`graylog-mcp doctor` show which repository was recognised.
+
+Manage them in the admin UI (Environments > Groups > Repositories: add a local folder, see its git remote and
+whether it is set up, "Set up" writes `.graylog-mcp.toml` with an `include` of the shared file and registers
+Claude Code there) or from the command line:
+
+```bash
+graylog-mcp repo --config ../platform/graylog-org.toml add payment   # current folder; also sets it up
+graylog-mcp repo list
+graylog-mcp repo remove payment ~/code/payment-api
+```
+
+### Settings by scope
+
+The admin UI's **Settings** page edits field names, queries and connection options for a chosen scope: global,
+one environment (for every group), one group, or a single instance. Each field shows the value currently in
+effect; leaving it empty inherits it.
+
 ## Shared HTTP server and Docker
 
 stdio is the default. For one server shared by a team, use streamable HTTP with its own bearer token:

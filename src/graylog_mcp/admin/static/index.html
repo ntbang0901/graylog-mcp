@@ -79,6 +79,7 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
   <button data-tab="fields">Field mapping</button>
   <button data-tab="redaction">Redaction</button>
   <button data-tab="playground">Playground</button>
+  <button data-tab="settings">Settings</button>
   <button data-tab="clients">Connect clients</button>
   <button data-tab="config">Config file</button>
 </nav>
@@ -111,6 +112,20 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
       <h2>Groups</h2>
       <p class="muted">A group is one system or product line (ERP, CXP, PAYMENT...) with its own environments. Ask for <code>payment/prod</code>, or just <code>payment</code> for its default environment.</p>
       <table><thead><tr><th>Group</th><th>Description</th><th>Default environment</th><th>Default group</th><th></th></tr></thead><tbody id="grouprows"></tbody></table>
+      <h3>Repositories</h3>
+      <p class="muted">The repositories each group serves. When the server runs inside one of them, that group becomes the default, so "prod" means that system's production.</p>
+      <table><thead><tr><th>Group</th><th>Repository</th><th>Status</th><th></th></tr></thead><tbody id="reporows"></tbody></table>
+      <h3>Add a local repository</h3>
+      <div class="row">
+        <label style="flex:2 1 360px">Folder on this machine <input id="r_path" placeholder="~/code/payment-api" spellcheck="false"></label>
+        <label>Group <select id="r_group"></select></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label><span><input type="checkbox" id="r_project" checked>Write .graylog-mcp.toml in it (uses this config, group preset)</span></label>
+        <label><span><input type="checkbox" id="r_claude" checked>Register Claude Code in it (.mcp.json)</span></label>
+        <button class="btn primary" id="addRepo">Add repository</button>
+      </div>
+      <div class="result" id="repoResult"></div>
     </div>
     <div class="panel" id="envform">
       <h2 id="envformTitle">Add environment</h2>
@@ -220,6 +235,19 @@ jdbc:postgresql://admin:s3cret@db:5432/orders</textarea>
     </div>
   </section>
 
+  <section id="settings">
+    <div class="panel">
+      <h2>Settings</h2>
+      <p class="muted">Choose where settings apply. An empty field inherits, in this order: global, then environment, then group, then the single instance. The grey text in each field is the value currently in effect.</p>
+      <div class="row"><label style="flex:2 1 420px">Apply to <select id="s_scope"></select></label></div>
+      <div id="s_form" style="margin-top:12px"></div>
+      <div class="actions">
+        <button class="btn primary" id="saveScope">Save</button>
+        <button class="btn" id="resetScope">Clear everything set at this level</button>
+      </div>
+    </div>
+  </section>
+
   <section id="clients">
     <div class="panel">
       <h2>Connect MCP clients</h2>
@@ -276,6 +304,7 @@ function showTab(name) {
   document.querySelectorAll("main section").forEach((s) => s.classList.toggle("active", s.id === name));
   if (name === "config") loadRaw();
   if (name === "clients") loadClients();
+  if (name === "settings") loadScope().catch((e) => toast(e.message));
   if (name === "redaction") previewRedaction();
 }
 
@@ -288,6 +317,7 @@ async function loadState() {
   $("cfgerror").textContent = STATE.error ? "Config problem: " + STATE.error : "";
   $("secretsHint").textContent = `Tokens and passwords are kept in ${STATE.secrets_file} (only you can read it), never in the repository.`;
   renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
+  try { SCOPES = (await api("/api/scope?scope=global")).scopes; } catch (e) { /* config not valid yet */ }
 }
 
 function groupDesc(g) { const d = (STATE.groups.find((x) => x.name === g) || {}).description || ""; return d.toLowerCase() === g.toLowerCase() ? "" : d; }
@@ -330,15 +360,51 @@ function renderEnvs() {
   const envNames = new Set([...Object.keys(STATE.environments || {}), ...envs.map((e) => e.environment).filter(Boolean)]);
   $("envList").innerHTML = [...envNames].map((n) => `<option value="${esc(n)}">`).join("");
   $("groupsPanel").classList.toggle("hidden", STATE.groups.length === 0);
+  renderRepos();
   $("grouprows").innerHTML = STATE.groups.map((g) => `
     <tr data-group="${esc(g.name)}">
       <td><b>${esc(g.name)}</b></td>
-      <td><input class="gdesc" value="${esc(g.description || "")}" placeholder="Payment platform"></td>
+      <td><input class="gdesc" value="${esc(g.description || "")}" placeholder="what this system is, e.g. Core lending"></td>
       <td><select class="genv"><option value="">(none)</option>${g.environments.map((e) => `<option${e === g.default_environment ? " selected" : ""}>${esc(e)}</option>`).join("")}</select></td>
       <td><input type="radio" name="defgroup" class="gdef"${STATE.default_group === g.name ? " checked" : ""}></td>
       <td><button class="btn" data-savegroup="${esc(g.name)}">Save</button></td>
     </tr>`).join("");
 }
+function renderRepos() {
+  const rows = STATE.groups.flatMap((g) => (g.repos || []).map((r) => {
+    const status = r.kind === "url" ? '<span class="chip">matched by git remote</span>'
+      : !r.exists ? '<span class="chip fail">folder not found</span>'
+      : [r.remote ? `<span class="chip">${esc(r.remote)}</span>` : "",
+         r.project_config ? '<span class="chip ok">.graylog-mcp.toml</span>' : '<span class="chip warn">no .graylog-mcp.toml</span>',
+         r.claude_code ? '<span class="chip ok">Claude Code</span>' : '<span class="chip">no .mcp.json</span>'].join(" ");
+    return `<tr><td>${esc(g.name)}</td><td><code>${esc(r.entry)}</code></td><td>${status}</td>
+      <td style="white-space:nowrap">${r.kind === "path" && r.exists && !(r.project_config && r.claude_code)
+        ? `<button class="btn" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">Set up</button> ` : ""}<button class="btn danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></td></tr>`;
+  }));
+  $("reporows").innerHTML = rows.join("") || '<tr><td colspan="4" class="muted">No repository yet.</td></tr>';
+  const keep = $("r_group").value;
+  $("r_group").innerHTML = STATE.groups.map((g) => `<option${g.name === keep ? " selected" : ""}>${esc(g.name)}</option>`).join("");
+}
+$("reporows").addEventListener("click", (ev) => {
+  const s = ev.target.closest("[data-setuprepo]");
+  if (s) {
+    busy(s, async () => { await api("/api/repos/setup", "POST", {group: s.dataset.group, repo: s.dataset.setuprepo}); toast("Repository set up"); await loadState(); });
+    return;
+  }
+  const b = ev.target.closest("[data-rmrepo]");
+  if (!b || !confirm(`Remove ${b.dataset.rmrepo} from ${b.dataset.group}? (files in the repository are not touched)`)) return;
+  busy(b, async () => { await api("/api/repos/remove", "POST", {group: b.dataset.group, repo: b.dataset.rmrepo}); toast("Removed"); await loadState(); });
+});
+$("addRepo").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const path = $("r_path").value.trim();
+  if (!path) throw new Error("Enter the folder of the repository");
+  const r = await api("/api/repos", "POST", {group: $("r_group").value, repo: path, project_config: $("r_project").checked, claude_code: $("r_claude").checked});
+  $("repoResult").innerHTML = `<span class="status-ok">✓ added to ${esc($("r_group").value)}</span>`
+    + (r.remote ? ` · remote <code>${esc(r.remote)}</code>` : "")
+    + (r.project_config ? ` · wrote <code>${esc(r.project_config)}</code>` : "")
+    + (r.claude_code ? ` · Claude Code: <code>${esc(r.claude_code)}</code>` : "");
+  $("r_path").value = ""; await loadState();
+}));
 $("grouprows").addEventListener("click", (ev) => {
   const b = ev.target.closest("[data-savegroup]");
   if (!b) return;
@@ -484,16 +550,111 @@ $("runDetect").addEventListener("click", (ev) => busy(ev.target, async () => {
   $("detectOut").innerHTML = `
     <p>${Number(r.total_messages).toLocaleString()} messages analysed in <b>${esc(r.instance)}</b>${r.error_query_reason ? ` · ${esc(r.error_query_reason)}` : ""}.</p>
     <table><thead><tr><th></th><th>Setting</th><th>Suggested value</th></tr></thead><tbody>${rows.join("")}</tbody></table>
-    <div class="actions"><button class="btn primary" id="applyDetect">Apply selected to all environments</button></div>
+    <div class="row" style="margin-top:12px"><label style="flex:2 1 380px">Apply to <select id="applyScope">${scopeOptions(r.instance)}</select></label>
+    <button class="btn primary" id="applyDetect">Apply selected</button></div>
     <h3>Evidence</h3>
     <table><thead><tr><th>Kind</th><th>Field</th><th>Coverage</th><th>Sample values (redacted)</th></tr></thead><tbody>${evidence.join("")}</tbody></table>`;
   $("applyDetect").addEventListener("click", (e2) => busy(e2.target, async () => {
     const keys = [...document.querySelectorAll("#detectOut input[data-key]:checked")].map((i) => i.dataset.key);
     const suggested = Object.fromEntries(Object.entries(lastDetect.suggested).filter(([k]) => keys.includes(k)));
-    await api("/api/detect/apply", "POST", {suggested, app_packages: keys.includes("__app_packages") ? lastDetect.app_packages : []});
+    await api("/api/detect/apply", "POST", {suggested, scope: $("applyScope").value, app_packages: keys.includes("__app_packages") ? lastDetect.app_packages : []});
     toast("Field mapping saved"); await loadState();
   }));
 }));
+
+// ---------------------------------------------------------------- settings by scope
+let SCOPES = [{scope: "global", label: "All environments (global defaults)"}];
+function scopeOptions(instance) {
+  const inst = STATE.instances.find((e) => e.name === instance);
+  const preferred = inst && inst.group ? `group:${inst.group}` : "global";
+  return SCOPES.map((s) => `<option value="${esc(s.scope)}"${s.scope === preferred ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+}
+const SETTING_META = {
+  description: ["Description", "text", "shown to the model, e.g. Production"],
+  trace_fields: ["Trace / correlation id fields", "list", "used by trace_request and the service map"],
+  service_fields: ["Service name fields", "list", "the first one present names the service"],
+  version_fields: ["Version fields", "list", "a new value marks a deploy"],
+  latency_fields: ["Latency fields (ms)", "list", "used by root_cause"],
+  default_fields: ["Fields shown in search results", "list", ""],
+  error_query: ["Error query", "text", "Lucene, e.g. level:<=3 or level:(ERROR OR FATAL)"],
+  change_query: ["Start/stop lines query", "text", "lines that mark a restart or config reload"],
+  message_lookup_range: ["get_message lookup range", "text", "e.g. 30d"],
+  "group_fields.exception": ["Exception class field", "text", "error_summary group_by=exception"],
+  "group_fields.logger": ["Logger field", "text", "error_summary group_by=logger"],
+  timezone: ["Timezone", "text", "IANA name, e.g. Asia/Ho_Chi_Minh"],
+  verify_tls: ["Verify TLS certificate", "bool", ""],
+  ca_bundle: ["CA bundle path", "text", "for internal certificates"],
+  proxy: ["Proxy", "text", "e.g. http://proxy:3128"],
+  timeout: ["Timeout (seconds)", "number", ""],
+  message_api: ["Message API", "select:auto,universal,views,scripting", "auto picks by Graylog version"],
+  aggregation_api: ["Aggregation API", "select:auto,views,scripting", "auto picks by Graylog version"],
+  default_group: ["Default group", "groups", "used when a question names no system"],
+  default_environment: ["Default environment", "text", "used when only a system is named"],
+  default_instance: ["Default instance", "instances", "overrides the two above"],
+  app_packages: ["Application packages", "list", "stack frames from these are kept, e.g. com.f88"],
+};
+const SETTING_SECTIONS = [
+  ["General", ["description", "timezone", "default_group", "default_environment", "default_instance"]],
+  ["Field names in your logs", ["service_fields", "trace_fields", "version_fields", "latency_fields", "group_fields.exception", "group_fields.logger", "default_fields", "app_packages"]],
+  ["Queries", ["error_query", "change_query", "message_lookup_range"]],
+  ["Connection", ["verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api"]],
+];
+const show = (v) => Array.isArray(v) ? v.join(", ") : (v === null || v === undefined ? "" : String(v));
+let scopeData = null;
+async function loadScope() {
+  const scope = $("s_scope").value || "global";
+  scopeData = await api(`/api/scope?scope=${encodeURIComponent(scope)}`);
+  SCOPES = scopeData.scopes;
+  const keep = scope;
+  $("s_scope").innerHTML = SCOPES.map((s) => `<option value="${esc(s.scope)}">${esc(s.label)}</option>`).join("");
+  $("s_scope").value = keep;
+  const keys = new Set(scopeData.keys);
+  $("s_form").innerHTML = SETTING_SECTIONS.map(([title, names]) => {
+    const fields = names.filter((k) => keys.has(k)).map((k) => settingInput(k)).join("");
+    return fields ? `<h3>${esc(title)}</h3><div class="grid2">${fields}</div>` : "";
+  }).join("");
+}
+function settingInput(key) {
+  const [label, type, hint] = SETTING_META[key] || [key, "text", ""];
+  const value = scopeData.values[key];
+  const eff = scopeData.effective[key];
+  const inherited = eff === undefined || eff === null || eff === "" ? "not set" : show(eff);
+  const ph = `in effect: ${inherited}`;
+  let input;
+  if (type === "bool" || type.startsWith("select:") || type === "groups" || type === "instances") {
+    let opts = type === "bool" ? [["true", "yes"], ["false", "no"]]
+      : type === "groups" ? (STATE.groups || []).map((g) => [g.name, g.name])
+      : type === "instances" ? STATE.instances.map((e) => [e.name, e.name])
+      : type.slice(7).split(",").map((o) => [o, o]);
+    input = `<select data-key="${esc(key)}"><option value="">(inherit: ${esc(inherited)})</option>${
+      opts.map(([v, t]) => `<option value="${esc(v)}"${show(value) === v ? " selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+  } else {
+    input = `<input data-key="${esc(key)}" ${type === "number" ? 'type="number" min="1"' : ""} value="${esc(show(value))}" placeholder="${esc(ph)}" spellcheck="false">`;
+  }
+  return `<label>${esc(label)}${value !== undefined ? ' <span class="chip info">set here</span>' : ""} ${hint ? `<span class="muted">· ${esc(hint)}</span>` : ""}${input}</label>`;
+}
+function scopeValues(clear) {
+  const out = {};
+  for (const el of $("s_form").querySelectorAll("[data-key]")) {
+    const key = el.dataset.key;
+    let v = clear ? "" : el.value.trim();
+    if ((SETTING_META[key] || [])[1] === "bool") v = v === "" ? null : v === "true";
+    out[key] = v;
+  }
+  return out;
+}
+$("s_scope").addEventListener("change", () => loadScope().catch((e) => toast(e.message)));
+$("saveScope").addEventListener("click", (ev) => busy(ev.target, async () => {
+  await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(false)});
+  toast("Settings saved"); await loadState(); await loadScope();
+}));
+$("resetScope").addEventListener("click", (ev) => {
+  if (!confirm("Remove every setting written at this level? They will be inherited again.")) return;
+  busy(ev.target, async () => {
+    await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(true)});
+    toast("Cleared"); await loadState(); await loadScope();
+  });
+});
 
 // ---------------------------------------------------------------- redaction
 function renderRedaction() {
