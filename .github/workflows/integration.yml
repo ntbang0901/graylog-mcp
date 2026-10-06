@@ -9,6 +9,8 @@ on:
       - "src/graylog_mcp/backends/**"
       - "src/graylog_mcp/client.py"
       - "src/graylog_mcp/rca.py"
+      - "src/graylog_mcp/scan.py"
+      - "src/graylog_mcp/scanrules.py"
       - "tests/fake_graylog.py"
       - "tests/integration/**"
 

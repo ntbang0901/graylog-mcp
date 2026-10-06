@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `scan`: runs scan rules concurrently with exact counts against a baseline and returns only what fired, most
+  severe first, with the query, top groups (new values flagged) and one sample per finding. Eight built-in rules
+  (crash, resource_exhaustion, error_spike, new_error_types, http_5xx, connectivity, database, auth_failures);
+  `[scan.rules.<name>]` adds rules or overrides built-in keys, `[scan] disable/exclude`; ad hoc `checks` per call;
+  selection by name, tag or `min_severity`. `list_scan_rules`, a `scan` MCP prompt, `scan` presets and
+  `limits.scan_concurrency`. The server instructions tell the model how to scan fast and accurately.
 - `root_cause`: ranks the service that broke first using per-service error/traffic/latency onsets against
   a baseline (first error pinned to the millisecond), changes found in the logs and the inferred call graph;
   returns a verdict, timeline, evidence and next steps.
