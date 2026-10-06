@@ -204,7 +204,8 @@ Environment variables:
 | `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
 | `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
 
-A TOML file (`--config` or `GRAYLOG_MCP_CONFIG`, else `~/.config/graylog-mcp/config.toml`) covers the
+A TOML file (`--config` or `GRAYLOG_MCP_CONFIG`, else `.graylog-mcp.toml` in the current directory or a
+parent up to the repository root, else `~/.config/graylog-mcp/config.toml`) covers the
 rest: several instances, token or basic auth, TLS verification and CA bundle, proxy, timezone,
 `trace_fields`, `error_query` (because `level` is a syslog number or a string depending on how logs are
 shipped), `app_packages`, redaction packs and custom patterns, presets and limits. Secrets are never
@@ -213,6 +214,68 @@ The file is validated at startup and any mistake (unknown key, bad regex, unknow
 secret) stops the server with a precise message.
 
 See [`examples/config.toml`](examples/config.toml) for every option.
+
+## One repository, several environments
+
+Commit a `.graylog-mcp.toml` at the root of your application repository with one instance per environment.
+The server finds it from the current directory or any parent up to the repository root, so everyone working
+in the repo gets the same setup. Tokens stay out of the file: each instance names its environment variable.
+
+```toml
+# .graylog-mcp.toml
+default_instance = "staging"          # what tools use when no environment is named
+timezone = "Asia/Ho_Chi_Minh"
+
+[redaction]
+packs = ["vn"]
+
+[investigation]
+trace_fields = ["traceId", "X-Request-ID"]
+
+[instances.dev]
+url = "https://graylog-dev.example.com"
+token_env = "GRAYLOG_DEV_TOKEN"
+description = "Development cluster, noisy, debug logs on"
+
+[instances.staging]
+url = "https://graylog-staging.example.com"
+token_env = "GRAYLOG_STAGING_TOKEN"
+description = "Staging, deployed on every merge to main"
+
+[instances.prod]
+url = "https://graylog.example.com"
+token_env = "GRAYLOG_PROD_TOKEN"
+description = "Production"
+error_query = "level:<=3 AND NOT logger_name:healthcheck"   # any key can differ per environment
+```
+
+Register the server once for the project (Claude Code reads `.mcp.json` at the repo root and expands
+`${VAR}` from each developer's environment):
+
+```json
+{
+  "mcpServers": {
+    "graylog": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/ntbang0901/graylog-mcp", "graylog-mcp"],
+      "env": {
+        "GRAYLOG_DEV_TOKEN": "${GRAYLOG_DEV_TOKEN}",
+        "GRAYLOG_STAGING_TOKEN": "${GRAYLOG_STAGING_TOKEN}",
+        "GRAYLOG_PROD_TOKEN": "${GRAYLOG_PROD_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Then ask in plain words: *"why is checkout failing on staging?"*, *"compare errors on prod before and
+after 14:00"*. Every tool takes `instance`, `list_instances` shows each environment with its description
+and detected Graylog version (environments may run different versions), and results always name the
+instance they come from. A developer who has no token for an environment simply gets a clear error for that
+one; the others keep working.
+
+Clients that do not start the server inside the repository (Claude Desktop) need the path explicitly:
+`GRAYLOG_MCP_CONFIG=/path/to/repo/.graylog-mcp.toml`.
 
 ## Shared HTTP server and Docker
 

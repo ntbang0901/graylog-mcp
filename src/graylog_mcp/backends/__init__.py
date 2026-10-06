@@ -130,6 +130,8 @@ class Graylog:
         log.info("instance %s: Graylog %s, messages via %s, aggregations via %s", self.cfg.name, raw, msg, agg)
 
     async def ensure(self) -> None:
+        if self.cfg.unavailable:
+            raise GraylogError(f"instance '{self.cfg.name}' is not usable: {self.cfg.unavailable}")
         if self.version is not None:
             return
         async with self._lock:
@@ -151,6 +153,7 @@ class Graylog:
             "url": self.cfg.url,
             "auth": self.cfg.auth,
             "timezone": self.cfg.timezone,
+            **({"description": self.cfg.description} if self.cfg.description else {}),
         }
         if self.version is not None:
             out["version"] = self.version_raw
@@ -158,6 +161,8 @@ class Graylog:
             out["aggregation_api"] = self.aggregation_apis[0] if self.aggregation_apis else "none available"
             out["fallbacks"] = {"messages": self.message_apis[1:], "aggregations": self.aggregation_apis[1:]}
             out["status"] = "ok"
+        elif self.cfg.unavailable:
+            out["status"] = f"not configured: {self.cfg.unavailable}"
         else:
             out["status"] = f"not connected: {self.detect_error}" if self.detect_error else "not checked yet"
         return out

@@ -46,14 +46,19 @@ latency_fields = ["took_ms", "duration_ms", "elapsed_ms", "response_time_ms"]
 # lines that mark a process start/stop or a config reload
 change_query = '(message:Started AND message:"running for") OR "Shutting down" OR "Graceful shutdown" OR SIGTERM'
 
+# One instance per environment. In an application repository, commit this file as .graylog-mcp.toml
+# at the root: the server finds it automatically. An instance whose token variable is not set is
+# disabled (shown by list_instances) instead of stopping the server.
 [instances.prod]
 url = "https://graylog.example.com"
+description = "Production"
 token_env = "GRAYLOG_PROD_TOKEN"     # access token of a read-only user (Reader role + stream permissions)
 ca_bundle = "/etc/ssl/certs/internal-ca.pem"
 timeout = 30
 
 [instances.staging]
 url = "https://graylog-staging.example.com"
+description = "Staging, deployed on every merge to main"
 auth = "basic"
 username = "readonly"
 password_env = "GRAYLOG_STAGING_PASSWORD"

@@ -14,6 +14,8 @@ All notable changes to this project are documented here. The format follows
 - `service_map`: caller -> callee graph inferred from traces sampled per service, with error rates and
   p50/p95 latency.
 - Config: `version_fields`, `latency_fields`, `change_query`.
+- Project config discovery: `.graylog-mcp.toml` in the current directory or a parent (up to the repository
+  root), for one repository with several environments; per-instance `description` shown by `list_instances`.
 - Integration scenario (bad deploy cascading through three services) verified on Graylog 4.3-7.0.
 
 ## [0.1.0] - 2026-10-06
