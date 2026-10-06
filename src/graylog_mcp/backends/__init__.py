@@ -30,12 +30,13 @@ import httpx
 from graylog_mcp.backends.base import (
     COUNT,
     AggResult,
+    AggRow,
     MessagePage,
     MessageQuery,
     Metric,
     RawMessage,
 )
-from graylog_mcp.backends.scripting import ScriptingBackend
+from graylog_mcp.backends.scripting import MISSING, ScriptingBackend
 from graylog_mcp.backends.universal import UniversalBackend
 from graylog_mcp.backends.views import ViewsBackend
 from graylog_mcp.client import (
@@ -48,12 +49,16 @@ from graylog_mcp.client import (
     UnsupportedVersion,
 )
 from graylog_mcp.config import InstanceConfig
+from graylog_mcp.shaping import normalize_template
 from graylog_mcp.timerange import TimeRange
 
 log = logging.getLogger(__name__)
 
 MIN_VERSION = (4, 0, 0)
 STREAM_CACHE_SECONDS = 300
+SAMPLE_SIZE = 1000  # messages read to count the values of a field Graylog cannot aggregate
+SAMPLE_PAGE = 500
+TEXT_FIELDS = frozenset({"message", "full_message"})
 _OBJECT_ID = re.compile(r"^[0-9a-f]{24}$")
 
 
@@ -78,6 +83,20 @@ def _looks_like_syntax(exc: GraylogError) -> bool:
 def _gone(exc: GraylogError) -> bool:
     """The endpoint does not exist on this version."""
     return isinstance(exc, NotFound) or exc.status in (405, 501)
+
+
+def _not_aggregatable(exc: GraylogError) -> bool:
+    """OpenSearch/Elasticsearch refuse to aggregate full-text (analysed) fields such as ``message``."""
+    text = str(exc).lower()
+    return "fielddata" in text or "not optimised for operations" in text or "not optimized for operations" in text
+
+
+def _demote(apis: list[str], denied: list[str]) -> None:
+    """Keep refused APIs as a last resort, after the one that worked."""
+    for name in denied:
+        if name in apis:
+            apis.remove(name)
+            apis.append(name)
 
 
 class Graylog:
@@ -214,19 +233,32 @@ class Graylog:
 
     async def _search(self, mq: MessageQuery) -> MessagePage:
         last: GraylogError | None = None
+        denied: list[str] = []
+        first_denied: PermissionDenied | None = None
         for name in list(self.message_apis):
             query = mq
             if name == "scripting" and mq.fields is None:
                 # the Scripting API only returns the fields it is asked for
                 query = dataclasses.replace(mq, fields=self.wanted_fields)
             try:
-                return await self._backends[name].search(query)
+                page = await self._backends[name].search(query)
+            except PermissionDenied as exc:
+                # a role may allow one search API and not another (e.g. views but not universal search)
+                log.warning("instance %s: %s message API refused (%s); trying the next one", self.cfg.name, name, exc)
+                denied.append(name)
+                first_denied = first_denied or exc
+                continue
             except GraylogError as exc:
                 if not _gone(exc):
                     raise
                 log.warning("instance %s: %s message API unavailable (%s); falling back", self.cfg.name, name, exc)
                 self.message_apis.remove(name)
                 last = exc
+                continue
+            _demote(self.message_apis, denied)
+            return page
+        if first_denied is not None:
+            raise PermissionDenied(f"{first_denied} (also refused: {', '.join(denied[1:]) or 'no other API'})", 403)
         raise GraylogError(f"no message search API is available on instance '{self.cfg.name}': {last}")
 
     @property
@@ -278,8 +310,56 @@ class Graylog:
         try:
             return await self._aggregate(query, tr, streams, group_by, limit, metrics)
         except GraylogError as exc:
+            sampleable = len(group_by) == 1 and all(m.function == "count" or m.field == "timestamp" for m in metrics)
+            if _not_aggregatable(exc) and sampleable:
+                log.info("instance %s: %s cannot be aggregated; counting a sample", self.cfg.name, group_by[0])
+                return await self._sampled(query, tr, streams, group_by[0], limit)
             await self._explain(exc, query, tr, streams)
             raise
+
+    async def _sampled(self, query: str, tr: TimeRange, streams: tuple[str, ...], field: str, limit: int) -> AggResult:
+        """Count the values of a field over the newest messages; full-text fields are grouped by template
+        (numbers, ids and timestamps replaced) so variants of one log line count together."""
+        groups: dict[Any, dict[str, Any]] = {}
+        seen, total = 0, None
+        while seen < SAMPLE_SIZE:
+            size = min(SAMPLE_PAGE, SAMPLE_SIZE - seen)
+            mq = MessageQuery(query=query, timerange=tr, streams=streams, fields=(field, "timestamp"), limit=size,
+                              offset=seen)  # fmt: skip
+            page = await self._search(mq)
+            total = page.total if total is None else total
+            for msg in page.messages:
+                value = msg.fields.get(field)
+                key: Any
+                if value in (None, "", MISSING):
+                    key = None
+                elif field in TEXT_FIELDS:
+                    key = normalize_template(str(value).split("\n", 1)[0], max_len=200)
+                else:
+                    key = value if isinstance(value, (str, int, float, bool)) else str(value)
+                group = groups.setdefault(key, {"count": 0, "min": None, "max": None, "example": value})
+                group["count"] += 1
+                ts = msg.fields.get("timestamp")
+                if isinstance(ts, str):
+                    group["min"] = ts if group["min"] is None or ts < group["min"] else group["min"]
+                    group["max"] = ts if group["max"] is None or ts > group["max"] else group["max"]
+            seen += len(page.messages)
+            if len(page.messages) < size:
+                break
+        rows = [
+            AggRow(
+                [key],
+                {
+                    COUNT.name: g["count"],
+                    "min(timestamp)": g["min"],
+                    "max(timestamp)": g["max"],
+                    "example": g["example"],
+                },
+            )
+            for key, g in sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+        ]
+        present = [r for r in rows if r.keys[0] is not None][:limit]
+        return AggResult(present + [r for r in rows if r.keys[0] is None], total=total, api="sampled", sampled=seen)
 
     async def _aggregate(
         self,
@@ -291,11 +371,20 @@ class Graylog:
         metrics: list[Metric],
     ) -> AggResult:
         last: GraylogError | None = None
+        denied: list[str] = []
         for name in list(self.aggregation_apis):
             try:
-                return await self._backends[name].aggregate(query, tr, streams, group_by, limit, metrics)
-            except (AuthError, PermissionDenied):
+                result = await self._backends[name].aggregate(query, tr, streams, group_by, limit, metrics)
+            except AuthError:
                 raise
+            except PermissionDenied as exc:
+                if name == self.aggregation_apis[-1]:
+                    raise
+                log.warning("instance %s: %s aggregation API refused (%s); trying the next one", self.cfg.name, name,
+                            exc)  # fmt: skip
+                denied.append(name)
+                last = exc
+                continue
             except GraylogError as exc:
                 if _gone(exc):
                     self.aggregation_apis.remove(name)
@@ -303,6 +392,9 @@ class Graylog:
                 elif name != "views" and "views" in self.aggregation_apis:
                     log.info("instance %s: %s aggregation failed (%s); trying views pivot", self.cfg.name, name, exc)
                 last = exc
+                continue
+            _demote(self.aggregation_apis, denied)
+            return result
         raise last or GraylogError(f"no aggregation API is available on instance '{self.cfg.name}'")
 
     async def histogram(self, query: str, tr: TimeRange, streams: tuple[str, ...], interval: str) -> AggResult:

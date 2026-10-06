@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from graylog_mcp.backends import Graylog
+from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
@@ -537,6 +537,19 @@ async def _bounded(app: App, coros: Sequence[Awaitable[Any]]) -> list[Any]:
     return await asyncio.gather(*(run(c) for c in coros))
 
 
+def _sampled_note(field: str, sampled: int, total: int | None) -> dict[str, Any]:
+    templated = (
+        " Variants of one log line (numbers, ids, timestamps) are counted together." if field in TEXT_FIELDS else ""
+    )
+    return {
+        "method": "sampled",
+        "sampled": sampled,
+        "note": f"'{field}' is a full-text field that Graylog cannot aggregate, so the newest {sampled} of "
+        f"{total if total is not None else 'the'} matching messages were counted; counts and percentages refer "
+        f"to that sample.{templated}",
+    }
+
+
 def _group_field(gl: Graylog, group_by: str) -> str:
     return gl.cfg.group_fields.get(group_by, group_by)
 
@@ -581,7 +594,11 @@ async def error_summary(
                 "_raw": value,
             }
         )
-    if samples and groups:
+    if agg.sampled is not None:
+        for g, row in zip(groups, rows, strict=False):
+            example = row.values.get("example")
+            g["sample"] = {"message": app.redact_key(field, str(example)[:SAMPLE_CHARS])} if example else None
+    elif samples and groups:
         found = await _bounded(
             app,
             [
@@ -595,7 +612,9 @@ async def error_summary(
         g.pop("_raw", None)
     grouped = sum(g["count"] for g in groups)
     out = _header(gl, tr, error_query=q, group_by=field, total_errors=total, aggregation_api=agg.api or None)
-    out["ungrouped"] = max(0, total - grouped)
+    if agg.sampled is not None:
+        out.update(_sampled_note(field, agg.sampled, total))
+    out["ungrouped"] = max(0, (agg.sampled if agg.sampled is not None else total) - grouped)
     if missing:
         out["without_field"] = missing
     if not groups and total:
@@ -703,18 +722,22 @@ async def top_values(
     agg = await gl.aggregate(query or "*", tr, stream_ids, [field], limit + 1, [COUNT])
     total = agg.total if agg.total is not None else await gl.count(query or "*", tr, stream_ids)
     rows, missing = agg.split_missing()
+    base = agg.sampled if agg.sampled is not None else total  # percentages of what was counted
     values = []
     for row in rows[:limit]:
         count = int(row.values.get(COUNT.name) or 0)
-        values.append(
-            {
-                "value": app.redact_key(field, row.keys[0]),
-                "count": count,
-                "pct": round(100 * count / total, 1) if total else None,
-            }
-        )
+        value: dict[str, Any] = {
+            "value": app.redact_key(field, row.keys[0]),
+            "count": count,
+            "pct": round(100 * count / base, 1) if base else None,
+        }
+        if agg.sampled is not None and row.values.get("example") not in (None, row.keys[0]):
+            value["example"] = app.redact_key(field, str(row.values["example"])[:SAMPLE_CHARS])
+        values.append(value)
     out = _header(gl, tr, query=query or "*", field=field, total=total)
-    out["other"] = max(0, (total or 0) - sum(v["count"] for v in values) - missing)
+    if agg.sampled is not None:
+        out.update(_sampled_note(field, agg.sampled, total))
+    out["other"] = max(0, (base or 0) - sum(v["count"] for v in values) - missing)
     if missing:
         out["without_field"] = missing
     if not values and total:
