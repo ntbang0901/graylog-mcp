@@ -91,11 +91,13 @@ async def _test(p: Prompter, name: str, fields: dict[str, Any]) -> tuple[dict[st
     return result, typed
 
 
-async def _detect(p: Prompter, data: dict[str, Any], name: str, typed: str | None) -> dict[str, Any] | None:
-    config = configfile.validate(data)
+async def _detect(
+    p: Prompter, data: dict[str, Any], name: str, typed: str | None, base_dir: Path
+) -> dict[str, Any] | None:
+    config = configfile.validate(data, base_dir=base_dir)
     inst = config.instance(name)
     if typed:
-        inst = connect.build_instance(name, data["instances"][name], token=typed)
+        inst = connect.build_instance(name, configfile.local_fields(data, name) or {}, token=typed)
     app = App(config=config, instances={name: Graylog(inst, connect.TRANSPORT)}, redactor=Redactor(config.redaction))
     try:
         p.out(f"\nDetecting field names from the last 24h of '{name}'...")
@@ -126,24 +128,39 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
 
     # ---------------------------------------------------------------- environments
     envs = list(opts.envs)
-    existing = data.get("instances") or {}
+    flat = data.get("instances") or {}
+    existing_groups = data.get("groups") or {}
+
+    def prev_fields(name: str) -> dict[str, Any]:
+        return configfile.local_fields(data, name) or {}
+
     if not envs:
-        names = p.ask(
-            "Environments, comma separated (one Graylog per environment)", ",".join(existing) or "staging,prod"
+        groups_answer = p.ask(
+            "System groups with their own Graylog, comma separated (e.g. erp,cxp,payment; empty if none)",
+            ",".join(existing_groups),
         )
-        for name in [n.strip() for n in names.split(",") if n.strip()]:
-            url = p.ask(f"Graylog URL for '{name}'", existing.get(name, {}).get("url", ""))
-            if not url:
-                raise ConfigError(f"a URL is required for '{name}'")
-            envs.append((name, url))
+        groups = [g.strip() for g in groups_answer.split(",") if g.strip()]
+        last_envs = "staging,prod"
+        group_list: list[str | None] = list(groups) or [None]
+        for group in group_list:
+            known = list((existing_groups.get(group) or {}).get("environments") or {}) if group else list(flat)
+            question = f"Environments of '{group}'" if group else "Environments (one Graylog each)"
+            answer = p.ask(f"{question}, any names, comma separated", ",".join(known) or last_envs)
+            last_envs = answer
+            for env in [e.strip() for e in answer.split(",") if e.strip()]:
+                name = f"{group}/{env}" if group else env
+                url = p.ask(f"Graylog URL for '{name}'", prev_fields(name).get("url", ""))
+                if not url:
+                    raise ConfigError(f"a URL is required for '{name}'")
+                envs.append((name, url))
     if not envs:
         raise ConfigError("no environment given (use --env name=url)")
 
     tests: dict[str, tuple[dict[str, Any], str | None]] = {}
     for name, url in envs:
-        prev = existing.get(name, {})
+        prev = prev_fields(name)
         p.out(f"\n[{name}] {url}")
-        description = p.ask("  Description", prev.get("description", name.capitalize()))
+        description = p.ask("  Description", prev.get("description", name.replace("/", " ").title()))
         auth = p.ask("  Auth (token/basic)", prev.get("auth", "token"))
         fields: dict[str, Any] = {"url": url, "description": description, "auth": auth}
         if auth == "basic":
@@ -160,21 +177,50 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
             if key in prev:
                 fields[key] = prev[key]
         data = configfile.upsert_instance(data, name, fields)
-        tests[name] = await _test(p, name, data["instances"][name])
+        tests[name] = await _test(p, name, configfile.local_fields(data, name) or {})
         if not tests[name][0]["ok"] and "TLS" in tests[name][0].get("error", "") and p.interactive:
             ca = p.ask("  Path to your CA bundle (empty to skip)", "")
             if ca:
-                data["instances"][name]["ca_bundle"] = ca
-                tests[name] = await _test(p, name, data["instances"][name])
+                data = configfile.upsert_instance(data, name, {**fields, "ca_bundle": ca})
+                tests[name] = await _test(p, name, configfile.local_fields(data, name) or {})
 
     # ---------------------------------------------------------------- shared settings
     env_names = [n for n, _ in envs]
-    current = data.get("default_instance")
-    suggested = current if current in env_names else ("staging" if "staging" in env_names else env_names[0])
-    default = opts.default or p.ask("\nDefault environment (used when none is named)", str(suggested))
-    if default not in data.get("instances", {}):
-        raise ConfigError(f"default environment {default!r} is not one of {env_names}")
-    data["default_instance"] = default
+    group_names = sorted({n.split("/", 1)[0] for n in env_names if "/" in n})
+    if group_names:
+        # groups: a default group (optional) and a default environment name
+        cur_group = data.get("default_group")
+        default_group = (
+            opts.default
+            if opts.default in group_names
+            else p.ask(
+                "\nDefault group, for questions that name no system (empty for none)",
+                cur_group if cur_group in group_names else (group_names[0] if len(group_names) == 1 else ""),
+            )
+        )
+        if default_group and default_group not in group_names:
+            raise ConfigError(f"default group {default_group!r} is not one of {group_names}")
+        all_envs = sorted({n.split("/", 1)[1] for n in env_names if "/" in n})
+        cur_env = data.get("default_environment")
+        default_env = p.ask(
+            "Default environment within a group (empty for none)",
+            cur_env if cur_env in all_envs else ("staging" if "staging" in all_envs else ""),
+        )
+        data.pop("default_instance", None)
+        for key, value in (("default_group", default_group), ("default_environment", default_env)):
+            if value:
+                data[key] = value
+            else:
+                data.pop(key, None)
+        if opts.default and opts.default not in group_names:
+            data["default_instance"] = opts.default
+    else:
+        current = data.get("default_instance")
+        suggested = current if current in env_names else ("staging" if "staging" in env_names else env_names[0])
+        default = opts.default or p.ask("\nDefault environment (used when none is named)", str(suggested))
+        if default not in env_names and default not in flat:
+            raise ConfigError(f"default environment {default!r} is not one of {env_names}")
+        data["default_instance"] = default
     tz = opts.timezone or p.ask("Timezone for times in questions and answers", data.get("timezone") or local_timezone())
     data["timezone"] = tz
     redaction = dict(data.get("redaction") or {})
@@ -194,14 +240,15 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
     # ---------------------------------------------------------------- field detection
     reachable = [n for n in env_names if tests[n][0]["ok"]]
     if opts.detect and reachable:
-        source = default if default in reachable else reachable[0]
-        found = await _detect(p, data, source, tests[source][1])
+        preferred = configfile.validate(data, base_dir=path.parent).default_instance
+        source = preferred if preferred in reachable else reachable[0]
+        found = await _detect(p, data, source, tests[source][1], path.parent)
         if found and p.confirm("Use these settings for all environments?", True):
             data = configfile.apply_investigation(data, found["suggested"])
             if found.get("app_packages"):
                 data.setdefault("stacktrace", {})["app_packages"] = found["app_packages"]
 
-    configfile.validate(data)
+    configfile.validate(data, base_dir=path.parent)
     backup = configfile.save(path, data)
     p.out(f"\nSaved {path}" + (f" (previous version in {backup.name})" if backup else ""))
 
@@ -214,7 +261,7 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
             "claude-code",
         )
         chosen = [] if answer.strip() in ("", "none") else [c.strip() for c in answer.split(",") if c.strip()]
-    secrets = configfile.secret_envs(data)
+    secrets = configfile.secret_envs(data, path.parent)
     for client in chosen:
         if client not in clients.CLIENTS:
             p.out(f"  ! unknown client {client!r}, skipped")

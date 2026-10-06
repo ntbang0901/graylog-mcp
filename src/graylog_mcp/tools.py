@@ -893,11 +893,25 @@ async def list_instances(app: App) -> dict[str, Any]:
             await gl.ensure()
 
     await asyncio.gather(*(check(gl) for gl in app.instances.values()))
-    return {
-        "default": app.config.default_instance,
-        "instances": [gl.status() for gl in app.instances.values()],
-        "redaction": app.redactor.active_rules,
-    }
+    out: dict[str, Any] = {"default": app.config.default_instance}
+    cfg = app.config
+    if cfg.groups:
+        out["default_group"] = cfg.default_group
+        out["groups"] = [
+            {
+                "group": g.name,
+                "description": g.description or None,
+                "environments": sorted(i.environment or i.name for i in cfg.instances.values() if i.group == g.name),
+                "default_environment": g.default_environment or cfg.default_environment,
+            }
+            for g in cfg.groups.values()
+        ]
+        out["how_to_choose"] = "instance='<group>/<environment>' (e.g. 'payment/prod'), or just the group name"
+    if cfg.environments:
+        out["environments"] = {e: d or None for e, d in cfg.environments.items()}
+    out["instances"] = [gl.status() for gl in app.instances.values()]
+    out["redaction"] = app.redactor.active_rules
+    return out
 
 
 def list_presets(app: App) -> dict[str, Any]:

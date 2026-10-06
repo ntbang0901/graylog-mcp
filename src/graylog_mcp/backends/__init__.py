@@ -154,6 +154,8 @@ class Graylog:
             "auth": self.cfg.auth,
             "timezone": self.cfg.timezone,
             **({"description": self.cfg.description} if self.cfg.description else {}),
+            **({"group": self.cfg.group} if self.cfg.group else {}),
+            **({"environment": self.cfg.environment} if self.cfg.environment else {}),
         }
         if self.version is not None:
             out["version"] = self.version_raw

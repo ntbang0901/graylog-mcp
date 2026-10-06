@@ -23,6 +23,9 @@ All notable changes to this project are documented here. The format follows
 - `graylog-mcp ui`: local admin web UI (environments, field mapping, redaction playground, tool playground,
   client installation, config editor), loopback only with a per-run access token.
 - CLI subcommands; `graylog-mcp` alone still runs the server.
+- Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
+  `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
+  file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
 
 ## [0.1.0] - 2026-10-06
 

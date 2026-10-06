@@ -316,6 +316,69 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask, never a secret.
 
+## Groups and your own environments
+
+Large organisations often run one Graylog per system *and* per environment: ERP, CXP, PAYMENT... each with
+its own dev/uat/prod (or sandbox, dr, prod-eu...). Environment names are yours; nothing assumes
+dev/staging/prod, and each group can have a different set.
+
+```toml
+# graylog-org.toml: one file for the whole company, e.g. in a shared platform repository
+timezone = "Asia/Ho_Chi_Minh"
+default_environment = "uat"            # used when a question names only the system
+
+[environments.prod]                    # declare environments once; every group inherits these settings
+description = "Production"
+error_query = "level:<=2"
+ca_bundle = "/etc/ssl/corp-ca.pem"
+[environments.uat]
+description = "User acceptance"
+
+[groups.erp]
+description = "ERP"
+trace_fields = ["correlationId"]       # anything set on a group applies to all its environments
+[groups.erp.environments.uat]
+url = "https://graylog-erp-uat.corp"
+token_env = "GRAYLOG_ERP_UAT_TOKEN"
+[groups.erp.environments.prod]
+url = "https://graylog-erp.corp"
+token_env = "GRAYLOG_ERP_PROD_TOKEN"
+
+[groups.payment]
+description = "Payment platform"
+default_environment = "sandbox"
+[groups.payment.environments.sandbox]
+url = "https://graylog-pay-sbx.corp"
+token_env = "GRAYLOG_PAYMENT_SANDBOX_TOKEN"
+[groups.payment.environments.prod]
+url = "https://graylog-pay.corp"
+token_env = "GRAYLOG_PAYMENT_PROD_TOKEN"
+```
+
+Settings are layered: `[environments.<env>]` < `[groups.<group>]` < `[groups.<group>.environments.<env>]`.
+Each pair becomes an instance named `<group>/<environment>`.
+
+A service repository then only says which group it belongs to:
+
+```toml
+# payment-api/.graylog-mcp.toml
+include = "../platform/graylog-org.toml"   # relative to this file; a list is allowed
+default_group = "payment"
+```
+
+How the model (and you) pick an instance, in every tool's `instance` argument:
+
+| You say | Instance |
+|---------|----------|
+| `payment/prod`, `payment prod`, `PAYMENT:prod` | `payment/prod` |
+| `payment` | the group's `default_environment` (else the global one) |
+| `prod` | `prod` of the `default_group`; an error listing the options if several groups have it |
+| nothing | `default_instance`, else `default_group` + `default_environment` |
+
+`list_instances` returns the groups with their environments and descriptions, `graylog-mcp init` asks for
+groups first, and the admin UI shows environments by group (instances from an included file are marked and
+edited in that file).
+
 ## Shared HTTP server and Docker
 
 stdio is the default. For one server shared by a team, use streamable HTTP with its own bearer token:

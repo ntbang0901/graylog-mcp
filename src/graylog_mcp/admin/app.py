@@ -28,7 +28,7 @@ from starlette.routing import Route
 
 from graylog_mcp import __version__, rca, tools
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import PROJECT_CONFIG_NAMES, ConfigError, find_project_config
+from graylog_mcp.config import PROJECT_CONFIG_NAMES, Config, ConfigError, find_project_config
 from graylog_mcp.config import _parse_redaction as parse_redaction
 from graylog_mcp.redact import PACKS, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
@@ -83,13 +83,13 @@ class AdminState:
         """A tools.App for the current file; rebuilt when the file or the secrets change."""
         data = self.raw()
         stat = self.path.stat() if self.path.exists() else None
-        secret_state = tuple(bool(os.environ.get(n)) for n in configfile.secret_envs(data))
+        secret_state = tuple(bool(os.environ.get(n)) for n in configfile.secret_envs(data, self.path.parent))
         key = (stat.st_mtime_ns if stat else 0, stat.st_size if stat else 0, secret_state)
         async with self._lock:
             if self._app is None or key != self._app_key:
                 if self._app is not None:
                     await self._app.close()
-                config = configfile.validate(data, source=str(self.path))
+                config = configfile.validate(data, source=str(self.path), base_dir=self.path.parent)
                 self._app = tools.App.create(config, transport=self.transport or connect.TRANSPORT)
                 self._app_key = key
             return self._app
@@ -107,27 +107,43 @@ async def _body(request: Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _instances_view(data: dict[str, Any], config: Config | None) -> list[dict[str, Any]]:
+    """Every instance the server will load (includes applied), marking those editable in this file."""
+    if config is None:
+        return []
     out = []
-    default = data.get("default_instance")
-    for name, inst in (data.get("instances") or {}).items():
-        if not isinstance(inst, dict):
-            continue
-        auth = inst.get("auth") or ("basic" if "password_env" in inst else "token")
-        secret = inst.get("password_env") if auth == "basic" else inst.get("token_env", "GRAYLOG_TOKEN")
+    for inst in sorted(config.instances.values(), key=lambda i: (i.group or "", i.environment or i.name)):
+        local = configfile.local_fields(data, inst.name)
         out.append(
             {
-                "name": name,
-                "url": inst.get("url", ""),
-                "description": inst.get("description", ""),
-                "auth": auth,
-                "secret_env": secret,
-                "secret_set": bool(secret and os.environ.get(str(secret))),
-                "default": name == default,
-                "fields": inst,
+                "name": inst.name,
+                "group": inst.group,
+                "environment": inst.environment or (inst.name if not inst.group else None),
+                "url": inst.url,
+                "description": inst.description,
+                "auth": inst.auth,
+                "secret_env": inst.secret_env,
+                "secret_set": bool(inst.secret_env and os.environ.get(inst.secret_env)),
+                "default": inst.name == config.default_instance,
+                "local": local is not None,
+                "fields": local or {"url": inst.url, "description": inst.description},
             }
         )
     return out
+
+
+def _groups_view(config: Config | None) -> list[dict[str, Any]]:
+    if config is None:
+        return []
+    return [
+        {
+            "name": g.name,
+            "description": g.description,
+            "default_environment": g.default_environment,
+            "environments": sorted(i.environment or "" for i in config.instances.values() if i.group == g.name),
+        }
+        for g in config.groups.values()
+    ]
 
 
 def build_app(state: AdminState) -> Starlette:
@@ -139,13 +155,14 @@ def build_app(state: AdminState) -> Starlette:
     async def get_state(_request: Request) -> Response:
         error = None
         data: dict[str, Any] = {}
+        config: Config | None = None
         try:
             data = state.raw()
             if data:
-                configfile.validate(data)
+                config = configfile.validate(data, base_dir=state.path.parent)
         except ConfigError as exc:
             error = str(exc)
-        secret_names = configfile.secret_envs(data)
+        secret_names = configfile.secret_envs(data, state.path.parent)
         client_list = []
         for key, spec in clients.CLIENTS.items():
             client_list.append(
@@ -165,7 +182,10 @@ def build_app(state: AdminState) -> Starlette:
                 "exists": state.path.exists(),
                 "error": error,
                 "data": data,
-                "instances": _instances_view(data),
+                "instances": _instances_view(data, config),
+                "groups": _groups_view(config),
+                "environments": config.environments if config else {},
+                "default_group": config.default_group if config else None,
                 "secret_envs": [{"name": n, "set": bool(os.environ.get(n))} for n in secret_names],
                 "clients": client_list,
                 "packs": sorted(PACKS),
@@ -204,7 +224,7 @@ def build_app(state: AdminState) -> Starlette:
             data = configfile.upsert_instance(data, name, body.get("fields") or {})
             if body.get("make_default"):
                 data["default_instance"] = name
-            configfile.validate(data)
+            configfile.validate(data, base_dir=state.path.parent)
             configfile.save(state.path, data)
         except ConfigError as exc:
             return _err(str(exc))
@@ -226,7 +246,7 @@ def build_app(state: AdminState) -> Starlette:
         body = await _body(request)
         try:
             data = state.raw()
-            for key in ("default_instance", "timezone"):
+            for key in ("default_instance", "default_group", "default_environment", "timezone"):
                 if body.get(key):
                     data[key] = body[key]
             for section in ("redaction", "investigation", "stacktrace", "limits"):
@@ -236,7 +256,24 @@ def build_app(state: AdminState) -> Starlette:
                         data[section] = cleaned
                     else:
                         data.pop(section, None)
-            configfile.validate(data)
+            configfile.validate(data, base_dir=state.path.parent)
+            configfile.save(state.path, data)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True})
+
+    async def save_group(request: Request) -> Response:
+        body = await _body(request)
+        group = str(body.get("group") or "").strip()
+        if not group:
+            return _err("group is required")
+        try:
+            data = configfile.upsert_group(
+                state.raw(), group, body.get("description") or None, body.get("default_environment") or None
+            )
+            if body.get("make_default"):
+                data["default_group"] = group
+            configfile.validate(data, base_dir=state.path.parent)
             configfile.save(state.path, data)
         except ConfigError as exc:
             return _err(str(exc))
@@ -250,7 +287,8 @@ def build_app(state: AdminState) -> Starlette:
             if body.get("token"):
                 from graylog_mcp.backends import Graylog
 
-                inst = connect.build_instance(gl.cfg.name, state.raw()["instances"][gl.cfg.name], token=body["token"])
+                fields = configfile.local_fields(state.raw(), gl.cfg.name) or {"url": gl.cfg.url}
+                inst = connect.build_instance(gl.cfg.name, fields, token=body["token"])
                 gl = Graylog(inst, state.transport or connect.TRANSPORT)
             await gl.ensure()
             result = await detect(app, gl, str(body.get("range") or "24h"))
@@ -264,7 +302,7 @@ def build_app(state: AdminState) -> Starlette:
             data = configfile.apply_investigation(state.raw(), body.get("suggested") or {}, body.get("instance"))
             if body.get("app_packages"):
                 data.setdefault("stacktrace", {})["app_packages"] = body["app_packages"]
-            configfile.validate(data)
+            configfile.validate(data, base_dir=state.path.parent)
             configfile.save(state.path, data)
         except ConfigError as exc:
             return _err(str(exc))
@@ -289,7 +327,7 @@ def build_app(state: AdminState) -> Starlette:
         args = body.get("args") or {}
         if not isinstance(args, dict):
             return _err("args must be a JSON object")
-        if body.get("instance"):
+        if body.get("instance") and not args.get("instance"):  # an instance in the arguments wins
             args["instance"] = body["instance"]
         started = time.monotonic()
         try:
@@ -322,7 +360,7 @@ def build_app(state: AdminState) -> Starlette:
     async def validate_config(request: Request) -> Response:
         body = await _body(request)
         try:
-            config = configfile.validate_text(str(body.get("text") or ""))
+            config = configfile.validate_text(str(body.get("text") or ""), base_dir=state.path.parent)
         except ConfigError as exc:
             return JSONResponse({"ok": False, "error": str(exc)})
         return JSONResponse({"ok": True, "instances": list(config.instances)})
@@ -338,7 +376,7 @@ def build_app(state: AdminState) -> Starlette:
     async def client_snippets(request: Request) -> Response:
         source = request.query_params.get("source", "git")
         data = state.raw()
-        names = configfile.secret_envs(data) or ["GRAYLOG_TOKEN"]
+        names = configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"]
         config_file = state.path if state.path.exists() else None
         out = {}
         for key, spec in clients.CLIENTS.items():
@@ -367,7 +405,7 @@ def build_app(state: AdminState) -> Starlette:
                 scope,
                 state.project_dir,
                 state.path if state.path.exists() else None,
-                configfile.secret_envs(data) or ["GRAYLOG_TOKEN"],
+                configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"],
                 source=str(body.get("source") or "git"),
                 with_secrets=bool(body.get("with_secrets")),
             )
@@ -382,8 +420,9 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/state", get_state),
         Route("/api/test", test_instance, methods=["POST"]),
         Route("/api/instances", save_instance, methods=["POST"]),
-        Route("/api/instances/{name}", delete_instance, methods=["DELETE"]),
+        Route("/api/instances/{name:path}", delete_instance, methods=["DELETE"]),
         Route("/api/settings", save_settings, methods=["POST"]),
+        Route("/api/groups", save_group, methods=["POST"]),
         Route("/api/detect", run_detect, methods=["POST"]),
         Route("/api/detect/apply", apply_detect, methods=["POST"]),
         Route("/api/redact", redact_preview, methods=["POST"]),

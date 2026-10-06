@@ -10,6 +10,7 @@ variable that holds them (``token_env``, ``password_env``, ...).
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import tomllib
@@ -124,6 +125,9 @@ class InstanceConfig:
     auth: str  # "token" | "basic"
     description: str = ""
     unavailable: str | None = None  # why the instance cannot be used (missing secret)
+    secret_env: str | None = None  # name of the variable holding the token or password (never the value)
+    group: str | None = None  # system / product line, e.g. "payment"
+    environment: str | None = None  # e.g. "prod"
     token: str | None = None
     username: str | None = None
     password: str | None = None
@@ -171,6 +175,13 @@ class HttpConfig:
 
 
 @dataclass(frozen=True)
+class GroupInfo:
+    name: str
+    description: str = ""
+    default_environment: str | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     instances: dict[str, InstanceConfig]
     default_instance: str
@@ -180,20 +191,69 @@ class Config:
     presets: dict[str, Preset] = field(default_factory=dict)
     http: HttpConfig = HttpConfig()
     source: str = "env"
+    groups: dict[str, GroupInfo] = field(default_factory=dict)
+    default_group: str | None = None
+    default_environment: str | None = None
+    environments: dict[str, str] = field(default_factory=dict)  # declared environments -> description
 
     def instance(self, name: str | None) -> InstanceConfig:
-        key = name or self.default_instance
-        try:
-            return self.instances[key]
-        except KeyError:
-            known = ", ".join(sorted(self.instances))
-            raise ConfigError(f"unknown instance {key!r}; configured instances: {known}") from None
+        """Resolve 'payment/prod', 'payment prod', 'payment' (its default environment), 'prod' (in the
+        default group) or a plain instance name, case-insensitively."""
+        if not name:
+            return self.instances[self.default_instance]
+        if name in self.instances:
+            return self.instances[name]
+        key = name.strip().lower()
+        by_lower = {n.lower(): n for n in self.instances}
+        if key in by_lower:
+            return self.instances[by_lower[key]]
+        parts = [p for p in re.split(r"[/:\s]+", key) if p]
+        if len(parts) == 2:
+            found = self._pick(parts[0], parts[1])
+            if found:
+                return found
+        if len(parts) == 1:
+            groups = {g.lower(): g for g in self.groups}
+            if key in groups:  # a group alone: its default environment
+                group = groups[key]
+                env = self.groups[group].default_environment or self.default_environment
+                members = [i for i in self.instances.values() if i.group == group]
+                chosen = next((i for i in members if env and (i.environment or "").lower() == env.lower()), None)
+                if chosen or len(members) == 1:
+                    return chosen or members[0]
+                envs = ", ".join(sorted(f"{i.group}/{i.environment}" for i in members))
+                raise ConfigError(f"group {group!r} has several environments; name one: {envs}")
+            matches = [i for i in self.instances.values() if (i.environment or "").lower() == key]
+            if self.default_group:
+                in_default = [i for i in matches if i.group == self.default_group]
+                if in_default:
+                    return in_default[0]
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                options = ", ".join(sorted(i.name for i in matches))
+                raise ConfigError(f"environment {name!r} exists in several groups; name one: {options}")
+        known = ", ".join(sorted(self.instances))
+        close = difflib.get_close_matches(key, list(by_lower), n=3, cutoff=0.5)
+        hint = f" Did you mean: {', '.join(by_lower[c] for c in close)}?" if close else ""
+        raise ConfigError(f"unknown instance {name!r}; configured instances: {known}.{hint}")
+
+    def _pick(self, group: str, env: str) -> InstanceConfig | None:
+        for inst in self.instances.values():
+            if (inst.group or "").lower() == group and (inst.environment or "").lower() == env:
+                return inst
+        return None
 
 
 # --------------------------------------------------------------------------- helpers
 
 _TOP_KEYS = {
     "default_instance",
+    "default_group",
+    "default_environment",
+    "groups",
+    "environments",
+    "include",
     "timezone",
     "limits",
     "redaction",
@@ -217,6 +277,8 @@ _INVESTIGATION_KEYS = {
 _INSTANCE_KEYS = {
     "url",
     "description",
+    "group",
+    "environment",
     "auth",
     "token_env",
     "username",
@@ -376,6 +438,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         raise ConfigError(f"{where}.auth: expected 'token' or 'basic'")
     token = username = password = None
     unavailable = None
+    secret_env = data.get("token_env", "GRAYLOG_TOKEN") if auth == "token" else data.get("password_env")
     # A missing secret only disables this instance: a developer without a prod token can still
     # use dev and staging. Structural mistakes stay fatal.
     try:
@@ -422,11 +485,20 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     description = data.get("description", "")
     if not isinstance(description, str):
         raise ConfigError(f"{where}.description: expected a string")
+    labels = {}
+    for key in ("group", "environment"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or not re.fullmatch(_LABEL, value)):
+            raise ConfigError(f"{where}.{key}: use letters, digits, '_', '-' or '.'")
+        labels[key] = value
     return InstanceConfig(
         name=name,
         url=url,
         description=description,
         unavailable=unavailable,
+        secret_env=secret_env if isinstance(secret_env, str) else None,
+        group=labels["group"],
+        environment=labels["environment"],
         auth=auth,
         token=token,
         username=username,
@@ -563,6 +635,124 @@ def _parse_http(data: Any) -> HttpConfig:
     )
 
 
+_LABEL = r"[A-Za-z0-9_.-]+"
+# keys a group may set for all of its environments
+_GROUP_SHARED_KEYS = (_INSTANCE_KEYS - {"url", "description", "group", "environment", "token_env", "username_env",
+                      "password_env", "username"})  # fmt: skip
+_GROUP_KEYS = _GROUP_SHARED_KEYS | {"description", "default_environment", "environments"}
+_ENVIRONMENT_KEYS = _GROUP_SHARED_KEYS | {"description"}
+
+
+def _parse_environments(raw: Any) -> dict[str, dict[str, Any]]:
+    """[environments.<env>]: user-defined environments and the settings every group inherits for them."""
+    if not isinstance(raw, dict):
+        raise ConfigError("environments: expected a table of [environments.<name>]")
+    for env, data in raw.items():
+        where = f"environments.{env}"
+        if not re.fullmatch(_LABEL, env):
+            raise ConfigError(f"{where}: names may only contain letters, digits, '_', '-', '.'")
+        if not isinstance(data, dict):
+            raise ConfigError(f"{where}: expected a table")
+        _check_keys(where, data, _ENVIRONMENT_KEYS)
+    return raw
+
+
+def _with_env_defaults(inst: dict[str, Any], env_defaults: dict[str, dict[str, Any]], env: str | None) -> dict:
+    shared = {k: v for k, v in (env_defaults.get(env or "") or {}).items() if k != "description"}
+    merged = {**shared, **inst}
+    if isinstance(shared.get("group_fields"), dict) and isinstance(inst.get("group_fields"), dict):
+        merged["group_fields"] = {**shared["group_fields"], **inst["group_fields"]}
+    return merged
+
+
+def _expand_groups(
+    raw: Any, env_defaults: dict[str, dict[str, Any]] | None = None
+) -> tuple[dict[str, GroupInfo], dict[str, dict[str, Any]]]:
+    """[groups.<g>] with [groups.<g>.environments.<e>] -> instances named '<g>/<e>'.
+
+    Settings are layered: [environments.<e>] < [groups.<g>] < [groups.<g>.environments.<e>].
+    """
+    env_defaults = env_defaults or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("groups: expected a table of [groups.<name>]")
+    groups: dict[str, GroupInfo] = {}
+    instances: dict[str, dict[str, Any]] = {}
+    for group, gdata in raw.items():
+        where = f"groups.{group}"
+        if not re.fullmatch(_LABEL, group):
+            raise ConfigError(f"{where}: names may only contain letters, digits, '_', '-', '.'")
+        if not isinstance(gdata, dict):
+            raise ConfigError(f"{where}: expected a table")
+        _check_keys(where, gdata, _GROUP_KEYS)
+        envs = gdata.get("environments") or {}
+        if not isinstance(envs, dict) or not envs:
+            raise ConfigError(f"{where}: add at least one [{where}.environments.<env>] with a url")
+        desc = str(gdata.get("description", ""))
+        default_env = gdata.get("default_environment")
+        if default_env is not None and default_env not in envs:
+            raise ConfigError(f"{where}.default_environment: {default_env!r} is not one of {', '.join(envs)}")
+        groups[group] = GroupInfo(group, desc, default_env)
+        shared = {k: v for k, v in gdata.items() if k in _GROUP_SHARED_KEYS}
+        for env, edata in envs.items():
+            if not re.fullmatch(_LABEL, env):
+                raise ConfigError(f"{where}.environments.{env}: names may only contain letters, digits, '_', '-', '.'")
+            if not isinstance(edata, dict):
+                raise ConfigError(f"{where}.environments.{env}: expected a table")
+            merged = {**shared, **edata}
+            if isinstance(shared.get("group_fields"), dict) and isinstance(edata.get("group_fields"), dict):
+                merged["group_fields"] = {**shared["group_fields"], **edata["group_fields"]}
+            merged = _with_env_defaults(merged, env_defaults, env)
+            env_label = str((env_defaults.get(env) or {}).get("description") or env)
+            merged.setdefault("description", f"{desc} ({env_label})" if desc else f"{group} {env_label}")
+            merged["group"], merged["environment"] = group, env
+            instances[f"{group}/{env}"] = merged
+    return groups, instances
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    data = dict(data)
+    includes = data.pop("include", [])
+    if isinstance(includes, str):
+        includes = [includes]
+    if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
+        raise ConfigError("include: expected a path or a list of paths")
+    merged: dict[str, Any] = {}
+    for item in includes:
+        path = (base_dir / Path(item).expanduser()).resolve()
+        if path in seen:
+            raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
+        if not path.is_file():
+            raise ConfigError(f"include: file not found: {path}")
+        try:
+            with path.open("rb") as fh:
+                inner = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{path}: invalid TOML: {exc}") from None
+        merged = _deep_merge(merged, resolve_includes(inner, path.parent, (*seen, path)))
+    return _deep_merge(merged, data)
+
+
+def read_config_file(path: Path) -> dict[str, Any]:
+    """A config file with its includes applied."""
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: invalid TOML: {exc}") from None
+    return resolve_includes(data, path.parent, (path.resolve(),))
+
+
 # --------------------------------------------------------------------------- entry points
 
 
@@ -584,7 +774,7 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         http.setdefault("auth_token_env", "GRAYLOG_MCP_HTTP_TOKEN")
         data["http"] = http
 
-    if not data.get("instances") and os.environ.get("GRAYLOG_URL"):
+    if not data.get("instances") and not data.get("groups") and os.environ.get("GRAYLOG_URL"):
         inst: dict[str, Any] = {"url": os.environ["GRAYLOG_URL"]}
         if os.environ.get("GRAYLOG_TOKEN"):
             inst["token_env"] = "GRAYLOG_TOKEN"
@@ -638,11 +828,7 @@ def load_config(path: str | os.PathLike[str] | None = None, require_usable: bool
     if file_path is not None:
         if not file_path.is_file():
             raise ConfigError(f"config file not found: {file_path}")
-        try:
-            with file_path.open("rb") as fh:
-                data = tomllib.load(fh)
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(f"{file_path}: invalid TOML: {exc}") from None
+        data = read_config_file(file_path)
         source = str(file_path)
     return parse_config(data, source=source, require_usable=require_usable)
 
@@ -652,6 +838,8 @@ def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool
     in this environment (used when editing a config file for others)."""
     data = _env_overrides(data)
     _check_keys("config", data, _TOP_KEYS)
+    if "include" in data:
+        raise ConfigError("include only works in a config file (paths are relative to that file)")
 
     timezone = _check_timezone("timezone", data.get("timezone", "UTC"))
     inv_data = data.get("investigation", {})
@@ -675,30 +863,62 @@ def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool
         },
     )
 
-    raw_instances = data.get("instances")
-    if not raw_instances:
-        raise ConfigError(
-            "no Graylog instance configured: set GRAYLOG_URL and GRAYLOG_TOKEN, "
-            "or define [instances.<name>] in a config file (GRAYLOG_MCP_CONFIG or --config)"
-        )
+    raw_instances = data.get("instances") or {}
     if not isinstance(raw_instances, dict):
         raise ConfigError("instances: expected a table of [instances.<name>]")
+    env_defaults = _parse_environments(data.get("environments") or {})
+    groups, grouped = _expand_groups(data.get("groups") or {}, env_defaults)
+    raw_instances = {
+        name: _with_env_defaults(inst, env_defaults, inst.get("environment")) if isinstance(inst, dict) else inst
+        for name, inst in raw_instances.items()
+    }
+    for name in grouped:
+        if name in raw_instances:
+            raise ConfigError(f"instance {name!r} is defined both under [instances] and [groups]")
+    all_raw = {**raw_instances, **grouped}
+    if not all_raw:
+        raise ConfigError(
+            "no Graylog instance configured: set GRAYLOG_URL and GRAYLOG_TOKEN, define [instances.<name>] or "
+            "[groups.<group>.environments.<env>] in a config file, or run 'graylog-mcp init'"
+        )
     instances = {}
-    for name, inst in raw_instances.items():
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+    for name, inst in all_raw.items():
+        if not re.fullmatch(rf"{_LABEL}(/{_LABEL})?", name):
             raise ConfigError(f"instances.{name}: names may only contain letters, digits, '_', '-', '.'")
         instances[name] = _parse_instance(name, inst, defaults)
+    for inst in instances.values():
+        if inst.group and inst.group not in groups:
+            groups[inst.group] = GroupInfo(inst.group)
 
     usable = [i for i in instances.values() if i.unavailable is None]
     if not usable and require_usable:
         raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
-    default_instance = data.get("default_instance") or (usable[0] if usable else next(iter(instances.values()))).name
+    default_group = data.get("default_group")
+    default_environment = data.get("default_environment")
+    if default_group is not None and default_group not in groups:
+        raise ConfigError(f"default_group {default_group!r} is not a configured group ({', '.join(groups) or 'none'})")
+    default_instance = data.get("default_instance")
+    if not default_instance and default_group:
+        env = groups[default_group].default_environment or default_environment
+        members = [i for i in instances.values() if i.group == default_group]
+        pick = next((i for i in members if env and i.environment == env), None) or next(
+            (i for i in members if i.unavailable is None), members[0]
+        )
+        default_instance = pick.name
+    if not default_instance and default_environment:
+        match = [i for i in instances.values() if i.environment == default_environment]
+        default_instance = match[0].name if match else None
+    default_instance = default_instance or (usable[0] if usable else next(iter(instances.values()))).name
     if default_instance not in instances:
-        raise ConfigError(f"default_instance {default_instance!r} is not defined under [instances]")
+        raise ConfigError(f"default_instance {default_instance!r} is not a configured instance")
 
     return Config(
         instances=instances,
         default_instance=default_instance,
+        groups=groups,
+        default_group=default_group,
+        default_environment=default_environment,
+        environments={e: str(d.get("description", "")) for e, d in env_defaults.items()},
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),
