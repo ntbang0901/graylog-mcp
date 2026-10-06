@@ -38,6 +38,11 @@ All notable changes to this project are documented here. The format follows
 - A repository loads only its group: inside a repository listed by a group (or with `only_groups` /
   `GRAYLOG_MCP_GROUPS`), the other groups' instances are not loaded, and asking for one explains why and
   how to enable it. `list_instances` reports the `scope`; repository setup writes `only_groups`.
+- A 403 on one search API (e.g. a role without universal search) falls back to the next API (views,
+  scripting) and keeps the refused one as a last resort, for messages and aggregations.
+- `top_values` / `error_summary` on a full-text field (`message`), which OpenSearch refuses to aggregate,
+  count the newest 1000 matching messages instead, grouping variants of a log line by template, and say so
+  (`method: sampled`).
 - Admin UI redesign: sidebar navigation, an overview with health per group that runs checks on load, an
   environment drawer with inline validation, one card per group with its repositories, a sticky save bar,
   confirm dialogs, toasts, loading states, dark mode and a phone layout.

@@ -387,6 +387,14 @@ def _parse_ts(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
+TEXT_FIELDS = {"message", "full_message"}
+TEXT_FIELD_ERROR = (
+    "OpenSearch exception [type=illegal_argument_exception, reason=Text fields are not optimised for operations "
+    "that require per-document field data like aggregations and sorting, so these operations are disabled by "
+    "default. Please use a keyword field instead.]"
+)
+
+
 class FakeGraylog:
     def __init__(self, version: str = "5.0.13+083613e", now: datetime | None = None, dataset: str = "basic"):
         self.version = version
@@ -395,6 +403,7 @@ class FakeGraylog:
         self.messages = make_incident_dataset(self.now) if dataset == "incident" else make_dataset(self.now)
         self.requests: list[httpx.Request] = []
         self.system_forbidden = False
+        self.forbidden: set[str] = set()  # API paths the user's role may not call (403)
 
     @property
     def transport(self) -> httpx.MockTransport:
@@ -450,6 +459,8 @@ class FakeGraylog:
         qs = {k: v[0] for k, v in parse_qs(url.query).items()}
         if request.headers.get("authorization") is None:
             return self.json(401, {"message": "unauthorized"})
+        if path in self.forbidden:
+            return self.json(403, {"type": "ApiError", "message": "Not authorized"})
         try:
             if request.method == "GET":
                 return self.get(path, qs)
@@ -613,8 +624,12 @@ class FakeGraylog:
                     err = self._check_pivot(st)
                     if err:
                         return self.json(400, {"type": "ApiError", "message": err})
+                    if any(f in TEXT_FIELDS for _, f, _ in self._group_keys(st)):
+                        results[q["id"]] = {"query": q, "search_types": {}, "state": "FAILED", "errors": [
+                            {"description": TEXT_FIELD_ERROR, "type": "search_type", "query_id": q["id"]}]}  # fmt: skip
+                        break
                     sts[st["id"]] = self.pivot(st, hits)
-            results[q["id"]] = {"query": q, "search_types": sts, "errors": [], "state": "COMPLETED"}
+            results.setdefault(q["id"], {"query": q, "search_types": sts, "errors": [], "state": "COMPLETED"})
         return self.json(
             200,
             {
@@ -756,6 +771,8 @@ class FakeGraylog:
         tr = body["timerange"]
         hits = self.select(body.get("query", "*"), _parse_ts(tr["from"]), _parse_ts(tr["to"]), body.get("streams"))
         groups = body["group_by"]
+        if any(g["field"] in TEXT_FIELDS for g in groups):
+            return self.json(400, {"type": "ApiError", "message": TEXT_FIELD_ERROR})
         buckets: dict[tuple, list[dict]] = {}
         for m in hits:
             key = tuple(m.get(g["field"], "(Empty Value)") for g in groups)

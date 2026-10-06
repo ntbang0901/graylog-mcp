@@ -66,6 +66,7 @@ class AggResult:
     rows: list[AggRow]
     total: int | None = None  # all matching documents, grouped or not
     api: str = ""
+    sampled: int | None = None  # counted over this many messages instead of the whole range
 
     def split_missing(self, metric: str = "count()") -> tuple[list[AggRow], int]:
         """Rows sorted by count, without the bucket of documents lacking the field; plus that bucket's count."""
