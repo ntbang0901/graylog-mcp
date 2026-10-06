@@ -259,6 +259,10 @@ class Redactor:
     def value(self, value: Any) -> Any:
         if isinstance(value, str):
             return self.text(value)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            # card, phone or id numbers shipped as numeric fields
+            masked = self.text(str(value))
+            return value if masked == str(value) else masked
         if isinstance(value, list):
             return [self.value(v) for v in value]
         if isinstance(value, dict):

@@ -231,7 +231,9 @@ def _positive_int(where: str, value: Any) -> int:
     return value
 
 
-def _env(name: str, where: str) -> str:
+def _env(name: Any, where: str) -> str:
+    if not isinstance(name, str) or not name:
+        raise ConfigError(f"{where}: expected the name of an environment variable")
     value = os.environ.get(name)
     if not value:
         raise ConfigError(f"{where}: environment variable {name} is not set or empty")
@@ -422,7 +424,10 @@ def _parse_redaction(data: Any) -> RedactionConfig:
     vn_cmnd = data.get("vn_cmnd", False)
     if not isinstance(vn_cmnd, bool):
         raise ConfigError("redaction.vn_cmnd: expected true/false")
-    allow = tuple(_compile(f"redaction.allow[{i}]", p) for i, p in enumerate(data.get("allow", [])))
+    if vn_cmnd and "vn" not in packs:
+        raise ConfigError("redaction.vn_cmnd: needs the 'vn' pack in redaction.packs")
+    allow_list = _str_list("redaction.allow", data.get("allow", []))
+    allow = tuple(_compile(f"redaction.allow[{i}]", p) for i, p in enumerate(allow_list))
     patterns = []
     raw_patterns = data.get("patterns", [])
     if not isinstance(raw_patterns, list):
@@ -461,6 +466,13 @@ def _parse_stacktrace(data: Any) -> StacktraceConfig:
     )
 
 
+def _port(value: Any) -> int:
+    port = _positive_int("http.port", value)
+    if port > 65535:
+        raise ConfigError(f"http.port: {port} is not a valid TCP port")
+    return port
+
+
 def _parse_presets(data: Any) -> dict[str, Preset]:
     if not isinstance(data, dict):
         raise ConfigError("presets: expected a table of [presets.<name>]")
@@ -492,7 +504,7 @@ def _parse_http(data: Any) -> HttpConfig:
         raise ConfigError("http.path: must start with '/'")
     return HttpConfig(
         host=str(data.get("host", "127.0.0.1")),
-        port=_positive_int("http.port", data.get("port", 8000)),
+        port=_port(data.get("port", 8000)),
         path=path,
         auth_token=token,
         allowed_hosts=_str_list("http.allowed_hosts", data.get("allowed_hosts", [])),
