@@ -13,13 +13,13 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tests.fake_graylog import make_dataset
+from tests.fake_graylog import make_dataset, make_incident_dataset
 
 URL = os.environ.get("GRAYLOG_IT_URL", "http://127.0.0.1:9050").rstrip("/")
 GELF_PORT = int(os.environ.get("GRAYLOG_IT_GELF_PORT", "1" + "22" + URL.rsplit(":", 1)[1][-2:]))
@@ -95,9 +95,15 @@ def ensure_stream() -> str:
     return sid
 
 
+# The incident scenario for root_cause ends this long before seeding, outside the 1-day ranges
+# the other assertions use.
+INCIDENT_AGE = timedelta(hours=30)
+
+
 def ship(now: datetime) -> int:
-    msgs = make_dataset(now)
+    msgs = make_dataset(now) + make_incident_dataset(now - INCIDENT_AGE)
     gelf_url = URL.rsplit(":", 1)[0] + f":{GELF_PORT}/gelf"
+    client = httpx.Client(timeout=10)
     for m in msgs:
         ts = datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00")).timestamp()
         doc = {"version": "1.1", "host": m["source"], "short_message": m["message"], "timestamp": ts}
@@ -112,7 +118,7 @@ def ship(now: datetime) -> int:
             doc[f"_{key}"] = val
         for attempt in range(30):
             try:
-                httpx.post(gelf_url, json=doc, timeout=10).raise_for_status()
+                client.post(gelf_url, json=doc).raise_for_status()
                 break
             except httpx.HTTPError:
                 if attempt == 29:
@@ -125,7 +131,7 @@ def wait_indexed(expected: int, timeout: float = 300) -> None:
     deadline = time.time() + timeout
     seen = 0
     while time.time() < deadline:
-        r = api("GET", "search/universal/relative", params={"query": "*", "range": 86400, "limit": 1})
+        r = api("GET", "search/universal/relative", params={"query": "*", "range": 3 * 86400, "limit": 1})
         if r.status_code == 200:
             seen = r.json().get("total_results", 0)
         else:  # universal search removed: ask a views search instead
@@ -134,7 +140,7 @@ def wait_indexed(expected: int, timeout: float = 300) -> None:
                     {
                         "id": "q",
                         "query": {"type": "elasticsearch", "query_string": "*"},
-                        "timerange": {"type": "relative", "range": 86400},
+                        "timerange": {"type": "relative", "range": 3 * 86400},
                         "search_types": [{"id": "m", "type": "messages", "limit": 1}],
                     }
                 ]

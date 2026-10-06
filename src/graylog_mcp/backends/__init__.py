@@ -93,6 +93,8 @@ class Graylog:
         self._backends: dict[str, Any] = {}
         self._streams: list[dict[str, Any]] | None = None
         self._streams_at = 0.0
+        self._field_names: set[str] | None = None
+        self._field_names_at = 0.0
 
     # ------------------------------------------------------------------ detection
 
@@ -303,6 +305,24 @@ class Graylog:
             await self._explain(exc, query, tr, streams)
             raise
 
+    async def histogram_by(
+        self,
+        query: str,
+        tr: TimeRange,
+        streams: tuple[str, ...],
+        interval: str,
+        field: str,
+        limit: int,
+        metrics: list[Metric],
+    ) -> AggResult:
+        """Date histogram split by the values of one field (rows keyed [bucket, value])."""
+        await self.ensure()
+        try:
+            return await self._backends["views"].histogram_by(query, tr, streams, interval, field, limit, metrics)
+        except GraylogError as exc:
+            await self._explain(exc, query, tr, streams)
+            raise
+
     async def count(self, query: str, tr: TimeRange, streams: tuple[str, ...]) -> int:
         await self.ensure()
         try:
@@ -353,6 +373,12 @@ class Graylog:
                 hint = f" Did you mean: {', '.join(close)}?" if close else " Use list_streams to see stream names."
                 raise GraylogError(f"unknown stream {name!r} on instance '{self.cfg.name}'.{hint}")
         return tuple(dict.fromkeys(out))
+
+    async def field_names(self) -> set[str]:
+        if self._field_names is None or time.monotonic() - self._field_names_at > STREAM_CACHE_SECONDS:
+            self._field_names = {str(f["name"]) for f in await self.fields() if f.get("name")}
+            self._field_names_at = time.monotonic()
+        return self._field_names
 
     async def fields(self) -> list[dict[str, Any]]:
         await self.ensure()

@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, tools
+from graylog_mcp import __version__, rca, tools
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
@@ -37,6 +37,8 @@ Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
 
 Suggested investigation flow:
+0. For "what is causing this?": root_cause first. It ranks the service that broke first, with nearby
+   deploys (detect_changes) and the call graph (service_map) as evidence; then verify with the tools below.
 1. Size the problem: count_logs / log_histogram (the 'onset' field marks when a spike started).
 2. Group it: error_summary (exact counts per exception/logger/source, first/last seen, one sample).
 3. Before/after a deploy or incident start: compare_periods with split_at.
@@ -362,6 +364,93 @@ def build_server(app: App) -> MCPServer:
         "Compare two periods (default: last window vs the one before; or around split_at). Lists groups "
         "that are new, increased, gone or decreased, normalised per hour. Defaults to errors only.",
         "Compare periods",
+    )
+
+    # ------------------------------------------------------------------ root cause analysis
+
+    async def root_cause(
+        range: Annotated[str | None, Field(description="Window to analyse (the incident), e.g. '1h', '30m'")] = "1h",
+        from_time: FromTime = None,
+        to_time: ToTime = None,
+        baseline: Annotated[
+            str | None,
+            Field(description="Length of the normal period right before the window; same as the window by default"),
+        ] = None,
+        query: Annotated[str | None, Field(description="Optional Lucene filter for scope, e.g. 'env:prod'")] = None,
+        streams: Streams = None,
+        instance: Instance = None,
+    ) -> str:
+        return await call(
+            rca.root_cause,
+            range=range,
+            from_time=from_time,
+            to_time=to_time,
+            baseline=baseline,
+            query=query,
+            streams=streams,
+            instance=instance,
+        )
+
+    register(
+        root_cause,
+        "Find which service broke first and why. Compares every service's errors, traffic and latency with a "
+        "baseline, pins the first error of each to the millisecond, detects deploys/restarts/host rollouts from "
+        "the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence. "
+        "Start here for 'what is causing this incident?'.",
+        "Root cause",
+    )
+
+    async def detect_changes(
+        range: Range = "6h",
+        from_time: FromTime = None,
+        to_time: ToTime = None,
+        streams: Streams = None,
+        query: Annotated[str | None, Field(description="Optional Lucene filter for scope")] = None,
+        instance: Instance = None,
+    ) -> str:
+        return await call(
+            rca.detect_changes,
+            range=range,
+            from_time=from_time,
+            to_time=to_time,
+            streams=streams,
+            query=query,
+            instance=instance,
+        )
+
+    register(
+        detect_changes,
+        "Deploys and restarts found in the logs themselves: new values of version fields (app_version, build, "
+        "commit...), host rollouts (new sources replacing old ones), and start/stop lines. No CI/CD integration "
+        "needed.",
+        "Detect changes",
+    )
+
+    async def service_map(
+        range: Range = "1h",
+        from_time: FromTime = None,
+        to_time: ToTime = None,
+        streams: Streams = None,
+        query: Annotated[str | None, Field(description="Optional Lucene filter for scope")] = None,
+        sample: Annotated[int, Field(description="Number of traces to sample", ge=10, le=1000)] = 200,
+        instance: Instance = None,
+    ) -> str:
+        return await call(
+            rca.service_map,
+            range=range,
+            from_time=from_time,
+            to_time=to_time,
+            streams=streams,
+            query=query,
+            sample=sample,
+            instance=instance,
+        )
+
+    register(
+        service_map,
+        "Which service calls which, inferred from sampled traces (no configuration): edges with traffic, error "
+        "rate and p50/p95 latency, plus entry points.",
+        "Service map",
     )
 
     # ------------------------------------------------------------------ discovery & utilities

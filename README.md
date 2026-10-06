@@ -64,6 +64,16 @@ search endpoints that execute or check a query without saving it (`/views/search
 
 All tools are annotated `readOnlyHint` and accept an optional `instance`.
 
+**Root cause analysis**
+- `root_cause` — "what broke first, and why?" in one call. Compares every service's errors, traffic and
+  latency with a baseline window, pins each service's first error to the millisecond, detects deploys in
+  the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence.
+- `detect_changes` — deploys and restarts found in the logs themselves: a new value of a version field
+  (`app_version`, `build`, `commit`, ...), a host rollout (new sources replacing old ones), start/stop lines.
+  No CI/CD integration needed.
+- `service_map` — which service calls which, inferred from sampled traces with no configuration: edges with
+  traffic, error rate and p50/p95 latency.
+
 **Search**
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
@@ -89,6 +99,33 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `list_instances` — instances with detected version and the API in use.
 
 The server also sends the model instructions about Lucene syntax and a suggested investigation flow.
+
+## Root cause analysis
+
+Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
+Graylog 4.3, 5.0, 5.2, 6.1 and 7.0:
+
+> Most likely origin: payment (confidence high). errors began at 08:42:49.756, 182.5s after payment deployed
+> 1.3.9 -> 1.4.0 (hosts pay-1, pay-2 -> pay-3, pay-4). Also affected: gateway errors (+50ms), bank-adapter
+> traffic drop.
+
+How it gets there:
+
+1. **Signals per service.** Two pivots (errors, and traffic with average latency) split by service over the
+   incident window plus a baseline window right before it.
+2. **Onsets.** For each service, the first interval that is clearly abnormal against its own baseline
+   (median and MAD, so one noisy minute in the baseline does not hide anything) and stays abnormal: error
+   rise, traffic drop or spike, latency rise. Error onsets are then refined to the exact first error message.
+3. **Changes.** Version fields, host rollouts and start/stop lines (see `detect_changes`) in the window and
+   the 24 hours before it. A service that merely went silent is reported as a traffic drop, not a change.
+4. **Call graph.** Traces sampled per service (and from failing requests) give caller -> callee edges.
+5. **Ranking.** Earliest onset (exact timestamps break ties inside the first interval), a change shortly
+   before the onset, callers failing after it, and a dependency failing *before* it (which points further
+   down) all move the score. The result lists the reasons for each candidate, a merged timeline, the first
+   error message with its `ref`, and the next calls to verify the hypothesis.
+
+It is a ranked hypothesis with its evidence, not a certainty. Field names come from config:
+`service_fields`, `trace_fields`, `version_fields`, `latency_fields`, `change_query`.
 
 ## Version detection
 
@@ -222,6 +259,7 @@ src/graylog_mcp/
   redact.py     core rules, country packs, Luhn / IBAN checks
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
+  rca.py        root cause analysis: onsets, change detection, service map, ranking
   server.py     MCP tool declarations and model instructions
 ```
 

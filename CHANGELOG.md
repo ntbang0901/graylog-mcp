@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `root_cause`: ranks the service that broke first using per-service error/traffic/latency onsets against
+  a baseline (first error pinned to the millisecond), changes found in the logs and the inferred call graph;
+  returns a verdict, timeline, evidence and next steps.
+- `detect_changes`: deploys and restarts from version fields, host rollouts and start/stop lines.
+- `service_map`: caller -> callee graph inferred from traces sampled per service, with error rates and
+  p50/p95 latency.
+- Config: `version_fields`, `latency_fields`, `change_query`.
+- Integration scenario (bad deploy cascading through three services) verified on Graylog 4.3-7.0.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added

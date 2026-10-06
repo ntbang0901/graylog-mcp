@@ -159,6 +159,19 @@ class ViewsBackend:
         st = build_pivot(self.version, [], 0, [COUNT], interval=interval)
         return parse_pivot(await self._execute(build_search(query, tr, streams, st), st["id"]))
 
+    async def histogram_by(
+        self,
+        query: str,
+        tr: TimeRange,
+        streams: tuple[str, ...],
+        interval: str,
+        field: str,
+        limit: int,
+        metrics: list[Metric],
+    ) -> AggResult:
+        st = build_pivot(self.version, [field], limit, metrics, interval=interval)
+        return parse_pivot(await self._execute(build_search(query, tr, streams, st), st["id"]))
+
     async def count(self, query: str, tr: TimeRange, streams: tuple[str, ...]) -> int:
         st = build_pivot(self.version, [], 0, [COUNT])
         result = parse_pivot(await self._execute(build_search(query, tr, streams, st), st["id"]))

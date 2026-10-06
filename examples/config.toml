@@ -40,6 +40,11 @@ error_query = "level:<=3"            # e.g. "level:<=3 OR level:(ERROR OR FATAL)
 default_fields = ["timestamp", "source", "level", "message"]
 message_lookup_range = "30d"         # get_message with a bare id searches this far back
 group_fields = { exception = "exception_class", logger = "logger_name", source = "source" }
+# root_cause / detect_changes: the first existing field of each list is used
+version_fields = ["app_version", "version", "build", "git_commit", "image_tag"]
+latency_fields = ["took_ms", "duration_ms", "elapsed_ms", "response_time_ms"]
+# lines that mark a process start/stop or a config reload
+change_query = '(message:Started AND message:"running for") OR "Shutting down" OR "Graceful shutdown" OR SIGTERM'
 
 [instances.prod]
 url = "https://graylog.example.com"

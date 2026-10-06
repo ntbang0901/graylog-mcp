@@ -108,8 +108,23 @@ def _eq(actual: Any, expected: str, phrase: bool = False) -> bool:
     return phrase and expected.lower() in a.lower()
 
 
+_FIELD_GROUP = re.compile(r'((?:[^\s()"\\:]|\\.)+):\(([^()]*)\)')
+
+
+def _expand_field_groups(q: str) -> str:
+    """field:(a OR "b c") -> (field:a OR field:"b c")"""
+
+    def expand(m: re.Match[str]) -> str:
+        field, inner = m.group(1), m.group(2)
+        parts = re.findall(r'"(?:[^"\\]|\\.)*"|\S+', inner)
+        return "(" + " ".join(p if p in ("AND", "OR", "NOT") else f"{field}:{p}" for p in parts) + ")"
+
+    return _FIELD_GROUP.sub(expand, q)
+
+
 def compile_query(q: str):
-    toks = _tokens(q or "*") or [("term", "*")]
+    q = _expand_field_groups(q or "*")
+    toks = _tokens(q) or [("term", "*")]
     pos = 0
 
     def peek():
@@ -273,6 +288,98 @@ def make_dataset(now: datetime) -> list[dict[str, Any]]:
     return msgs
 
 
+INCIDENT = {
+    "deploy_before_end": timedelta(minutes=15),
+    "onset_before_end": timedelta(minutes=12),
+    "length": timedelta(minutes=150),
+}
+
+
+def make_incident_dataset(end: datetime) -> list[dict[str, Any]]:
+    """2.5 hours of traffic ending at ``end`` with a bad deploy of 'payment'.
+
+    * gateway -> payment -> bank-adapter (checkout, every 10s) and
+      gateway -> orders -> postgres (orders, every 30s), each request a trace;
+    * payment 1.3.9 on pay-1/pay-2 is replaced by 1.4.0 on pay-3/pay-4 15 minutes before the end
+      (shutdown and Spring Boot start lines included);
+    * 3 minutes later every checkout fails in payment ("connection refused bank-v2.internal"),
+      gateway answers 502 about 50ms later, and bank-adapter stops receiving requests;
+    * orders/postgres stay healthy apart from a steady trickle of deadlocks.
+    """
+    msgs: list[dict[str, Any]] = []
+    start = end - INCIDENT["length"]
+    deploy = end - INCIDENT["deploy_before_end"]
+    onset = end - INCIDENT["onset_before_end"]
+
+    def add(ts: datetime, service: str, source: str, message: str, level: int = 6, **fields: Any) -> None:
+        if ts >= end:
+            return
+        mid = str(uuid.uuid5(uuid.NAMESPACE_OID, f"inc-{ts.isoformat()}-{source}-{len(msgs)}"))
+        msgs.append(
+            {
+                "_id": mid,
+                "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}Z",
+                "streams": [ALL],
+                "service": service,
+                "source": source,
+                "level": level,
+                "message": message,
+                "scenario": "incident",
+                **fields,
+            }
+        )
+
+    ms = lambda n: timedelta(milliseconds=n)  # noqa: E731
+    n = 0
+    t = start
+    while t < end:
+        new = t >= deploy
+        pay = f"pay-{3 + n % 2}" if new else f"pay-{1 + n % 2}"
+        ver = "1.4.0" if new else "1.3.9"
+        tid = f"co-{n}"
+        add(t, "gateway", "gw-1", "POST /api/checkout received", trace_id=tid, app_version="5.2.0")
+        add(t + ms(20), "payment", pay, f"charging order {n}", trace_id=tid, app_version=ver)
+        if t < onset:
+            add(t + ms(120), "bank-adapter", "bank-1", "authorize ok", trace_id=tid, app_version="2.0.1", took_ms=90)
+            add(t + ms(300), "payment", pay, "charge ok", trace_id=tid, app_version=ver, took_ms=280)
+            add(
+                t + ms(350), "gateway", "gw-1", "POST /api/checkout 200", trace_id=tid, app_version="5.2.0", took_ms=350
+            )
+        else:
+            add(
+                t + ms(2020),
+                "payment",
+                pay,
+                "bank call failed: connection refused bank-v2.internal:443",
+                level=3,
+                trace_id=tid,
+                app_version=ver,
+                exception_class="java.net.ConnectException",
+                took_ms=2000,
+            )
+            add(t + ms(2070), "gateway", "gw-1", "POST /api/checkout 502", level=3, trace_id=tid,
+                app_version="5.2.0", took_ms=2070)  # fmt: skip
+        if n % 3 == 0:
+            oid = f"or-{n}"
+            add(t + ms(5000), "gateway", "gw-1", "GET /api/orders received", trace_id=oid, app_version="5.2.0")
+            add(t + ms(5010), "orders", "ord-1", "loading orders", trace_id=oid, app_version="3.1.0")
+            add(t + ms(5020), "postgres", "db-1", "query ok", trace_id=oid, took_ms=6)
+            add(t + ms(5040), "orders", "ord-1", "orders loaded", trace_id=oid, app_version="3.1.0", took_ms=30)
+            add(t + ms(5050), "gateway", "gw-1", "GET /api/orders 200", trace_id=oid, app_version="5.2.0", took_ms=50)
+        if n % 120 == 60:
+            add(t + ms(7000), "postgres", "db-1", "deadlock detected", level=3, exception_class="PSQLException")
+        n += 1
+        t += timedelta(seconds=10)
+    for host in ("pay-1", "pay-2"):
+        add(deploy - timedelta(seconds=5), "payment", host, "Graceful shutdown initiated, SIGTERM received",
+            app_version="1.3.9")  # fmt: skip
+    for host in ("pay-3", "pay-4"):
+        add(deploy - ms(500), "payment", host, "Started PaymentApplication in 4.2 seconds (process running for 5.1)",
+            app_version="1.4.0")  # fmt: skip
+    msgs.sort(key=lambda m: m["timestamp"], reverse=True)
+    return msgs
+
+
 # --------------------------------------------------------------------------- emulator
 
 
@@ -281,11 +388,11 @@ def _parse_ts(s: str) -> datetime:
 
 
 class FakeGraylog:
-    def __init__(self, version: str = "5.0.13+083613e", now: datetime | None = None):
+    def __init__(self, version: str = "5.0.13+083613e", now: datetime | None = None, dataset: str = "basic"):
         self.version = version
         self.major_minor = tuple(int(x) for x in version.split("+")[0].split(".")[:2])
         self.now = now or datetime.now(UTC)
-        self.messages = make_dataset(self.now)
+        self.messages = make_incident_dataset(self.now) if dataset == "incident" else make_dataset(self.now)
         self.requests: list[httpx.Request] = []
         self.system_forbidden = False
 
@@ -539,6 +646,9 @@ class FakeGraylog:
             return max(vals)
         if t == "latest":
             return vals[0]
+        if t == "avg":
+            nums = [float(v) for v in vals if isinstance(v, int | float)]
+            return sum(nums) / len(nums) if nums else None
         raise ValueError(t)
 
     def pivot(self, st: dict, hits: list[dict]) -> dict:
@@ -567,7 +677,10 @@ class FakeGraylog:
             buckets.setdefault(tuple(key), []).append(m)
         items = list(buckets.items())
         values_groups = [g for g in st.get("row_groups", []) if g["type"] == "values"]
-        if values_groups:
+        has_time = any(g["type"] == "time" for g in st.get("row_groups", []))
+        if values_groups and has_time:
+            items.sort(key=lambda kv: kv[0])  # per-bucket terms: keep every bucket
+        elif values_groups:
             items.sort(key=lambda kv: -len(kv[1]))
             items = items[: values_groups[0].get("limit", 10)]
         else:
