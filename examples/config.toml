@@ -1,0 +1,77 @@
+# graylog-mcp configuration example.
+# Point the server at it with --config path/to/config.toml or GRAYLOG_MCP_CONFIG.
+# Secrets are never written here: name the environment variable that holds them.
+
+default_instance = "prod"
+timezone = "Asia/Ho_Chi_Minh"        # naive times in tool calls and all output use this zone
+
+[limits]
+default_limit = 50                   # messages per search when the model does not say
+max_limit = 500
+max_value_chars = 2000               # per field value
+max_message_chars = 20000            # get_message
+max_output_chars = 24000             # per tool call (~6-8k tokens)
+max_groups = 100
+sample_concurrency = 4
+
+[redaction]
+packs = ["vn"]                       # vn (phone, CCCD), us (SSN), eu (IBAN), uk (NINO), in (Aadhaar, PAN)
+vn_cmnd = false                      # also mask bare 9-digit numbers (old CMND); noisy
+sensitive_fields = ["national_id"]   # extra field names whose whole value is masked
+exclude_fields = ["token_count"]     # field names never masked by name
+allow = ['^noreply@example\.com$']   # values that must never be masked (full match)
+
+[[redaction.patterns]]
+name = "order_token"
+pattern = "OTK-[A-Z0-9]{16}"
+replacement = "[ORDER_TOKEN]"
+
+[stacktrace]
+app_packages = ["com.example", "/srv/myapp/"]   # frames containing these are kept
+max_frames = 8                       # frames kept per trace when app_packages is empty
+max_app_frames = 25
+
+# Defaults for every instance; each [instances.x] may override any of these keys.
+[investigation]
+trace_fields = ["trace_id", "traceId", "correlation_id", "request_id", "X-Request-ID"]
+service_fields = ["service", "application_name", "source"]
+# Level is a syslog number when shipped via GELF, a string with some shippers:
+error_query = "level:<=3"            # e.g. "level:<=3 OR level:(ERROR OR FATAL)"
+default_fields = ["timestamp", "source", "level", "message"]
+message_lookup_range = "30d"         # get_message with a bare id searches this far back
+group_fields = { exception = "exception_class", logger = "logger_name", source = "source" }
+
+[instances.prod]
+url = "https://graylog.example.com"
+token_env = "GRAYLOG_PROD_TOKEN"     # access token of a read-only user (Reader role + stream permissions)
+ca_bundle = "/etc/ssl/certs/internal-ca.pem"
+timeout = 30
+
+[instances.staging]
+url = "https://graylog-staging.example.com"
+auth = "basic"
+username = "readonly"
+password_env = "GRAYLOG_STAGING_PASSWORD"
+verify_tls = false
+proxy = "http://proxy.example.com:3128"
+error_query = "level:ERROR OR level:FATAL"
+# message_api = "auto"               # auto | universal | views | scripting
+# aggregation_api = "auto"           # auto | views | scripting
+
+[presets.payment_errors]
+description = "Errors from the payment services, grouped by exception"
+tool = "error_summary"
+args = { query = "service:payment", range = "1h" }
+
+[presets.slow_requests]
+description = "Requests slower than 2s"
+tool = "search_logs"
+args = { query = "took_ms:>2000", range = "30m", fields = ["timestamp", "source", "path", "took_ms"] }
+
+# Only used with --transport streamable-http
+[http]
+host = "127.0.0.1"
+port = 8000
+path = "/mcp"
+auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"
+# allowed_hosts = ["mcp.example.com"]  # enables Host header (DNS rebinding) checks

@@ -1,0 +1,230 @@
+# graylog-mcp
+
+A read-only [Model Context Protocol](https://modelcontextprotocol.io) server for **Graylog 4.x to 7.x**.
+It lets an LLM investigate incidents on its own: search logs, follow one request across services,
+group errors with exact counts, and find when a problem started. Sensitive data is masked
+before any log line leaves the machine.
+
+Everything site-specific (trace field names, redaction rules, timezone, application packages,
+error query) lives in configuration, not in code.
+
+## How it differs from other Graylog MCP servers
+
+|                    | Typical community server                         | graylog-mcp                                                    |
+|--------------------|--------------------------------------------------|----------------------------------------------------------------|
+| Graylog versions   | one range only (4.x/5.0 *or* 5.2+)               | detects the version, works on 4.x through 7.x                  |
+| Statistics         | raw messages, or counting over a sample          | exact counts and groupings computed by Graylog                 |
+| Safety             | no masking                                       | masks by field name, regex and Luhn; per-country packs         |
+| LLM context        | dumps raw log lines                              | folds stack traces, groups repeated lines, hard size cap       |
+| Writes to Graylog  | some create saved searches                       | never writes anything                                          |
+
+## Quick start
+
+Two environment variables are enough:
+
+```bash
+export GRAYLOG_URL=https://graylog.example.com
+export GRAYLOG_TOKEN=<access token of a read-only user>
+uvx graylog-mcp --check      # connects, prints the detected version and APIs, exits
+```
+
+Claude Code:
+
+```bash
+claude mcp add graylog --env GRAYLOG_URL=https://graylog.example.com --env GRAYLOG_TOKEN=... -- uvx graylog-mcp
+```
+
+Claude Desktop / any MCP client (`mcpServers` JSON):
+
+```json
+{
+  "mcpServers": {
+    "graylog": {
+      "command": "uvx",
+      "args": ["graylog-mcp"],
+      "env": {
+        "GRAYLOG_URL": "https://graylog.example.com",
+        "GRAYLOG_TOKEN": "...",
+        "GRAYLOG_TIMEZONE": "Asia/Ho_Chi_Minh",
+        "GRAYLOG_REDACTION_PACKS": "vn"
+      }
+    }
+  }
+}
+```
+
+### The Graylog user
+
+Create a dedicated user with the **Reader** role and read access to the streams the model may see,
+then generate an access token for it. The server only sends `GET` requests, plus `POST` to the four
+search endpoints that execute or check a query without saving it (`/views/search/sync`, `/search/messages`,
+`/search/aggregate`, `/search/validate`). Any other method or path is refused inside the client before a request is built.
+
+## Tools
+
+All tools are annotated `readOnlyHint` and accept an optional `instance`.
+
+**Search**
+- `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
+  streams by name or id, field selection, sort, paging; repeated lines grouped by default.
+- `count_logs` — exact number of matching messages.
+- `get_message` — one message with all fields, by `index/id` ref.
+
+**Investigate**
+- `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
+  streams (falls back to full text); returns a cross-service timeline, per-service steps with durations
+  and the first error.
+- `context_around` — messages within ±N seconds of a message, limited to the same source, the same
+  streams or everything.
+- `error_summary` — groups errors by exception, logger, source or any field: exact count, first and
+  last seen, one sample message per group.
+- `log_histogram` — counts over time with automatic interval, peak bucket and the onset of a spike.
+- `top_values` — top N values of a field with exact counts.
+- `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
+  disappeared or shrank, normalised per hour.
+
+**Discover**
+- `list_streams`, `list_fields` — so the model writes queries with real names.
+- `list_presets`, `run_preset` — named queries you define in the config.
+- `list_instances` — instances with detected version and the API in use.
+
+The server also sends the model instructions about Lucene syntax and a suggested investigation flow.
+
+## Version detection
+
+At startup the server reads `GET /api/system` (falling back to `GET /api/` when the token may not read
+system info), picks the APIs below and caches the result; `list_instances` shows the choice. An API that
+answers 404/405/501 is dropped and the next one is used.
+
+| Version   | Messages                                    | Aggregations                                   |
+|-----------|---------------------------------------------|------------------------------------------------|
+| 4.x – 5.1 | `GET /search/universal/absolute` → views     | `POST /views/search/sync` (pivot)              |
+| 5.2 – 6.x | universal → views → Scripting API            | `POST /search/aggregate` → views pivot         |
+| 7.x       | same as 5.2+                                 | same as 5.2+                                   |
+
+Pivot requests use `"field": "x"` on 4.x and `"fields": [...]` from 5.0. Histograms always use a views
+pivot with a time grouping. Query syntax errors and zero-result queries are checked with
+`POST /search/validate` so the model gets the actual problem ("incomplete query", "unknown field: sevrity")
+instead of a bare "all shards failed". Graylog 7 ships its own MCP endpoint; this server is still useful
+there for masking and compact output.
+
+Every tool, each API path forced on its own (universal, views, Scripting API), the read-only guarantee and
+the no-leak check pass against real containers of:
+
+| Graylog      | Search backend   | Result |
+|--------------|------------------|--------|
+| 4.3.15       | OpenSearch 1.3   | pass   |
+| 5.0.13       | OpenSearch 2.15  | pass   |
+| 5.2.12       | OpenSearch 2.15  | pass   |
+| 6.1.16       | OpenSearch 2.15  | pass   |
+| 7.0.13       | OpenSearch 2.15  | pass   |
+
+Behaviour observed on real servers and handled: 5.x+ pivots return an `(Empty Value)` bucket for documents
+without the grouped field (reported separately as `without_field`); the Scripting API returns `"-"` for
+missing fields and no message index; invalid queries come back as HTTP 500 from universal search on
+4.x-5.x; universal search is still present in 7.0.
+
+## Output shaping
+
+- **Masking** (before anything else):
+  - always on: sensitive field names (`password`, `token`, `secret`, `authorization`, `cookie`, ...),
+    emails, `Bearer`/`Basic` credentials, JWTs, `key=value` / `"key": "value"` secrets, credentials in
+    URLs, PEM private keys, card numbers that pass the Luhn check;
+  - packs enabled in config: `vn` (phone numbers, 12-digit CCCD, optional 9-digit CMND), `us` (SSN),
+    `eu` (IBAN with checksum), `uk` (NINO), `in` (Aadhaar, PAN);
+  - your own regexes, plus an allow-list and excluded field names to avoid false positives.
+  Grouping keys (`top_values`, `error_summary`) are masked too.
+- **Stack traces** (Java/Kotlin, Python, .NET, Go, Node): exception lines, `Caused by` blocks and frames
+  from `app_packages` are kept; the rest becomes `… N frames`. Without `app_packages`, the first N frames
+  are kept (the last N for Python).
+- **Repeated lines**: numbers, UUIDs, hex, IPs and timestamps are normalised and identical templates
+  grouped with `count`, `first`, `last` and one sample.
+- **Size**: per-value and per-call character caps, with `truncated` and `next_offset`.
+- **Time**: shown in the configured timezone with its offset. Each line carries `ref: index/id` for
+  follow-up calls.
+- **Errors**: clear messages for 401, 403, query syntax errors (with position), timeouts, unknown streams
+  (with suggestions) and unsupported versions.
+
+## Configuration
+
+Environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `GRAYLOG_URL`, `GRAYLOG_TOKEN` | single instance with token auth |
+| `GRAYLOG_USERNAME`, `GRAYLOG_PASSWORD` | basic auth instead of a token |
+| `GRAYLOG_VERIFY_TLS`, `GRAYLOG_CA_BUNDLE`, `GRAYLOG_PROXY` | TLS and proxy for the env-only instance |
+| `GRAYLOG_TIMEZONE` | display timezone and zone for naive times (default UTC) |
+| `GRAYLOG_REDACTION_PACKS` | e.g. `vn,eu` |
+| `GRAYLOG_APP_PACKAGES` | e.g. `com.acme,/srv/app/` |
+| `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
+| `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
+
+A TOML file (`--config` or `GRAYLOG_MCP_CONFIG`, else `~/.config/graylog-mcp/config.toml`) covers the
+rest: several instances, token or basic auth, TLS verification and CA bundle, proxy, timezone,
+`trace_fields`, `error_query` (because `level` is a syslog number or a string depending on how logs are
+shipped), `app_packages`, redaction packs and custom patterns, presets and limits. Secrets are never
+written in the file; it names the environment variable that holds them (`token_env`, `password_env`).
+The file is validated at startup and any mistake (unknown key, bad regex, unknown timezone, missing
+secret) stops the server with a precise message.
+
+See [`examples/config.toml`](examples/config.toml) for every option.
+
+## Shared HTTP server and Docker
+
+stdio is the default. For one server shared by a team, use streamable HTTP with its own bearer token:
+
+```bash
+GRAYLOG_MCP_HTTP_TOKEN=$(openssl rand -hex 32) graylog-mcp --transport streamable-http --host 0.0.0.0 --port 8000
+```
+
+The server refuses to listen on a non-loopback address without a token (unless `--allow-no-auth` is
+given, e.g. behind an authenticating proxy). `/healthz` is open; the MCP endpoint is `/mcp`.
+
+```bash
+docker build -t graylog-mcp .
+docker run -p 8000:8000 \
+  -e GRAYLOG_URL=https://graylog.example.com -e GRAYLOG_TOKEN=... \
+  -e GRAYLOG_MCP_HTTP_TOKEN=... graylog-mcp
+```
+
+## Testing
+
+```bash
+uv sync
+uv run pytest              # unit + contract tests (no network)
+uv run ruff check && uv run ruff format --check
+```
+
+- **Unit tests**: masking (including values that must *not* be masked), stack traces in five languages,
+  line grouping, time parsing, pivot building and parsing, config validation, HTTP auth.
+- **Contract tests**: every tool against an in-memory Graylog (`tests/fake_graylog.py`, served through
+  `httpx.MockTransport`) that reproduces the response shapes of 4.3, 5.0, 5.2, 6.1 and 7.0, with planted
+  sensitive values that must never reach the output, an assertion that no request could change state,
+  and a size budget per call.
+- **Integration tests**: `tests/integration/docker-compose.yml` starts Graylog 4.3, 5.0, 5.2, 6.1 and 7.0,
+  each with MongoDB and OpenSearch; `seed.py` ships the same GELF dataset, then every tool runs against it:
+
+  ```bash
+  tests/integration/run.sh v50      # or v43 v52 v61 v70
+  ```
+
+  CI runs the whole matrix weekly and on changes to the backends.
+
+## Project layout
+
+```
+src/graylog_mcp/
+  config.py     environment + TOML, validated at startup (fail fast)
+  client.py     async httpx client: auth, TLS, proxy, read-only guard, HTTP error mapping
+  backends/     version detection and API selection: universal.py, views.py, scripting.py
+  timerange.py  time parsing, display, interval selection
+  redact.py     core rules, country packs, Luhn / IBAN checks
+  shaping.py    field selection, truncation, stack traces, line grouping, output budget
+  tools.py      tool implementations
+  server.py     MCP tool declarations and model instructions
+```
+
+## License
+
+MIT
