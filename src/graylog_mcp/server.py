@@ -9,10 +9,11 @@ from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, tools
+from graylog_mcp import __version__, rca, scan, tools
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
@@ -47,6 +48,21 @@ asks about another group, say it is not loaded here and how to enable it, as the
 
 Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
+
+Scanning (for "is anything wrong?", "scan for errors", "check X", a health check):
+- One scan call, not a loop of searches: it runs every rule concurrently with exact counts against a baseline
+  and returns only what fired, most severe first. Triage fast with min_severity='high'.
+- A specific need becomes ad hoc rules in that same call: checks=[{'name': ..., 'query': ...} + a condition]:
+  threshold (fires when count > N; 0 = any occurrence is bad), growth (the rate grew N times; for things that
+  normally happen, with min_count against noise), or group_by + new_groups (a value the baseline never saw).
+  Put several checks in one call; rules=[names or tags] runs configured rules (list_scan_rules).
+- Accurate queries: quoted phrases ("Connection refused") and field:value with real field names (list_fields);
+  no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.
+- Window from the question; baseline='24h' when the window is short or traffic is spiky.
+- Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call
+  it healthy). Report severity, count vs baseline, trend, first seen and the sample's ref.
+- Then drill into a finding with its 'query': log_histogram (when), error_summary (what), search_logs (lines);
+  several findings at once: root_cause.
 
 Suggested investigation flow:
 0. For "what is causing this?": root_cause first. It ranks the service that broke first, with nearby
@@ -388,6 +404,83 @@ def build_server(app: App) -> MCPServer:
         "Compare periods",
     )
 
+    # ------------------------------------------------------------------ scan
+
+    async def scan_logs(
+        range: Annotated[
+            str | None, Field(description="Window to scan, ending now (or at to_time): '15m', '1h', '24h'")
+        ] = "1h",
+        from_time: FromTime = None,
+        to_time: ToTime = None,
+        baseline: Annotated[
+            str | None,
+            Field(
+                description="Length of the normal period right before the window, to compare rates with; same as "
+                "the window by default. A longer one ('24h') is steadier for spiky traffic"
+            ),
+        ] = None,
+        rules: Annotated[
+            list[str] | None,
+            Field(
+                description="Rule names or tags from list_scan_rules (e.g. ['errors'], ['connectivity', 'database']); "
+                "all rules when omitted, unless checks is given (then add 'all' to run them too)"
+            ),
+        ] = None,
+        checks: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description="Ad hoc rules for what the user asks to scan, same keys as a configured rule: "
+                "{'name': 'declined', 'query': 'message:declined', 'threshold': 0} fires on any match; "
+                "{'query': '...', 'growth': 2, 'min_count': 10} on a doubled rate; "
+                "{'errors_only': true, 'group_by': 'exception', 'new_groups': true} on new error groups. "
+                "Optional keys: severity, exclude, baseline, group_by"
+            ),
+        ] = None,
+        query: Annotated[
+            str | None, Field(description="Extra Lucene filter applied to every rule, e.g. 'env:prod'")
+        ] = None,
+        streams: Streams = None,
+        min_severity: Annotated[
+            str, Field(description="Run only rules at least this severe: critical | high | medium | low")
+        ] = "low",
+        samples: Annotated[bool, Field(description="Attach one sample message per finding")] = True,
+        instance: Instance = None,
+    ) -> str:
+        return await call(
+            scan.scan,
+            range=range,
+            from_time=from_time,
+            to_time=to_time,
+            baseline=baseline,
+            rules=rules,
+            checks=checks,
+            query=query,
+            streams=streams,
+            min_severity=min_severity,
+            samples=samples,
+            instance=instance,
+        )
+
+    scan_logs.__name__ = "scan"
+    register(
+        scan_logs,
+        "Health scan in one call: runs every scan rule (crashes, resource exhaustion, error spikes, new error "
+        "types, 5xx, timeouts/connectivity, database, auth failures, plus the rules in the config) concurrently "
+        "with exact counts against a baseline, and returns only what fired, most severe first, with the query, "
+        "top groups and a sample. Start here for 'is anything wrong?', 'scan for errors', 'check X'. "
+        "For a specific need pass rules (names/tags) or checks (ad hoc rules).",
+        "Scan",
+    )
+
+    async def list_scan_rules(instance: Instance = None) -> str:
+        return await call(scan.list_scan_rules, instance=instance)
+
+    register(
+        list_scan_rules,
+        "Scan rules (built-in and configured) with their query, condition, severity and tags.",
+        "List scan rules",
+    )
+
     # ------------------------------------------------------------------ root cause analysis
 
     async def root_cause(
@@ -523,6 +616,35 @@ def build_server(app: App) -> MCPServer:
         "Configured Graylog instances with detected version, the API used for messages and aggregations, "
         "and active redaction rules.",
         "List instances",
+    )
+
+    # ------------------------------------------------------------------ prompts
+
+    def scan_prompt(
+        target: Annotated[
+            str, Field(description="What to scan: a service, a symptom, an environment, or empty for everything")
+        ] = "",
+        range: Annotated[str, Field(description="Window, e.g. 15m, 1h, 24h")] = "1h",
+    ) -> str:
+        focus = f" Focus on: {target}." if target.strip() else ""
+        return (
+            f"Scan the logs of the last {range} for problems.{focus}\n"
+            "1. Call scan once (instance from list_instances if the request names an environment). If the request "
+            "is about something specific, add ad hoc checks for it in the same call.\n"
+            "2. For each finding, most severe first: one log_histogram or error_summary with the finding's query "
+            "to confirm when it started and what it is.\n"
+            "3. Answer with a table: severity, rule, count vs baseline, trend, first seen, sample ref; then the "
+            "rules checked and quiet, and any skipped rule (not checked, not healthy). No speculation beyond the "
+            "evidence."
+        )
+
+    server.add_prompt(
+        Prompt.from_function(
+            scan_prompt,
+            name="scan",
+            title="Scan logs",
+            description="Scan the logs for problems (all rules, or a target) and report the findings",
+        )
     )
 
     return server

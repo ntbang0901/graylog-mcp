@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
-from graylog_mcp import tools
+from graylog_mcp import scan, tools
 from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.config import parse_config
 from graylog_mcp.tools import App
@@ -126,6 +126,20 @@ async def test_every_tool(app):
     if ref:
         around = await tools.context_around(app, ref, seconds=5, scope="stream")
         assert any(m.get("anchor") for m in around["messages"])
+
+    health = await scan.scan(app, range="1d", baseline="1h")
+    assert_clean(health)
+    assert not health.get("skipped"), health
+    timeouts = await scan.scan(
+        app,
+        range="1d",
+        checks=[
+            {"name": "timeouts", "query": '"upstream timeout"', "severity": "high"},
+            {"name": "timeouts_but_pay2", "query": '"upstream timeout"', "exclude": "source:pay-2"},
+        ],
+    )
+    counts = {f["rule"]: f["count"] for f in timeouts["findings"]}
+    assert counts == {"timeouts": 25, "timeouts_but_pay2": 16}, timeouts
 
     fields = await tools.list_fields(app, contains="trace")
     assert any(f.startswith("trace_id") for f in fields["fields"]), fields
