@@ -34,9 +34,11 @@ async def test_default_scan_on_every_version(make_app, version):
         "value": "java.net.SocketTimeoutException",
         "status": "new",
     }
-    # the steady deadlocks (same rate before and during the window) do not fire
+    # the steady deadlocks (same count before and during the window, a smaller share of the busier traffic)
     quiet = {q["rule"]: q for q in res["quiet"]}
-    assert quiet["database"]["trend"] == "steady"
+    assert quiet["database"]["count"] == quiet["database"]["baseline"] == 3
+    assert quiet["database"]["trend"] == "falling"
+    assert found["connectivity"]["confidence"] > 0.99 and "share" in found["connectivity"]
     assert {"crash", "resource_exhaustion"} <= set(quiet)
     # most severe first, and the verdict names the top finding
     assert res["verdict"].startswith(f"{len(found)} of {len(BUILTIN_SCAN_RULES)} rules fired")
@@ -139,6 +141,17 @@ def test_rule_validation():
         parse_scan_rule("r", {"query": "x", "threshold": -1})
     with pytest.raises(ConfigError, match="baseline"):
         parse_scan_rule("r", {"query": "x", "baseline": "soon"})
+    with pytest.raises(ConfigError, match="per_traffic compares growth"):
+        parse_scan_rule("r", {"query": "x", "per_traffic": True})
+    with pytest.raises(ConfigError, match="not both"):
+        parse_scan_rule("r", {"query": "x", "growth": 2, "baseline": "1h", "baseline_shift": "1d"})
+    with pytest.raises(ConfigError, match="confidence"):
+        parse_scan_rule("r", {"query": "x", "growth": 2, "confidence": 1})
+    with pytest.raises(ConfigError, match="baseline_periods: at most"):
+        parse_scan_rule("r", {"query": "x", "growth": 2, "baseline_shift": "1d", "baseline_periods": 11})
+    # a seasonal override of a built-in replaces its contiguous baseline
+    seasonal = parse_scan_rule("new_error_types", {"baseline_shift": "7d"}, BUILTIN_SCAN_RULES["new_error_types"])
+    assert seasonal.baseline is None and seasonal.baseline_shift == "7d"
     assert parse_scan_rule("r", {"query": "x"}).threshold == 0  # a plain query fires on any match
     assert parse_scan_rule("r", {"errors_only": True, "growth": 2}).threshold is None
     with pytest.raises(ConfigError, match=r"scan\.disable: unknown rule"):
@@ -156,6 +169,8 @@ async def test_scan_via_mcp_and_preset(make_app):
     server = build_server(app)
     names = {t.name for t in await server.list_tools()}
     assert {"scan", "list_scan_rules"} <= names
+    seasonal = await server.call_tool("scan", {"range": "1h", "baseline_shift": "1d", "rules": ["error_spike"]})
+    assert "median of 3 periods" in json.loads(seasonal.content[0].text)["baseline"]
     result = await server.call_tool("scan", {"range": "1h", "rules": ["error_spike", "crash"]})
     payload = json.loads(result.content[0].text)
     assert set(by_rule(payload)) == {"error_spike"} and payload["checked"] == 2

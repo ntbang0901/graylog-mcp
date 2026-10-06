@@ -135,19 +135,36 @@ fires when:
 | Condition | Fires when | Use it for |
 |-----------|-----------|------------|
 | `threshold = N` | more than N matches in the window (`0`: any match) | things that should never happen: crashes, OOM, data corruption |
-| `growth = X`, `min_count = M` | the rate per hour is X times the baseline's (or the baseline had none), with at least M matches | things that always happen a little: timeouts, 5xx, auth failures |
+| `growth = X`, `min_count = M` | the rate is X times the baseline's (or the baseline had none), with at least M matches, and the rise is significant | things that always happen a little: timeouts, 5xx, auth failures |
 | `group_by` + `new_groups = true` | a value of the field (exception, logger, ...) appears that the baseline never saw, at least `min_count` times | new kinds of errors after a deploy |
 
-The baseline is the period right before the window, as long as the window unless the call (`baseline="24h"`) or
-the rule says otherwise. Every rule costs two exact counts, run concurrently (`limits.scan_concurrency`); groups
+What keeps false alarms out:
+
+- **Share of traffic** (`per_traffic = true`): the rule compares matches / traffic instead of matches per
+  hour, so errors that triple because a sale tripled the traffic stay quiet, and a rise from 1% to 10% of a busy
+  hour fires. Traffic is every message in the scan's scope, or `traffic_query` (e.g. `path:/checkout` for checkout
+  errors). The built-in error, 5xx, connectivity and database rules use it.
+- **Seasonal baseline** (`baseline_shift = "1d"` or `"7d"`, `baseline_periods = 3`): the window is compared with
+  the same window one day (week) earlier, three times; the period with the median rate is the reference, so the
+  morning peak is compared with yesterday's morning peak, and one bad day among the three changes nothing.
+  Periods without any data (older than the index retention) are dropped and the finding says so
+  (`baseline_note`). By default the baseline is the period right before the window, as long as the window, or
+  `baseline = "24h"`.
+- **Significance**: a growth fires only if it is unlikely to be chance, by an exact conditional binomial test of
+  the window's count against the reference period's (the standard test comparing two Poisson rates). 3 errors
+  then 7 (x2.3) stays quiet with a `note` saying so; 400 then 600 (x1.5, with `growth = 1.4`) fires. Each growth
+  result carries its `confidence`; the rule's `confidence` (default 0.99) is the bar.
+
+Every rule costs two exact counts, plus one per extra baseline period and for traffic; identical counts are made
+once per scan (rules share the error query, the traffic) and run concurrently (`limits.scan_concurrency`). Groups
 and one sample are fetched only for rules that fired or need them to decide, and a sample shown by one finding is
 not repeated by the next. The result has `findings` (fired, most severe first), `quiet` (checked and normal, with
 counts and trend) and `skipped` (could not be checked, e.g. a field these logs do not have).
 
-Built-in rules (tags in brackets): `crash` and `resource_exhaustion` (critical, any match); `error_spike`
-(error query x2), `new_error_types` (exception unseen in 24 h), `http_5xx` (x2, only where a status field exists),
-`connectivity` (timeouts, refused/reset connections, DNS; x3) and `database` (deadlocks, lock timeouts,
-too many connections; x3), all high; `auth_failures` (x3, at least 20), medium.
+Built-in rules: `crash` and `resource_exhaustion` (critical, any match); `error_spike` (share of errors x2),
+`new_error_types` (exception unseen in 24 h), `http_5xx` (share x2, only where a status field exists),
+`connectivity` (timeouts, refused/reset connections, DNS; share x3) and `database` (deadlocks, lock timeouts,
+too many connections; share x3), all high; `auth_failures` (rate x3, at least 20), medium.
 
 ```toml
 [scan]
@@ -163,6 +180,9 @@ query = 'service:payment AND message:"declined"'
 severity = "high"                           # critical | high | medium | low
 growth = 2.0
 min_count = 20
+per_traffic = true                          # compare declines / payment traffic, not declines per hour
+traffic_query = "service:payment"
+baseline_shift = "7d"                       # against the same hour of the last 3 weeks (payday, weekends)
 group_by = "bank_code"                      # top groups shown with the finding
 tags = ["payment"]
 
@@ -177,7 +197,8 @@ requires = ["consumer_lag"]                 # skipped (and said so) where the fi
 ```
 
 Other keys: `errors_only = true` ANDs the instance's `error_query`, `exclude` drops noise for one rule, `baseline`
-sets the rule's own baseline length. The config is validated at startup like the rest (unknown keys, a rule that
+sets the rule's own baseline length, `baseline_periods` the number of shifted periods, `confidence` the
+significance bar. A rule's own baseline wins over the call's. The config is validated at startup like the rest (unknown keys, a rule that
 would fire on all traffic, `new_groups` without `group_by`).
 
 Selecting what to run: `scan(rules=["payment"])` takes rule names or tags, `min_severity="high"` leaves out
@@ -191,7 +212,9 @@ Writing rules that are fast and accurate:
 - Match on fields when you have them (`http_status:[500 TO 599]`, `exception_class:...`); otherwise quoted
   phrases (`"Connection refused"`). Avoid leading wildcards and regex: they scan every term in the index.
 - Pick the condition from how often the event normally happens: never, then `threshold = 0`; always a little,
-  then `growth` with a `min_count` well above the usual noise in one window.
+  then `growth` (the significance test handles noise; `min_count` only sets the smallest count worth a look).
+- Anything that grows with traffic gets `per_traffic = true`; traffic with a daily or weekly curve gets
+  `baseline_shift`.
 - Drop known noise with `exclude` (per rule or under `[scan]`) rather than raising thresholds.
 - Use a longer baseline (`baseline = "24h"`) for rules on spiky or low-volume traffic, and `requires` for rules
   that depend on a field only some systems log.

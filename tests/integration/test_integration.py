@@ -140,6 +140,9 @@ async def test_every_tool(app):
     )
     counts = {f["rule"]: f["count"] for f in timeouts["findings"]}
     assert counts == {"timeouts": 25, "timeouts_but_pay2": 16}, timeouts
+    seasonal = await scan.scan(app, range="1h", baseline_shift="1d", rules=["error_spike", "connectivity"])
+    assert_clean(seasonal)
+    assert not seasonal.get("skipped"), seasonal
 
     fields = await tools.list_fields(app, contains="trace")
     assert any(f.startswith("trace_id") for f in fields["fields"]), fields
