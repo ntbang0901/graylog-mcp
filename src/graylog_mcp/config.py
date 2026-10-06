@@ -42,8 +42,28 @@ DEFAULT_GROUP_FIELDS = {
     "exception": "exception_class",
 }
 DEFAULT_FIELDS = ["timestamp", "source", "level", "message"]
+DEFAULT_VERSION_FIELDS = [
+    "app_version",
+    "version",
+    "service_version",
+    "build",
+    "build_version",
+    "release",
+    "git_commit",
+    "commit",
+    "image_tag",
+]
+DEFAULT_LATENCY_FIELDS = ["took_ms", "duration_ms", "elapsed_ms", "latency_ms", "response_time_ms", "request_time"]
+# Lines that mark a process start/stop or a configuration reload.
+DEFAULT_CHANGE_QUERY = (
+    '(message:Started AND message:"running for") OR "Shutting down" OR "Graceful shutdown" OR SIGTERM OR '
+    '"Server started" OR "Listening on port" OR "Booting worker" OR "configuration reloaded" OR "config reloaded"'
+)
 
 PRESET_TOOLS = {
+    "root_cause",
+    "detect_changes",
+    "service_map",
     "search_logs",
     "count_logs",
     "error_summary",
@@ -114,6 +134,9 @@ class InstanceConfig:
     message_api: str = "auto"
     aggregation_api: str = "auto"
     message_lookup_range: str = "30d"
+    version_fields: tuple[str, ...] = tuple(DEFAULT_VERSION_FIELDS)
+    latency_fields: tuple[str, ...] = tuple(DEFAULT_LATENCY_FIELDS)
+    change_query: str = DEFAULT_CHANGE_QUERY
 
     @property
     def api_base(self) -> str:
@@ -181,6 +204,9 @@ _INVESTIGATION_KEYS = {
     "group_fields",
     "default_fields",
     "message_lookup_range",
+    "version_fields",
+    "latency_fields",
+    "change_query",
 }
 _INSTANCE_KEYS = {
     "url",
@@ -306,6 +332,11 @@ def _investigation(where: str, data: dict[str, Any], base: dict[str, Any]) -> di
         out["default_fields"] = _str_list(f"{where}.default_fields", data["default_fields"])
     if "error_query" in data:
         out["error_query"] = _check_query(f"{where}.error_query", data["error_query"])
+    if "change_query" in data:
+        out["change_query"] = _check_query(f"{where}.change_query", data["change_query"])
+    for key in ("version_fields", "latency_fields"):
+        if key in data:
+            out[key] = _str_list(f"{where}.{key}", data[key])
     if "message_lookup_range" in data:
         from graylog_mcp.timerange import parse_duration  # local import: avoid a cycle
 
@@ -393,6 +424,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         group_fields=inv["group_fields"],
         default_fields=inv["default_fields"],
         message_lookup_range=inv["message_lookup_range"],
+        version_fields=inv["version_fields"],
+        latency_fields=inv["latency_fields"],
+        change_query=inv["change_query"],
         **apis,
     )
 
@@ -595,6 +629,9 @@ def parse_config(data: dict[str, Any], source: str = "env") -> Config:
             "error_query": DEFAULT_ERROR_QUERY,
             "group_fields": dict(DEFAULT_GROUP_FIELDS),
             "message_lookup_range": "30d",
+            "version_fields": tuple(DEFAULT_VERSION_FIELDS),
+            "latency_fields": tuple(DEFAULT_LATENCY_FIELDS),
+            "change_query": DEFAULT_CHANGE_QUERY,
         },
     )
 

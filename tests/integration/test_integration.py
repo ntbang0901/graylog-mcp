@@ -148,3 +148,40 @@ async def test_never_writes(app, recorder):
         if req.method == "POST":
             assert path in READ_ONLY_POSTS, path
     print(f"{len(recorder.requests)} requests, methods: {sorted({r.method for r in recorder.requests})}")
+
+
+async def test_root_cause_on_incident(app, recorder):
+    """The bad-deploy scenario seeded 30 hours ago (see seed.py)."""
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    from graylog_mcp import rca
+    from tests.fake_graylog import INCIDENT
+
+    seeded = datetime.fromisoformat(
+        Path(os.environ.get("GRAYLOG_IT_SEEDED_AT_FILE", "/tmp/graylog-it-seeded-at")).read_text().strip()
+    )
+    end = seeded - timedelta(hours=30)
+    window = {"from_time": (end - timedelta(hours=1)).isoformat(), "to_time": end.isoformat()}
+
+    res = await rca.root_cause(app, **window)
+    print("verdict:", res["verdict"])
+    assert_clean(res)
+    assert res["candidates"][0]["service"] == "payment", res
+    assert "1.3.9 -> 1.4.0" in res["verdict"]
+    assert "connection refused" in res["first_error"]["message"]
+    first = datetime.fromisoformat(res["first_error"]["ts"].replace(" ", "T"))
+    onset = end - INCIDENT["onset_before_end"]
+    assert timedelta(0) <= first - onset <= timedelta(seconds=15), (first, onset)
+
+    changes = await rca.detect_changes(app, **window)
+    kinds = {(c["service"], c["kind"]) for c in changes["changes"]}
+    assert {("payment", "version"), ("payment", "rollout"), ("payment", "restart")} <= kinds, changes
+
+    smap = await rca.service_map(app, **window)
+    edges = {line.split(" (")[0] for line in smap["diagram"]}
+    assert {"gateway -> payment", "payment -> bank-adapter", "gateway -> orders", "orders -> postgres"} <= edges
+
+    for req in recorder.requests:
+        path = urlparse(str(req.url)).path.removeprefix("/api/")
+        assert req.method == "GET" or path in READ_ONLY_POSTS, (req.method, path)

@@ -49,8 +49,8 @@ def make_config(**overrides):
 def make_app():
     apps = []
 
-    def factory(version: str = "5.0.13+083613e", **overrides):
-        fake = FakeGraylog(version)
+    def factory(version: str = "5.0.13+083613e", dataset: str = "basic", **overrides):
+        fake = FakeGraylog(version, dataset=dataset)
         app = App.create(make_config(**overrides), transport=fake.transport)
         apps.append(app)
         return app, fake
