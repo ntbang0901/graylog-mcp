@@ -1,0 +1,42 @@
+name: Integration (Graylog matrix)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"   # weekly
+  pull_request:
+    paths:
+      - "src/graylog_mcp/backends/**"
+      - "src/graylog_mcp/client.py"
+      - "tests/integration/**"
+
+permissions:
+  contents: read
+
+jobs:
+  graylog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { profile: v43, port: 9043 }
+          - { profile: v50, port: 9050 }
+          - { profile: v52, port: 9052 }
+          - { profile: v61, port: 9061 }
+          - { profile: v70, port: 9070 }
+    env:
+      GRAYLOG_IT_URL: http://127.0.0.1:${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked
+      - run: sudo sysctl -w vm.max_map_count=262144
+      - run: docker compose -f tests/integration/docker-compose.yml --profile ${{ matrix.profile }} up -d
+      - run: uv run python tests/integration/seed.py
+      - run: uv run pytest -m integration -v -s tests/integration
+      - if: failure()
+        run: docker compose -f tests/integration/docker-compose.yml --profile ${{ matrix.profile }} logs --tail 200
