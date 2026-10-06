@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import re
 import statistics
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,6 +21,7 @@ from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
+from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
 from graylog_mcp.shaping import Budget, Shaper, dedup, dumps, group_key, is_error_level, is_internal, truncate
 from graylog_mcp.timerange import (
@@ -33,6 +35,7 @@ from graylog_mcp.timerange import (
     resolve_range,
 )
 
+log = logging.getLogger(__name__)
 SAMPLE_CHARS = 1500
 _EXCEPTION_HINT = re.compile(r"\b(ERROR|FATAL|CRITICAL|SEVERE|PANIC|Exception|Traceback|panic:)\b")
 _LUCENE_FIELD_SPECIAL = re.compile(r'([+\-=&|><!(){}\[\]^"~*?:\\/ ])')
@@ -92,6 +95,7 @@ class App:
     config: Config
     instances: dict[str, Graylog]
     redactor: Redactor
+    focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
 
     @classmethod
     def create(cls, config: Config, transport: Any = None) -> App:
@@ -134,6 +138,87 @@ class App:
 
     async def close(self) -> None:
         await asyncio.gather(*(gl.aclose() for gl in self.instances.values()), return_exceptions=True)
+
+
+# --------------------------------------------------------------------------- focus
+
+
+@dataclass(frozen=True)
+class FocusScope:
+    """The focus of one instance, resolved against its fields and streams."""
+
+    field: str | None
+    values: tuple[str, ...]
+    stream_ids: tuple[str, ...]
+    stream_names: tuple[str, ...]
+    origin: str  # where the service comes from
+
+
+WIDEN = "streams=['*'] searches every stream; a query naming a service field (e.g. application:other) another service"
+
+
+async def resolve_focus(app: App, gl: Graylog) -> FocusScope | None:
+    """[focus] of the repository, resolved once per instance; None when there is none or nothing matched."""
+    focus = app.config.focus
+    if not focus.active:
+        return None
+    if gl.cfg.name in app.focus_cache:
+        return app.focus_cache[gl.cfg.name]
+    try:
+        stream_ids = await gl.resolve_streams(list(focus.streams)) if focus.streams else ()
+        by_id = {str(s.get("id")): str(s.get("title", "")) for s in await gl.streams()} if stream_ids else {}
+        names = await gl.field_names()
+        service_fields = [focus.field] if focus.field else [f for f in gl.cfg.service_fields if f in names]
+        field_name: str | None = service_fields[0] if service_fields else None
+        values, origin = focus.services, "focus.service in the config"
+        if not values and focus.auto and focus.repo_names:
+            origin = f"guessed from the repository name {focus.repo_names[0]!r}"
+            tr = resolve_range("24h", None, None, gl.cfg.tz, default="24h")
+            for candidate in [f for f in service_fields if f != "source"][:3]:
+                agg = await gl.aggregate("*", tr, stream_ids, [candidate], 300, [COUNT])
+                seen = [str(r.keys[0]) for r in agg.rows if r.keys and r.keys[0] is not None]
+                match = guess_service(focus.repo_names, seen)
+                if match:
+                    field_name, values = candidate, (match,)
+                    break
+    except GraylogError as exc:
+        log.warning("instance %s: cannot resolve the focus (%s); searching without it", gl.cfg.name, exc)
+        return None  # not cached: try again on the next call
+    scope = None
+    if (values and field_name) or stream_ids:
+        scope = FocusScope(field_name if values else None, values if field_name else (), stream_ids,
+                           tuple(by_id.get(s, s) for s in stream_ids), origin)  # fmt: skip
+    app.focus_cache[gl.cfg.name] = scope
+    return scope
+
+
+async def apply_focus(
+    app: App, gl: Graylog, query: str | None, streams: list[str] | None, about: str | None = None
+) -> tuple[str, tuple[str, ...], dict[str, Any] | None]:
+    """The query and streams to run, narrowed to the repository's service unless the call asks for more:
+    streams=['*'] (every stream), explicit streams, a query naming a service field, or ``about`` (the field
+    being grouped or counted) being a service field."""
+    q = query or "*"
+    if wants_everything(streams):
+        return q, (), None
+    if streams:
+        return q, await gl.resolve_streams(streams), None
+    scope = await resolve_focus(app, gl)
+    if scope is None:
+        return q, (), None
+    note: dict[str, Any] = {}
+    service_fields = {*gl.cfg.service_fields, *([scope.field] if scope.field else [])} - {"source"}
+    if scope.field and not mentions_field(query, service_fields) and about not in service_fields:
+        clause = " OR ".join(f"{escape_field(scope.field)}:{phrase(v)}" for v in scope.values)
+        q = and_queries(clause, query)
+        note["service"] = clause
+        note["origin"] = scope.origin
+    if scope.stream_ids:
+        note["streams"] = list(scope.stream_names)
+    if not note:
+        return q, scope.stream_ids, None
+    note["widen"] = WIDEN
+    return q, scope.stream_ids, note
 
 
 def _range(gl: Graylog, range: str | None, from_time: str | None, to_time: str | None, default: str) -> TimeRange:
@@ -192,10 +277,10 @@ async def search_logs(
     if offset < 0:
         raise ToolInputError("offset must be >= 0")
     limit = app.limit(limit)
-    stream_ids = await gl.resolve_streams(streams)
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
     page = await gl.search(
         MessageQuery(
-            query=query or "*",
+            query=effective,
             timerange=tr,
             streams=stream_ids,
             fields=tuple(fields) if fields and "*" not in fields else None,
@@ -208,7 +293,7 @@ async def search_logs(
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
     budget = app.budget()
-    out = _header(gl, tr, query=query or "*", total=page.total, offset=offset)
+    out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
     else:
@@ -239,7 +324,7 @@ async def search_logs(
     out["truncated"] = budget.truncated
     out["next_offset"] = next_offset
     if not page.messages:
-        out["hint"] = await _empty_hint(gl, query, tr, stream_ids)
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus)
     return out
 
 
@@ -251,9 +336,13 @@ def _minimal(item: dict[str, Any]) -> dict[str, Any]:
     return {**{k: v for k, v in item.items() if k != "sample"}, "sample": small} if "sample" in item else small
 
 
-async def _empty_hint(gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...]) -> str:
+async def _empty_hint(
+    gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...], focus: dict[str, Any] | None = None
+) -> str:
     problems = await gl.validate(query, tr, streams)
     hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
+    if focus:
+        hint += ". Only this repository's service was searched (focus); pass streams=['*'] to search every stream"
     return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
 
 
@@ -268,11 +357,11 @@ async def count_logs(
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "15m")
-    stream_ids = await gl.resolve_streams(streams)
-    count = await gl.count(query or "*", tr, stream_ids)
-    out = _header(gl, tr, query=query or "*", count=count)
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
+    count = await gl.count(effective, tr, stream_ids)
+    out = _header(gl, tr, query=query or "*", focus=focus, count=count)
     if count == 0:
-        out["hint"] = await _empty_hint(gl, query or "*", tr, stream_ids)
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus)
     return out
 
 
@@ -568,10 +657,10 @@ async def error_summary(
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "1h")
-    stream_ids = await gl.resolve_streams(streams)
     limit = max(1, min(limit, app.config.limits.max_groups))
     field = _group_field(gl, group_by)
-    q = and_queries(gl.cfg.error_query, query)
+    focused, stream_ids, focus = await apply_focus(app, gl, query, streams, about=field)
+    q = and_queries(gl.cfg.error_query, focused)
     metrics = [COUNT, Metric("min", "timestamp"), Metric("max", "timestamp")]
     total, agg = await asyncio.gather(
         gl.count(q, tr, stream_ids),
@@ -611,7 +700,9 @@ async def error_summary(
     for g in groups:
         g.pop("_raw", None)
     grouped = sum(g["count"] for g in groups)
-    out = _header(gl, tr, error_query=q, group_by=field, total_errors=total, aggregation_api=agg.api or None)
+    out = _header(
+        gl, tr, error_query=q, focus=focus, group_by=field, total_errors=total, aggregation_api=agg.api or None
+    )
     if agg.sampled is not None:
         out.update(_sampled_note(field, agg.sampled, total))
     out["ungrouped"] = max(0, (agg.sampled if agg.sampled is not None else total) - grouped)
@@ -643,7 +734,7 @@ async def log_histogram(
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "1h")
-    stream_ids = await gl.resolve_streams(streams)
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
     if interval:
         try:
             unit, secs = interval_seconds(interval)
@@ -653,7 +744,7 @@ async def log_histogram(
             raise ToolInputError(f"interval {interval} gives more than 500 buckets for this range; use a larger one")
     else:
         unit, secs = choose_interval(tr)
-    agg = await gl.histogram(query or "*", tr, stream_ids, unit)
+    agg = await gl.histogram(effective, tr, stream_ids, unit)
     counts: dict[int, int] = {}
     for row in agg.rows:
         t = parse_graylog_ts(row.keys[0] if row.keys else None)
@@ -675,7 +766,7 @@ async def log_histogram(
     values = [counts.get(k, 0) for k in keys]
     buckets = [[label, value] for label, value in zip(labels, values, strict=True)]
     total = agg.total if agg.total is not None else sum(values)
-    out = _header(gl, tr, query=query or "*", interval=unit, total=total)
+    out = _header(gl, tr, query=query or "*", focus=focus, interval=unit, total=total)
     out["timezone"] = f"{gl.cfg.timezone} ({format_ts(tr.end, tz)[-6:]})"
     if values and any(values):
         peak_i = max(enumerate(values), key=lambda iv: iv[1])[0]
@@ -717,10 +808,10 @@ async def top_values(
     if not field or not field.strip():
         raise ToolInputError("field is required")
     tr = _range(gl, range, from_time, to_time, "1h")
-    stream_ids = await gl.resolve_streams(streams)
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams, about=field)
     limit = max(1, min(limit, app.config.limits.max_groups))
-    agg = await gl.aggregate(query or "*", tr, stream_ids, [field], limit + 1, [COUNT])
-    total = agg.total if agg.total is not None else await gl.count(query or "*", tr, stream_ids)
+    agg = await gl.aggregate(effective, tr, stream_ids, [field], limit + 1, [COUNT])
+    total = agg.total if agg.total is not None else await gl.count(effective, tr, stream_ids)
     rows, missing = agg.split_missing()
     base = agg.sampled if agg.sampled is not None else total  # percentages of what was counted
     values = []
@@ -734,7 +825,7 @@ async def top_values(
         if agg.sampled is not None and row.values.get("example") not in (None, row.keys[0]):
             value["example"] = app.redact_key(field, str(row.values["example"])[:SAMPLE_CHARS])
         values.append(value)
-    out = _header(gl, tr, query=query or "*", field=field, total=total)
+    out = _header(gl, tr, query=query or "*", focus=focus, field=field, total=total)
     if agg.sampled is not None:
         out.update(_sampled_note(field, agg.sampled, total))
     out["other"] = max(0, (base or 0) - sum(v["count"] for v in values) - missing)
@@ -786,9 +877,9 @@ async def compare_periods(
     if cur.start >= cur.end or base.start >= base.end:
         raise ToolInputError("a period is empty (is split_at in the future?)")
 
-    stream_ids = await gl.resolve_streams(streams)
     field = _group_field(gl, group_by)
-    q = and_queries(gl.cfg.error_query if errors_only else None, query)
+    focused, stream_ids, focus = await apply_focus(app, gl, query, streams, about=field)
+    q = and_queries(gl.cfg.error_query if errors_only else None, focused)
     fetch = max(1, min(limit * 3, app.config.limits.max_groups))
     (total_a, agg_a), (total_b, agg_b) = await asyncio.gather(
         asyncio.gather(gl.count(q, base, stream_ids), gl.aggregate(q, base, stream_ids, [field], fetch, [COUNT])),
@@ -848,6 +939,7 @@ async def compare_periods(
     out: dict[str, Any] = {
         "instance": gl.cfg.name,
         "query": q,
+        **({"focus": focus} if focus else {}),
         "group_by": field,
         "baseline": {**base.display(tz), "total": total_a, "per_hour": round(rate_a, 1)},
         "current": {**cur.display(tz), "total": total_b, "per_hour": round(rate_b, 1)},
@@ -938,6 +1030,17 @@ async def list_instances(app: App) -> dict[str, Any]:
         not_loaded = sorted({g for g in cfg.out_of_scope.values() if g})
         out["scope"] = {"groups": list(cfg.scope), "because": cfg.scope_reason, "not_loaded": not_loaded}
     out["instances"] = [gl.status() for gl in app.instances.values()]
+    if cfg.focus.active:
+        scope = await resolve_focus(app, app.gl(None))
+        if scope:
+            service = " OR ".join(f"{scope.field}:{phrase(v)}" for v in scope.values) if scope.field else None
+            out["focus"] = {"service": service, "streams": list(scope.stream_names) or None, "origin": scope.origin,
+                            "widen": WIDEN}  # fmt: skip
+        elif cfg.focus.services or cfg.focus.streams:
+            out["focus"] = {"configured": cfg.focus.services or cfg.focus.streams, "status": "not resolved"}
+        else:
+            out["focus"] = {"status": f"no service matches the repository name {cfg.focus.repo_names[0]!r}; "
+                            "set [focus] service in .graylog-mcp.toml"}  # fmt: skip
     out["redaction"] = app.redactor.active_rules
     return out
 

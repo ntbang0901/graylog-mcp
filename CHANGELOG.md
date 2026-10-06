@@ -43,6 +43,10 @@ All notable changes to this project are documented here. The format follows
 - `top_values` / `error_summary` on a full-text field (`message`), which OpenSearch refuses to aggregate,
   count the newest 1000 matching messages instead, grouping variants of a log line by template, and say so
   (`method: sampled`).
+- Focus per repository: inside a repository, search/count/summary/histogram/top/compare/detect_changes look
+  at its service only (`[focus]` in its `.graylog-mcp.toml`, or guessed from the repository name), and widen
+  only when asked (`streams=["*"]`, explicit streams, a query naming a service field). Set from the admin UI,
+  `graylog-mcp repo focus` or `GRAYLOG_MCP_SERVICE`. `application` joins the default service fields.
 - Admin UI redesign: sidebar navigation, an overview with health per group that runs checks on load, an
   environment drawer with inline validation, one card per group with its repositories, a sticky save bar,
   confirm dialogs, toasts, loading states, dark mode and a phone layout.

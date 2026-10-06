@@ -429,3 +429,46 @@ def setup_repo(repo: Path, config_file: Path, group: str) -> Path:
 
 
 PROJECT_FILE = ".graylog-mcp.toml"
+
+
+def repo_focus(repo: Path) -> dict[str, Any] | None:
+    """The [focus] of a repository's .graylog-mcp.toml; None when the file has none (the default: auto)."""
+    try:
+        focus = load_raw(repo / PROJECT_FILE).get("focus")
+    except ConfigError:
+        return None
+    return dict(focus) if isinstance(focus, dict) else None
+
+
+def set_repo_focus(
+    repo: Path, config_file: Path, group: str, service: str | list[str] | bool | None, streams: list[str] | None
+) -> dict[str, Any]:
+    """Write [focus] in a repository's .graylog-mcp.toml (set up first when it has none).
+
+    service: a name or list of names, "" / None / "auto" to guess it from the repository name, False for no
+    service filter. streams: stream titles or ids searched by default (empty: every stream)."""
+    target = repo / PROJECT_FILE
+    if not target.is_file():
+        setup_repo(repo, config_file, group)
+    data = load_raw(target)
+    focus: dict[str, Any] = {}
+    if isinstance(service, str):
+        names = [n.strip() for n in service.split(",") if n.strip()]
+        if names and names != ["auto"]:
+            focus["service"] = names[0] if len(names) == 1 else names
+    elif isinstance(service, list):
+        names = [str(n).strip() for n in service if str(n).strip()]
+        if names:
+            focus["service"] = names[0] if len(names) == 1 else names
+    elif service is False:
+        focus["service"] = False
+    clean_streams = [s.strip() for s in streams or [] if s.strip()]
+    if clean_streams:
+        focus["streams"] = clean_streams
+    if focus:
+        data["focus"] = focus
+    else:
+        data.pop("focus", None)
+    validate(data, base_dir=repo)
+    save(target, data)
+    return focus

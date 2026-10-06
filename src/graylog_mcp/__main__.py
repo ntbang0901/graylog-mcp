@@ -300,6 +300,12 @@ def _repo(argv: list[str]) -> int:
     rm = sub.add_parser("remove", help="detach a repository from a group")
     rm.add_argument("group")
     rm.add_argument("repo")
+    focus = sub.add_parser("focus", help="what the server searches by default in this repository ([focus])")
+    focus.add_argument("service", nargs="?", default="", help="service name(s), comma-separated (default: auto)")
+    focus.add_argument("--streams", default="", help="stream titles or ids, comma-separated")
+    focus.add_argument("--off", action="store_true", help="no service filter: search every service")
+    focus.add_argument("--group", help="group of the repository (needed when it is not set up yet)")
+    focus.add_argument("--repo", default=".", help="repository folder (default: current directory)")
     args = parser.parse_args(argv)
     path = Path(args.config).expanduser() if args.config else default_config_path()
     if path is None or not path.is_file():
@@ -316,6 +322,13 @@ def _repo(argv: list[str]) -> int:
                     where = resolve_repo_path(entry, path.parent) if is_repo_path(entry) else None
                     note = "" if where is None else ("" if where.is_dir() else "  (folder not found)")
                     print(f"  {entry}{note}")
+            return 0
+        if args.action == "focus":
+            repo_root = detect_repo(Path(args.repo).expanduser()).root or Path(args.repo).expanduser().resolve()
+            service = False if args.off else args.service
+            written = configfile.set_repo_focus(repo_root, path, args.group or "", service, args.streams.split(","))
+            shown = ", ".join(f"{k} = {v}" for k, v in written.items()) or "service guessed from the repository name"
+            print(f"✓ {repo_root / configfile.PROJECT_FILE}: focus {shown}")
             return 0
         if args.group not in config.groups:
             raise ConfigError(f"unknown group {args.group!r}; groups: {', '.join(config.groups) or 'none'}")

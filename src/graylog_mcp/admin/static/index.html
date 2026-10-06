@@ -152,6 +152,7 @@ tr.group-row td { background: var(--panel-2); font-weight: 600; font-size: 12.5p
 .icon.ok { color: var(--ok); } .icon.warn { color: var(--warn); } .icon.fail { color: var(--fail); } .icon.info { color: var(--info); }
 .repo { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
 .repo .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.focus-form { grid-column: 1 / -1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .kbd { font-size: 11px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--muted); }
 
@@ -656,11 +657,28 @@ function renderGroups() {
         : !r.exists ? '<span class="badge fail">folder not found</span>'
         : [r.remote ? `<span class="badge mono">${esc(r.remote)}</span>` : '<span class="badge">no git remote</span>',
            r.project_config ? '<span class="badge ok">.graylog-mcp.toml</span>' : '<span class="badge warn">not set up</span>',
-           r.claude_code ? '<span class="badge ok">Claude Code</span>' : ""].join(" ");
+           r.claude_code ? '<span class="badge ok">Claude Code</span>' : "",
+           r.project_config ? focusBadge(r.focus) : ""].join(" ");
       const canSetup = r.kind === "path" && r.exists && !(r.project_config && r.claude_code);
+      const canFocus = r.kind === "path" && r.exists;
+      const f = r.focus || {};
+      const svc = f.service === false ? "" : Array.isArray(f.service) ? f.service.join(", ") : (f.service || "");
       return `<div class="repo"><div><span class="mono">${esc(r.entry)}</span><div class="meta">${meta}</div></div>
         <div class="actions">${canSetup ? `<button class="btn sm" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">Set up</button>` : ""}
-          <button class="btn sm ghost danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></div></div>`;
+          ${canFocus ? `<button class="btn sm" data-focusrepo="${esc(r.entry)}">Focus</button>` : ""}
+          <button class="btn sm ghost danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></div>
+        ${canFocus ? `<div class="focus-form hidden" data-focusform="${esc(r.entry)}">
+          <div class="small muted">What the MCP server searches by default inside this repository. Other services and streams are searched only when asked for.</div>
+          <div class="grid2">
+            <div class="field"><span class="label">Service</span><input class="fservice" value="${esc(svc)}" placeholder="auto: guessed from the repository name" spellcheck="false">
+              <span class="hint">Value of the service field (e.g. application), comma-separated for several.</span></div>
+            <div class="field"><span class="label">Streams</span><input class="fstreams" value="${esc((f.streams || []).join(", "))}" placeholder="every stream" spellcheck="false">
+              <span class="hint">Stream titles or ids, comma-separated.</span></div>
+          </div>
+          <div class="actions"><label class="check small"><input type="checkbox" class="foff"${f.service === false ? " checked" : ""}>No service filter (search every service)</label>
+            <span style="flex:1"></span><button class="btn sm ghost" data-focusrepo="${esc(r.entry)}">Cancel</button>
+            <button class="btn sm primary" data-savefocus="${esc(r.entry)}" data-group="${esc(g.name)}">Save focus</button></div>
+        </div>` : ""}</div>`;
     }).join("");
     return `<div class="card" data-group="${esc(g.name)}">
       <div class="card-head"><h2>${esc(g.name)}</h2>${STATE.default_group === g.name ? '<span class="badge info">default group</span>' : ""}
@@ -691,11 +709,30 @@ $("groupCards").addEventListener("input", (ev) => {
   if (!ev.target.matches(".gdesc, .genv, .gdef")) return;
   const btn = ev.target.closest(".card").querySelector("[data-savegroup]"); btn.disabled = false; btn.title = "";
 });
+function focusBadge(f) {
+  if (!f || f.service === undefined && !f.streams) return '<span class="badge info">focus: auto</span>';
+  if (f.service === false && !f.streams) return '<span class="badge">focus: off</span>';
+  const parts = [f.service === false ? "every service" : f.service ? [].concat(f.service).join(", ") : "auto"];
+  if (f.streams) parts.push(`streams ${f.streams.join(", ")}`);
+  return `<span class="badge info">focus: ${esc(parts.join(" · "))}</span>`;
+}
 $("groupCards").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.matches(".rpath")) ev.target.closest(".card").querySelector("[data-addrepo]").click(); });
 $("groupCards").addEventListener("click", async (ev) => {
   const card = ev.target.closest("[data-group]");
   const save = ev.target.closest("[data-savegroup]"), add = ev.target.closest("[data-addrepo]");
   const setup = ev.target.closest("[data-setuprepo]"), rm = ev.target.closest("[data-rmrepo]");
+  const focusBtn = ev.target.closest("[data-focusrepo]"), saveFocus = ev.target.closest("[data-savefocus]");
+  if (focusBtn) {
+    const form = [...card.querySelectorAll("[data-focusform]")].find((x) => x.dataset.focusform === focusBtn.dataset.focusrepo);
+    form.classList.toggle("hidden");
+    if (!form.classList.contains("hidden")) form.querySelector(".fservice").focus();
+  }
+  if (saveFocus) busy(saveFocus, async () => {
+    const form = saveFocus.closest("[data-focusform]");
+    const r = await api("/api/repos/focus", "POST", {group: saveFocus.dataset.group, repo: saveFocus.dataset.savefocus,
+      service: form.querySelector(".fservice").value, streams: form.querySelector(".fstreams").value, off: form.querySelector(".foff").checked});
+    toast(`Focus saved in .graylog-mcp.toml${r.focus.service ? `: ${[].concat(r.focus.service).join(", ")}` : ""}`); await loadState();
+  });
   if (save) busy(save, async () => {
     await api("/api/groups", "POST", {group: save.dataset.savegroup, description: card.querySelector(".gdesc").value.trim(),
       default_environment: card.querySelector(".genv").value, make_default: card.querySelector(".gdef").checked});
