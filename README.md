@@ -304,8 +304,8 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
 - **Overview**: environment cards and the doctor checks with fixes;
-- **Environments**: add, edit, delete, set default, test a connection (optionally with a pasted token held in
-  memory only);
+- **Environments**: add, edit, delete, set default; type the token or password once, test the connection, and
+  save (the secret goes to your per-user secrets file, the variable name is chosen for you);
 - **Field mapping**: run detection on an environment, review the evidence, apply the selected settings;
 - **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
   mask your sample text;
