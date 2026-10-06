@@ -630,7 +630,7 @@ def default_config_path() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def load_config(path: str | os.PathLike[str] | None = None) -> Config:
+def load_config(path: str | os.PathLike[str] | None = None, require_usable: bool = True) -> Config:
     """Load and validate the configuration. Raises ``ConfigError`` on any problem."""
     file_path = Path(path).expanduser() if path else default_config_path()
     data: dict[str, Any] = {}
@@ -644,10 +644,12 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         except tomllib.TOMLDecodeError as exc:
             raise ConfigError(f"{file_path}: invalid TOML: {exc}") from None
         source = str(file_path)
-    return parse_config(data, source=source)
+    return parse_config(data, source=source, require_usable=require_usable)
 
 
-def parse_config(data: dict[str, Any], source: str = "env") -> Config:
+def parse_config(data: dict[str, Any], source: str = "env", require_usable: bool = True) -> Config:
+    """Validate configuration data. ``require_usable=False`` accepts a config whose secrets are not set
+    in this environment (used when editing a config file for others)."""
     data = _env_overrides(data)
     _check_keys("config", data, _TOP_KEYS)
 
@@ -688,9 +690,9 @@ def parse_config(data: dict[str, Any], source: str = "env") -> Config:
         instances[name] = _parse_instance(name, inst, defaults)
 
     usable = [i for i in instances.values() if i.unavailable is None]
-    if not usable:
+    if not usable and require_usable:
         raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
-    default_instance = data.get("default_instance") or usable[0].name
+    default_instance = data.get("default_instance") or (usable[0] if usable else next(iter(instances.values()))).name
     if default_instance not in instances:
         raise ConfigError(f"default_instance {default_instance!r} is not defined under [instances]")
 

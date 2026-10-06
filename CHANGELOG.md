@@ -17,6 +17,12 @@ All notable changes to this project are documented here. The format follows
 - Project config discovery: `.graylog-mcp.toml` in the current directory or a parent (up to the repository
   root), for one repository with several environments; per-instance `description` shown by `list_instances`.
 - Integration scenario (bad deploy cascading through three services) verified on Graylog 4.3-7.0.
+- Setup helpers: `graylog-mcp init` (guided or scripted setup with connection tests and field detection),
+  `doctor` (checks with fixes), `detect` (field suggestions with coverage), `install` (Claude Code, Claude
+  Desktop, Cursor, VS Code).
+- `graylog-mcp ui`: local admin web UI (environments, field mapping, redaction playground, tool playground,
+  client installation, config editor), loopback only with a per-run access token.
+- CLI subcommands; `graylog-mcp` alone still runs the server.
 
 ## [0.1.0] - 2026-10-06
 

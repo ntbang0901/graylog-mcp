@@ -477,7 +477,7 @@ class FakeGraylog:
             names = sorted({k for m in self.messages for k in m})
             return self.json(
                 200,
-                [{"name": n, "type": {"type": "date" if n == "timestamp" else "string"}, "streams": []} for n in names],
+                [{"name": n, "type": {"type": self._field_type(n)}, "streams": []} for n in names],
             )
         if path.startswith("messages/"):
             _, index, mid = path.split("/", 2)
@@ -490,6 +490,18 @@ class FakeGraylog:
         if path in ("search/universal/terms", "search/universal/histogram", "search/universal/stats"):
             return self.json(404, {"message": "HTTP 404 Not Found"})
         return self.json(404, {"message": "HTTP 404 Not Found"})
+
+    def _field_type(self, name: str) -> str:
+        if name == "timestamp":
+            return "date"
+        value = next((m[name] for m in self.messages if name in m), None)
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "long"
+        if isinstance(value, float):
+            return "double"
+        return "string"
 
     def post(self, path: str, body: dict) -> httpx.Response:
         if path == "views/search/sync":
