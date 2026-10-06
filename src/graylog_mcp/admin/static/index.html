@@ -4,288 +4,408 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>graylog-mcp admin</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fec'/%3E%3Cpath d='M8 20l5-6 4 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root {
-  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
-  --accent: #2f6fec; --accent-text: #fff; --ok: #12805c; --warn: #b54708; --fail: #c4320a; --info: #4a6fa5;
-  --code: #f1f3f6; --chip: #eef2f7;
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f9fafb; --text: #111827; --muted: #6b7280; --faint: #9ca3af;
+  --line: #e5e7eb; --line-strong: #d1d5db; --accent: #2f6fec; --accent-soft: #e8efff; --accent-text: #ffffff;
+  --ok: #0f7b55; --ok-soft: #e6f6ef; --warn: #b45309; --warn-soft: #fdf3e2; --fail: #c2410c; --fail-soft: #fdece6;
+  --info: #3b5ea8; --info-soft: #eaf0fb; --code: #f3f4f6; --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --shadow-lg: 0 12px 32px rgba(16,24,40,.18); --radius: 10px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #12151b; --panel: #1a1e26; --text: #e6e9ef; --muted: #98a2b3; --line: #2a303b;
-    --accent: #5b8cff; --accent-text: #0b0e13; --ok: #3ccb8d; --warn: #f5a14a; --fail: #ff7a59; --info: #8fb0e6;
-    --code: #222833; --chip: #262c37;
+    --bg: #0f1218; --panel: #171b23; --panel-2: #1c212b; --text: #e6e9ef; --muted: #9aa3b2; --faint: #6b7385;
+    --line: #262c37; --line-strong: #343b48; --accent: #5b8cff; --accent-soft: #1d2a47; --accent-text: #0b0e13;
+    --ok: #3ccb8d; --ok-soft: #12291f; --warn: #f5a14a; --warn-soft: #2d2213; --fail: #ff7a59; --fail-soft: #2e1a15;
+    --info: #8fb0e6; --info-soft: #1a2436; --code: #222833; --shadow: none; --shadow-lg: 0 12px 32px rgba(0,0,0,.5);
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
-header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
-header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
-header .path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
-nav button.active { background: var(--chip); color: var(--text); font-weight: 600; }
-main { max-width: 1100px; margin: 0 auto; padding: 20px; }
-section { display: none; }
-section.active { display: block; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-.panel h2 { font-size: 15px; margin: 0 0 12px; }
-.panel h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
-.row > label { flex: 1 1 200px; }
-label { display: block; font-size: 12px; color: var(--muted); }
-label > input, label > select, label > textarea { margin-top: 4px; }
-input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
-textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-input[type=checkbox] { width: auto; margin-right: 6px; }
-button.btn { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }
-button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
-button.btn.danger { color: var(--fail); }
-button.btn:disabled { opacity: .5; cursor: progress; }
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { font-size: 12px; color: var(--muted); font-weight: 600; }
-pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; max-height: 520px; margin: 0; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
-code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
-.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--chip); color: var(--muted); }
-.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.fail { color: var(--fail); } .chip.info { color: var(--info); }
-.status-ok { color: var(--ok); } .status-warn { color: var(--warn); } .status-fail { color: var(--fail); } .status-info { color: var(--info); }
+html, body { height: 100%; }
+body { margin: 0; font: 14px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+code, pre, textarea, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: var(--code); padding: 1px 6px; border-radius: 5px; font-size: 12.5px; }
+pre { background: var(--code); padding: 12px; border-radius: 8px; overflow: auto; max-height: 560px; margin: 0; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+
+/* layout */
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+.sidebar { background: var(--panel); border-right: 1px solid var(--line); padding: 16px 12px; position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; font-weight: 700; font-size: 15px; }
+.brand .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; }
+.nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding: 12px 10px 4px; }
+.nav { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; background: none; border-radius: 8px; color: var(--muted); font: inherit; cursor: pointer; text-align: left; }
+.nav svg { width: 17px; height: 17px; flex: none; }
+.nav:hover { background: var(--panel-2); color: var(--text); }
+.nav.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav .badge { margin-left: auto; }
+.sidebar .foot { margin-top: auto; padding: 8px 10px; font-size: 12px; color: var(--faint); }
+.main { min-width: 0; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 18px 32px 14px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 3; }
+.topbar h1 { font-size: 18px; margin: 0; }
+.topbar .sub { color: var(--muted); font-size: 13px; }
+.topbar .right { margin-left: auto; display: flex; gap: 8px; align-items: center; min-width: 0; }
+.path { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.content { padding: 24px 32px 48px; max-width: 1180px; width: 100%; }
+.page { display: none; }
+.page.active { display: block; animation: fade .15s ease-out; }
+@keyframes fade { from { opacity: .4; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nav-label, .sidebar .foot { display: none; }
+  .sidebar { flex-wrap: nowrap; overflow-x: auto; align-items: center; padding: 10px 12px; }
+  .brand { padding: 0 8px 0 4px; }
+  .brand-name { display: none; }
+  .nav { width: auto; flex: none; }
+  .topbar { flex-wrap: wrap; position: static; }
+  .topbar .right { margin-left: 0; max-width: 100%; }
+  .path { max-width: 60vw; }
+  .topbar, .content { padding-left: 16px; padding-right: 16px; }
+}
+
+/* components */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; margin-bottom: 16px; }
+.card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.card-head h2 { font-size: 15px; margin: 0; }
+.card-head .spacer { flex: 1; }
+.section-title { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
 .muted { color: var(--muted); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-.card .name { font-weight: 600; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.result { margin-top: 12px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
-#toast { position: fixed; bottom: 20px; right: 20px; max-width: 420px; padding: 10px 14px; border-radius: 8px; background: var(--text); color: var(--bg); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 5; }
-#toast.show { opacity: .95; }
+.faint { color: var(--faint); }
+.small { font-size: 12.5px; }
 .hidden { display: none !important; }
-.banner { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 16px; }
-.banner.fail { border-color: var(--fail); color: var(--fail); }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.row > .field { flex: 1 1 200px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .grid4 { grid-template-columns: 1fr 1fr; } }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > .label { font-size: 12.5px; font-weight: 600; color: var(--text); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.field > .hint { font-size: 12px; color: var(--muted); }
+.field > .error { font-size: 12px; color: var(--fail); }
+.req::after { content: "*"; color: var(--fail); margin-left: 2px; }
+input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; transition: border-color .12s, box-shadow .12s; }
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input.invalid { border-color: var(--fail); box-shadow: 0 0 0 3px var(--fail-soft); }
+textarea { font-size: 12.5px; line-height: 1.5; }
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-weight: 500; white-space: nowrap; transition: background .12s, border-color .12s; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { border-color: transparent; background: none; color: var(--muted); }
+.btn.ghost:hover { background: var(--panel-2); color: var(--text); }
+.btn.danger { color: var(--fail); }
+.btn.sm { padding: 5px 10px; font-size: 12.5px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.loading { cursor: progress; }
+.btn.loading::before { content: ""; width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.badge.fail { background: var(--fail-soft); color: var(--fail); border-color: transparent; }
+.badge.info { background: var(--info-soft); color: var(--info); border-color: transparent; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.fail { background: var(--fail); }
+.dot.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--panel-2); }
+tbody tr:hover td { background: var(--panel-2); }
+tr.group-row td { background: var(--panel-2); font-weight: 600; font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.table-wrap { border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; background: var(--panel); }
+.table-wrap table td:last-child, .table-wrap table th:last-child { text-align: right; }
+.table-wrap table tr.group-row td { text-align: left; padding-top: 8px; padding-bottom: 8px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.stat .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.stat .l { font-size: 12.5px; color: var(--muted); }
+.stat.ok .n { color: var(--ok); } .stat.warn .n { color: var(--warn); } .stat.fail .n { color: var(--fail); }
+.env-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.env-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.env-card:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.env-card .top { display: flex; align-items: center; gap: 8px; }
+.env-card .name { font-weight: 600; }
+.env-card .detail { font-size: 12.5px; color: var(--muted); min-height: 18px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.env-card .cta { color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.group-title { display: flex; align-items: baseline; gap: 8px; margin: 18px 0 10px; }
+.group-title h3 { margin: 0; font-size: 14px; }
+.empty { text-align: center; padding: 36px 16px; color: var(--muted); }
+.empty h3 { color: var(--text); margin: 0 0 6px; font-size: 15px; }
+.empty .actions { justify-content: center; margin-top: 14px; }
+.banner { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: var(--radius); margin-bottom: 16px; border: 1px solid; font-size: 13.5px; }
+.banner.fail { background: var(--fail-soft); border-color: transparent; color: var(--fail); }
+.banner.info { background: var(--info-soft); border-color: transparent; color: var(--info); }
+.check-list { display: flex; flex-direction: column; }
+.check-item { display: grid; grid-template-columns: 22px 160px 1fr; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--line); align-items: start; }
+.check-item:last-child { border-bottom: 0; }
+.check-item .icon { font-weight: 700; text-align: center; }
+.check-item .fix { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.check-item .fix code { font-size: 12px; overflow-wrap: anywhere; }
+.check-item > div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .check-item { grid-template-columns: 22px 1fr; } .check-item > div:last-child { grid-column: 2; } }
+.icon.ok { color: var(--ok); } .icon.warn { color: var(--warn); } .icon.fail { color: var(--fail); } .icon.info { color: var(--info); }
+.repo { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.repo .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.kbd { font-size: 11px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--muted); }
+
+/* drawer, modal, toasts */
+.overlay { position: fixed; inset: 0; background: rgba(10,14,20,.42); z-index: 10; animation: fadein .12s; }
+@keyframes fadein { from { opacity: 0; } }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); z-index: 11; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; animation: slidein .18s ease-out; }
+@keyframes slidein { from { transform: translateX(30px); opacity: .5; } }
+.drawer header { padding: 18px 22px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.drawer header h2 { font-size: 16px; margin: 0; }
+.drawer .body { padding: 18px 22px; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+.drawer footer { padding: 14px 22px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; background: var(--panel-2); }
+.modal { position: fixed; z-index: 12; top: 18vh; left: 50%; transform: translateX(-50%); width: min(440px, 92vw); background: var(--panel); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 20px; animation: fadein .12s; }
+.modal h3 { margin: 0 0 8px; font-size: 16px; }
+.modal .actions { justify-content: flex-end; margin-top: 18px; }
+#toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 20; max-width: 440px; }
+.toast { padding: 11px 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow-lg); display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; animation: slidein .16s ease-out; }
+.toast .ti { font-weight: 700; }
+.toast.ok .ti { color: var(--ok); } .toast.fail .ti { color: var(--fail); } .toast.info .ti { color: var(--info); }
+.result-line { margin-top: 10px; font-size: 13.5px; }
+.status-ok { color: var(--ok); } .status-fail { color: var(--fail); } .status-warn { color: var(--warn); }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; user-select: none; }
+details[open] summary { margin-bottom: 8px; }
+.inline-msg { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--muted); }
 </style>
 </head>
 <body>
-<header>
-  <h1>graylog-mcp admin</h1>
-  <div class="path" id="cfgpath"></div>
-  <div style="flex:1"></div>
-  <span class="chip" id="ver"></span>
-</header>
-<nav id="tabs">
-  <button data-tab="overview" class="active">Overview</button>
-  <button data-tab="envs">Environments</button>
-  <button data-tab="fields">Field mapping</button>
-  <button data-tab="redaction">Redaction</button>
-  <button data-tab="playground">Playground</button>
-  <button data-tab="settings">Settings</button>
-  <button data-tab="clients">Connect clients</button>
-  <button data-tab="config">Config file</button>
-</nav>
-<main>
-  <div id="noauth" class="banner fail hidden">Missing access token. Open the link printed by <code>graylog-mcp ui</code>.</div>
-  <div id="cfgerror" class="banner fail hidden"></div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"><svg viewBox="0 0 32 32" width="18" height="18"><path d="M7 21l6-7 4 4 8-10" stroke="white" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-name">graylog-mcp</span></div>
+    <div class="nav-label">Monitor</div>
+    <button class="nav active" data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview<span class="badge hidden" id="navIssues"></span></button>
+    <button class="nav" data-page="playground"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg>Playground</button>
+    <div class="nav-label">Configure</div>
+    <button class="nav" data-page="envs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>Environments</button>
+    <button class="nav" data-page="groups"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>Groups &amp; repos</button>
+    <button class="nav" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Settings</button>
+    <button class="nav" data-page="fields"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Field detection</button>
+    <button class="nav" data-page="redaction"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/></svg>Redaction</button>
+    <div class="nav-label">Connect</div>
+    <button class="nav" data-page="clients"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></svg>MCP clients</button>
+    <button class="nav" data-page="config"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>Config file</button>
+    <div class="foot" id="ver"></div>
+  </aside>
 
-  <section id="overview" class="active">
-    <div class="panel">
-      <h2>Environments</h2>
-      <div class="cards" id="envcards"></div>
-      <p class="muted hidden" id="noenvs">No environment yet. Add one in <a href="#" data-goto="envs">Environments</a>.</p>
-    </div>
-    <div class="panel">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <h2 style="margin:0">Health checks</h2>
-        <button class="btn primary" id="runDoctor">Run checks</button>
+  <div class="main">
+    <div class="topbar">
+      <div><h1 id="pageTitle">Overview</h1><div class="sub" id="pageSub"></div></div>
+      <div class="right">
+        <span class="badge" id="cfgStatus"></span>
+        <span class="badge mono path" id="cfgPath" title=""></span>
       </div>
-      <div class="result" id="doctorOut"><p class="muted">Checks connectivity, permissions, field mapping and redaction for every environment.</p></div>
     </div>
-  </section>
+    <div class="content">
+      <div id="banner"></div>
 
-  <section id="envs">
-    <div class="panel">
-      <h2>Environments</h2>
-      <table><thead><tr><th>Group</th><th>Environment</th><th>URL</th><th>Secret</th><th></th></tr></thead><tbody id="envrows"></tbody></table>
-      <div class="actions"><button class="btn" id="newEnv">+ Add environment</button></div>
-    </div>
-    <div class="panel hidden" id="groupsPanel">
-      <h2>Groups</h2>
-      <p class="muted">A group is one system or product line (ERP, CXP, PAYMENT...) with its own environments. Ask for <code>payment/prod</code>, or just <code>payment</code> for its default environment.</p>
-      <table><thead><tr><th>Group</th><th>Description</th><th>Default environment</th><th>Default group</th><th></th></tr></thead><tbody id="grouprows"></tbody></table>
-      <h3>Repositories</h3>
-      <p class="muted">The repositories each group serves. When the server runs inside one of them, that group becomes the default, so "prod" means that system's production.</p>
-      <table><thead><tr><th>Group</th><th>Repository</th><th>Status</th><th></th></tr></thead><tbody id="reporows"></tbody></table>
-      <h3>Add a local repository</h3>
-      <div class="row">
-        <label style="flex:2 1 360px">Folder on this machine <input id="r_path" placeholder="~/code/payment-api" spellcheck="false"></label>
-        <label>Group <select id="r_group"></select></label>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <label><span><input type="checkbox" id="r_project" checked>Write .graylog-mcp.toml in it (uses this config, group preset)</span></label>
-        <label><span><input type="checkbox" id="r_claude" checked>Register Claude Code in it (.mcp.json)</span></label>
-        <button class="btn primary" id="addRepo">Add repository</button>
-      </div>
-      <div class="result" id="repoResult"></div>
-    </div>
-    <div class="panel" id="envform">
-      <h2 id="envformTitle">Add environment</h2>
-      <div class="row">
-        <label>Group <span class="muted">(optional: erp, cxp, payment...)</span> <input id="f_group" list="groupList" placeholder="payment"></label>
-        <label>Environment <span class="muted">(any name)</span> <input id="f_name" list="envList" placeholder="prod, uat, sandbox..."></label>
-        <label style="flex:2 1 320px">Graylog URL <input id="f_url" placeholder="https://graylog.example.com"></label>
-      </div>
-      <datalist id="groupList"></datalist><datalist id="envList"></datalist>
-      <div class="row" style="margin-top:10px">
-        <label style="flex:2 1 320px">Description <input id="f_description" placeholder="Staging, deployed on every merge"></label>
-        <label>Auth <select id="f_auth"><option value="token">Access token</option><option value="basic">Username + password</option></select></label>
-      </div>
-      <div class="row" style="margin-top:10px">
-        <label class="hidden" id="usernameField">Username <input id="f_username" autocomplete="off"></label>
-        <label style="flex:2 1 320px"><span id="secretLabel">Token</span> <span class="muted" id="secretHint">(stored only on this machine, never in the repository)</span>
-          <input id="f_secret" type="password" autocomplete="new-password"></label>
-      </div>
-      <details style="margin-top:10px"><summary class="muted">Advanced: TLS, proxy, timeout, timezone, environment variable</summary>
-        <div class="row" style="margin-top:10px">
-          <label><span><input type="checkbox" id="f_verify_tls" checked>Verify TLS certificate</span></label>
-          <label>CA bundle path <input id="f_ca_bundle" placeholder="/etc/ssl/internal-ca.pem"></label>
-          <label>Proxy <input id="f_proxy" placeholder="http://proxy:3128"></label>
-          <label>Timeout (s) <input id="f_timeout" type="number" min="1" placeholder="30"></label>
-          <label>Timezone override <input id="f_timezone" placeholder="Asia/Ho_Chi_Minh"></label>
+      <!-- ============================================================ overview -->
+      <section class="page active" id="overview" data-title="Overview" data-sub="Health of every Graylog environment this project can reach">
+        <div class="grid4" id="stats"></div>
+        <div id="envGroups"></div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head">
+            <h2>Health checks</h2><span class="muted small" id="checkedAt"></span>
+            <span class="spacer"></span>
+            <label class="check small"><input type="checkbox" id="onlyProblems" checked>Only problems</label>
+            <button class="btn sm" id="runDoctor">Run again</button>
+          </div>
+          <div id="doctorOut" class="check-list"><div class="inline-msg">Checking…</div></div>
         </div>
-        <div class="row" style="margin-top:10px">
-          <label style="flex:2 1 320px">Environment variable that can also provide the <span id="varKind">token</span> <span class="muted">(for CI or shared machines; set automatically)</span>
-            <input id="f_secret_env" autocomplete="off" spellcheck="false"></label>
-        </div>
-      </details>
-      <div class="row" style="margin-top:12px">
-        <label><span><input type="checkbox" id="f_default">Default environment</span></label>
-      </div>
-      <p class="muted" id="secretsHint"></p>
-      <div class="actions">
-        <button class="btn" id="testEnv">Test connection</button>
-        <button class="btn primary" id="saveEnv">Save</button>
-        <button class="btn" id="cancelEnv">Clear</button>
-      </div>
-      <div class="result" id="envResult"></div>
-    </div>
-  </section>
+      </section>
 
-  <section id="fields">
-    <div class="panel">
-      <h2>Detect field names from the logs</h2>
-      <p class="muted">Looks at the last messages of one environment: which candidate fields exist, how many messages carry them, what the level field contains, and which application packages appear in stack traces.</p>
-      <div class="row">
-        <label>Environment <select id="d_env"></select></label>
-        <label>Range <select id="d_range"><option>1h</option><option selected>24h</option><option>7d</option></select></label>
-        <label style="flex:2 1 300px">Token <span class="muted">(only if the variable is not set; memory only)</span> <input id="d_token" type="password" autocomplete="off"></label>
-        <button class="btn primary" id="runDetect">Detect</button>
-      </div>
-      <div class="result" id="detectOut"></div>
-    </div>
-    <div class="panel">
-      <h2>Current mapping</h2>
-      <pre id="currentMapping"></pre>
-    </div>
-  </section>
-
-  <section id="redaction">
-    <div class="grid2">
-      <div class="panel">
-        <h2>Rules</h2>
-        <p class="muted">Core rules are always on: sensitive field names, emails, Bearer/Basic credentials, JWTs, key=value secrets, URL credentials, private keys, Luhn-checked card numbers.</p>
-        <h3>Country packs</h3>
-        <div id="packs"></div>
-        <label style="margin-top:6px"><span><input type="checkbox" id="r_vn_cmnd">vn: also mask bare 9-digit numbers (old CMND, noisy)</span></label>
-        <h3>Custom patterns</h3>
-        <table><thead><tr><th>Name</th><th>Regex</th><th>Replacement</th><th></th></tr></thead><tbody id="patterns"></tbody></table>
-        <div class="actions"><button class="btn" id="addPattern">+ Add pattern</button></div>
-        <h3>Never mask (allow list, one regex per line, full match)</h3>
-        <textarea id="r_allow" rows="3" placeholder="^noreply@example\.com$"></textarea>
-        <div class="row" style="margin-top:10px">
-          <label>Extra sensitive field names <input id="r_sensitive" placeholder="national_id, otp_code"></label>
-          <label>Field names never masked <input id="r_exclude" placeholder="token_count"></label>
+      <!-- ============================================================ environments -->
+      <section class="page" id="envs" data-title="Environments" data-sub="One Graylog per environment, optionally inside a group (ERP, CXP, PAYMENT…)">
+        <div class="row" style="margin-bottom:14px">
+          <div class="field" style="flex:0 1 320px"><input id="envSearch" placeholder="Filter by name, group or URL…"></div>
+          <span style="flex:1"></span>
+          <button class="btn primary" id="newEnv">+ Add environment</button>
         </div>
-        <div class="actions"><button class="btn primary" id="saveRedaction">Save rules</button></div>
-      </div>
-      <div class="panel">
-        <h2>Try it</h2>
-        <textarea id="r_input" rows="9">user=alice@example.com password=hunter2 card 4111 1111 1111 1111
+        <div id="envTable"></div>
+      </section>
+
+      <!-- ============================================================ groups -->
+      <section class="page" id="groups" data-title="Groups &amp; repositories" data-sub="Systems, their default environment and the repositories they serve">
+        <div id="groupCards"></div>
+      </section>
+
+      <!-- ============================================================ settings -->
+      <section class="page" id="settings" data-title="Settings" data-sub="Field names, queries and connection options, per scope">
+        <div class="card">
+          <div class="row">
+            <div class="field" style="flex:2 1 420px"><span class="label">Apply to</span><select id="s_scope"></select>
+              <span class="hint">An empty field inherits, in this order: global → environment → group → single instance. The grey text is the value in effect now.</span></div>
+          </div>
+        </div>
+        <div id="s_form"></div>
+        <div class="actions" style="position:sticky;bottom:0;padding:12px 0;background:linear-gradient(transparent, var(--bg) 30%)">
+          <button class="btn primary" id="saveScope">Save settings</button>
+          <button class="btn ghost" id="resetScope">Clear everything set at this level</button>
+        </div>
+      </section>
+
+      <!-- ============================================================ detection -->
+      <section class="page" id="fields" data-title="Field detection" data-sub="Let the logs tell which field names to use">
+        <div class="card">
+          <div class="row">
+            <div class="field"><span class="label">Environment</span><select id="d_env"></select></div>
+            <div class="field" style="flex:0 1 140px"><span class="label">Look at</span><select id="d_range"><option value="1h">last hour</option><option value="24h" selected>last 24 hours</option><option value="7d">last 7 days</option></select></div>
+            <button class="btn primary" id="runDetect">Detect fields</button>
+          </div>
+          <div class="hint small muted" style="margin-top:8px">Counts how many messages carry each candidate field, reads the level values and finds your application packages in stack traces. Read-only.</div>
+        </div>
+        <div id="detectOut"></div>
+      </section>
+
+      <!-- ============================================================ redaction -->
+      <section class="page" id="redaction" data-title="Redaction" data-sub="What is masked before any log line reaches the model">
+        <div class="grid2" style="align-items:start">
+          <div class="card">
+            <div class="card-head"><h2>Rules</h2></div>
+            <div class="inline-msg">Always on: sensitive field names, emails, Bearer/Basic credentials, JWTs, key=value secrets, credentials in URLs, private keys and card numbers (Luhn).</div>
+            <div class="section-title">Country packs</div>
+            <div class="chips" id="packs"></div>
+            <label class="check small" style="margin-top:8px"><input type="checkbox" id="r_vn_cmnd">vn: also mask bare 9-digit numbers (old CMND, noisy)</label>
+            <div class="section-title">Custom patterns</div>
+            <div id="patterns"></div>
+            <button class="btn sm" id="addPattern" style="margin-top:8px">+ Add pattern</button>
+            <div class="section-title">Never mask</div>
+            <div class="field"><textarea id="r_allow" rows="3" placeholder="^noreply@example\.com$"></textarea><span class="hint">One regex per line; a value fully matching one is kept.</span></div>
+            <div class="grid2" style="margin-top:12px">
+              <div class="field"><span class="label">Extra sensitive field names</span><input id="r_sensitive" placeholder="national_id, otp_code"></div>
+              <div class="field"><span class="label">Field names never masked</span><input id="r_exclude" placeholder="token_count"></div>
+            </div>
+            <div class="actions" style="margin-top:16px"><button class="btn primary" id="saveRedaction">Save rules</button></div>
+          </div>
+          <div class="card" style="position:sticky;top:90px">
+            <div class="card-head"><h2>Try it</h2><span class="spacer"></span><span class="muted small" id="r_hits"></span></div>
+            <textarea id="r_input" rows="7">user=alice@example.com password=hunter2 card 4111 1111 1111 1111
 call 0912345678 or +84 912 345 678, cccd 001099012345, order 1234567890123
 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijk
 jdbc:postgresql://admin:s3cret@db:5432/orders</textarea>
-        <h3>Output</h3>
-        <pre id="r_output"></pre>
-        <p class="muted" id="r_hits"></p>
-      </div>
-    </div>
-  </section>
+            <div class="section-title">What the model sees</div>
+            <pre id="r_output"></pre>
+          </div>
+        </div>
+      </section>
 
-  <section id="playground">
-    <div class="panel">
-      <h2>Run a tool</h2>
-      <p class="muted">Calls the same tools the model uses, with the same redaction and size limits. Read-only.</p>
-      <div class="row">
-        <label>Environment <select id="p_env"></select></label>
-        <label>Tool <select id="p_tool"></select></label>
-        <button class="btn primary" id="runTool">Run</button>
-      </div>
-      <label style="margin-top:10px">Arguments (JSON) <textarea id="p_args" rows="5"></textarea></label>
-      <p class="muted" id="p_meta"></p>
-      <pre id="p_out" class="hidden"></pre>
-    </div>
-  </section>
+      <!-- ============================================================ playground -->
+      <section class="page" id="playground" data-title="Playground" data-sub="Run the exact tools the model uses, with the same redaction and limits">
+        <div class="card">
+          <div class="row">
+            <div class="field"><span class="label">Environment</span><select id="p_env"></select></div>
+            <div class="field"><span class="label">Tool</span><select id="p_tool"></select></div>
+            <button class="btn primary" id="runTool">Run <span class="kbd">⌘↵</span></button>
+          </div>
+          <div class="field" style="margin-top:12px"><span class="label">Arguments (JSON)</span><textarea id="p_args" rows="4" spellcheck="false"></textarea></div>
+        </div>
+        <div class="card hidden" id="p_result">
+          <div class="card-head"><h2>Result</h2><span class="spacer"></span><span class="muted small" id="p_meta"></span><button class="btn sm" id="p_copy">Copy</button></div>
+          <pre id="p_out"></pre>
+        </div>
+      </section>
 
-  <section id="settings">
-    <div class="panel">
-      <h2>Settings</h2>
-      <p class="muted">Choose where settings apply. An empty field inherits, in this order: global, then environment, then group, then the single instance. The grey text in each field is the value currently in effect.</p>
-      <div class="row"><label style="flex:2 1 420px">Apply to <select id="s_scope"></select></label></div>
-      <div id="s_form" style="margin-top:12px"></div>
-      <div class="actions">
-        <button class="btn primary" id="saveScope">Save</button>
-        <button class="btn" id="resetScope">Clear everything set at this level</button>
-      </div>
-    </div>
-  </section>
+      <!-- ============================================================ clients -->
+      <section class="page" id="clients" data-title="MCP clients" data-sub="Register the server in Claude Code, Claude Desktop, Cursor or VS Code">
+        <div class="card">
+          <div class="row">
+            <div class="field" style="flex:0 1 380px"><span class="label">Start the server with</span><select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">the installed graylog-mcp command</option></select></div>
+          </div>
+          <div class="hint small muted" style="margin-top:8px">Tokens are never written into these files; the server reads the ones saved on this machine.</div>
+        </div>
+        <div id="clientCards"></div>
+        <div class="card"><div class="card-head"><h2>Claude Code for all your projects</h2><span class="spacer"></span><button class="btn sm" id="ccCopy">Copy</button></div><pre id="ccCommand"></pre></div>
+      </section>
 
-  <section id="clients">
-    <div class="panel">
-      <h2>Connect MCP clients</h2>
-      <div class="row">
-        <label>Start the server with <select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">installed graylog-mcp command</option></select></label>
-      </div>
-      <p class="muted">Tokens are never written: project files reference each developer's environment variables. Claude Desktop cannot expand variables; tick "copy current token values" to write them into your own Claude Desktop config.</p>
-      <div id="clientCards"></div>
-      <h3>Claude Code, for all your projects</h3>
-      <pre id="ccCommand"></pre>
+      <!-- ============================================================ raw config -->
+      <section class="page" id="config" data-title="Config file" data-sub="The TOML file behind every other page">
+        <div class="card">
+          <div class="card-head"><h2 class="mono small" id="rawPath" style="overflow-wrap:anywhere;min-width:0"></h2><span class="spacer"></span><span id="rawState" class="small"></span></div>
+          <textarea id="rawText" rows="28" spellcheck="false"></textarea>
+          <div class="actions" style="margin-top:12px">
+            <button class="btn primary" id="saveRaw">Save</button>
+            <button class="btn" id="validateRaw">Validate</button>
+            <button class="btn ghost" id="reloadRaw">Discard changes</button>
+          </div>
+        </div>
+      </section>
     </div>
-  </section>
+  </div>
+</div>
 
-  <section id="config">
-    <div class="panel">
-      <h2 id="rawTitle">Config file</h2>
-      <textarea id="rawText" rows="26" spellcheck="false"></textarea>
-      <div class="actions">
-        <button class="btn" id="validateRaw">Validate</button>
-        <button class="btn primary" id="saveRaw">Save</button>
-        <button class="btn" id="reloadRaw">Reload</button>
+<!-- environment drawer -->
+<div id="drawerWrap" class="hidden">
+  <div class="overlay" data-close></div>
+  <div class="drawer" role="dialog" aria-modal="true">
+    <header><h2 id="envformTitle">Add environment</h2><span style="flex:1"></span><button class="btn ghost sm" data-close>Close <span class="kbd">Esc</span></button></header>
+    <div class="body">
+      <div class="grid2">
+        <div class="field"><span class="label">Group</span><input id="f_group" list="groupList" placeholder="erp, cxp, payment… (optional)" autocomplete="off"></div>
+        <div class="field"><span class="label req">Environment</span><input id="f_name" list="envList" placeholder="prod, uat, sandbox…" autocomplete="off"><span class="error hidden" id="err_name"></span></div>
       </div>
-      <div class="result" id="rawResult"></div>
+      <div class="field"><span class="label req">Graylog URL</span><input id="f_url" placeholder="https://graylog.example.com" autocomplete="off"><span class="error hidden" id="err_url"></span></div>
+      <div class="field"><span class="label">Description</span><input id="f_description" placeholder="shown to the model, e.g. Production"></div>
+      <div class="field"><span class="label">Sign in with</span><select id="f_auth"><option value="token">Access token</option><option value="basic">Username and password</option></select></div>
+      <div class="field hidden" id="usernameField"><span class="label req">Username</span><input id="f_username" autocomplete="off"></div>
+      <div class="field"><span class="label" id="secretLabel">Token</span><input id="f_secret" type="password" autocomplete="new-password"><span class="hint" id="secretHint">Stored only on this machine, never in the repository.</span></div>
+      <details>
+        <summary>Advanced: TLS, proxy, timeout, timezone, environment variable</summary>
+        <div class="grid2">
+          <div class="field"><label class="check"><input type="checkbox" id="f_verify_tls" checked>Verify TLS certificate</label></div>
+          <div class="field"><span class="label">Timeout (seconds)</span><input id="f_timeout" type="number" min="1" placeholder="30"></div>
+          <div class="field"><span class="label">CA bundle path</span><input id="f_ca_bundle" placeholder="/etc/ssl/internal-ca.pem"></div>
+          <div class="field"><span class="label">Proxy</span><input id="f_proxy" placeholder="http://proxy:3128"></div>
+          <div class="field"><span class="label">Timezone</span><input id="f_timezone" placeholder="Asia/Ho_Chi_Minh"></div>
+          <div class="field"><span class="label">Environment variable</span><input id="f_secret_env" autocomplete="off" spellcheck="false"><span class="hint">Can also provide the <span id="varKind">token</span> (CI, shared machines).</span></div>
+        </div>
+      </details>
+      <label class="check"><input type="checkbox" id="f_default">Use as the default environment</label>
+      <div id="envResult"></div>
     </div>
-  </section>
-</main>
-<div id="toast"></div>
+    <footer>
+      <button class="btn" id="testEnv">Test connection</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost" data-close>Cancel</button>
+      <button class="btn primary" id="saveEnv">Save</button>
+    </footer>
+  </div>
+</div>
+<datalist id="groupList"></datalist><datalist id="envList"></datalist>
+
+<div id="modalWrap" class="hidden"><div class="overlay" data-modal-cancel></div>
+  <div class="modal" role="alertdialog"><h3 id="modalTitle"></h3><div class="muted" id="modalText"></div>
+    <div class="actions"><button class="btn" data-modal-cancel>Cancel</button><button class="btn primary" id="modalOk">Confirm</button></div></div></div>
+<div id="toasts"></div>
 
 <script>
 "use strict";
+// ------------------------------------------------------------------ basics
 const params = new URLSearchParams(location.hash.slice(1));
 let TOKEN = params.get("token") || sessionStorage.getItem("gm-token") || "";
 if (params.get("token")) { sessionStorage.setItem("gm-token", TOKEN); history.replaceState(null, "", location.pathname); }
-let STATE = null;
-
+let STATE = null, CHECKS = null, SCOPES = [{scope: "global", label: "All environments (global defaults)"}];
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3500); }
+const show = (v) => Array.isArray(v) ? v.join(", ") : (v === null || v === undefined ? "" : String(v));
+const splitList = (v) => v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function toast(msg, kind = "ok") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.innerHTML = `<span class="ti">${kind === "fail" ? "✕" : kind === "info" ? "ℹ" : "✓"}</span><span>${esc(msg)}</span>`;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), kind === "fail" ? 7000 : 3500);
+}
 async function api(path, method = "GET", body) {
   const res = await fetch(path, {method, headers: {"X-Admin-Token": TOKEN, "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)});
   let data = {};
@@ -293,139 +413,168 @@ async function api(path, method = "GET", body) {
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
-async function busy(btn, fn) { btn.disabled = true; try { return await fn(); } catch (e) { toast(e.message); } finally { btn.disabled = false; } }
-function splitList(v) { return v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean); }
-
-// ---------------------------------------------------------------- tabs
-document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
-document.addEventListener("click", (e) => { const g = e.target.closest("[data-goto]"); if (g) { e.preventDefault(); showTab(g.dataset.goto); } });
-function showTab(name) {
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  document.querySelectorAll("main section").forEach((s) => s.classList.toggle("active", s.id === name));
-  if (name === "config") loadRaw();
-  if (name === "clients") loadClients();
-  if (name === "settings") loadScope().catch((e) => toast(e.message));
-  if (name === "redaction") previewRedaction();
+async function busy(btn, fn) {
+  btn.disabled = true; btn.classList.add("loading");
+  try { return await fn(); } catch (e) { toast(e.message, "fail"); } finally { btn.disabled = false; btn.classList.remove("loading"); }
 }
-
-// ---------------------------------------------------------------- state
-async function loadState() {
-  STATE = await api("/api/state");
-  $("cfgpath").textContent = STATE.config_path + (STATE.exists ? "" : " (not created yet)");
-  $("ver").textContent = "v" + STATE.version;
-  $("cfgerror").classList.toggle("hidden", !STATE.error);
-  $("cfgerror").textContent = STATE.error ? "Config problem: " + STATE.error : "";
-  $("secretsHint").textContent = `Tokens and passwords are kept in ${STATE.secrets_file} (only you can read it), never in the repository.`;
-  renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
-  try { SCOPES = (await api("/api/scope?scope=global")).scopes; } catch (e) { /* config not valid yet */ }
-}
-
-function groupDesc(g) { const d = (STATE.groups.find((x) => x.name === g) || {}).description || ""; return d.toLowerCase() === g.toLowerCase() ? "" : d; }
-function secretChip(e) {
-  if (e.secret_source === "env") return '<span class="chip ok">set (environment)</span>';
-  if (e.secret_source === "saved") return '<span class="chip ok">saved on this machine</span>';
-  return '<span class="chip warn">missing</span>';
+function confirmBox(title, text, okLabel = "Confirm", danger = false) {
+  return new Promise((resolve) => {
+    $("modalTitle").textContent = title; $("modalText").textContent = text;
+    $("modalOk").textContent = okLabel; $("modalOk").className = danger ? "btn primary" : "btn primary";
+    $("modalOk").style.background = danger ? "var(--fail)" : ""; $("modalOk").style.borderColor = danger ? "var(--fail)" : "";
+    $("modalWrap").classList.remove("hidden");
+    const done = (v) => { $("modalWrap").classList.add("hidden"); resolve(v); };
+    $("modalOk").onclick = () => done(true);
+    document.querySelectorAll("[data-modal-cancel]").forEach((b) => (b.onclick = () => done(false)));
+  });
 }
 function label(e) { return e.group ? `${e.group}/${e.environment}` : e.name; }
-function renderEnvs() {
-  const envs = STATE.instances;
-  $("noenvs").classList.toggle("hidden", envs.length > 0);
-  const byGroup = {};
-  for (const e of envs) (byGroup[e.group || ""] ||= []).push(e);
-  $("envcards").innerHTML = Object.entries(byGroup).map(([g, items]) => `
-    ${g ? `<h3 style="grid-column:1/-1;margin:4px 0 0">${esc(g)} <span class="muted" style="text-transform:none;letter-spacing:0">${esc(groupDesc(g))}</span></h3>` : ""}
-    ${items.map((e) => `
-    <div class="card">
-      <div class="name">${esc(e.environment || e.name)} ${e.default ? '<span class="chip info">default</span>' : ""} ${e.local ? "" : '<span class="chip">included</span>'}</div>
-      <div class="muted">${esc(e.description || e.url)}</div>
-      <div style="margin-top:6px">${secretChip(e)}</div>
-      <div class="muted" id="card-${esc(e.name)}" style="margin-top:6px"></div>
-    </div>`).join("")}`).join("");
-  $("envrows").innerHTML = envs.map((e) => `
-    <tr>
-      <td>${esc(e.group || "")}</td>
-      <td><b>${esc(e.environment || e.name)}</b> ${e.default ? '<span class="chip info">default</span>' : ""}<div class="muted">${esc(e.description)}</div></td>
-      <td>${esc(e.url)}</td>
-      <td><code>${esc(e.secret_env)}</code> ${secretChip(e)}${e.invalid ? ' <span class="chip fail">fix</span>' : ""}</td>
-      <td style="white-space:nowrap">${e.local
-        ? `<button class="btn" data-edit="${esc(e.name)}">Edit</button> <button class="btn danger" data-del="${esc(e.name)}">Delete</button>`
-        : '<span class="muted">from an included file</span>'}</td>
-    </tr>`).join("") || '<tr><td colspan="5" class="muted">No environment yet.</td></tr>';
-  for (const sel of [$("d_env"), $("p_env")]) {
-    const keep = sel.value;
-    sel.innerHTML = envs.map((e) => `<option value="${esc(e.name)}"${e.default ? " selected" : ""}>${esc(label(e))}</option>`).join("");
-    if (envs.some((e) => e.name === keep)) sel.value = keep;
-  }
-  $("groupList").innerHTML = STATE.groups.map((g) => `<option value="${esc(g.name)}">`).join("");
-  const envNames = new Set([...Object.keys(STATE.environments || {}), ...envs.map((e) => e.environment).filter(Boolean)]);
-  $("envList").innerHTML = [...envNames].map((n) => `<option value="${esc(n)}">`).join("");
-  $("groupsPanel").classList.toggle("hidden", STATE.groups.length === 0);
-  renderRepos();
-  $("grouprows").innerHTML = STATE.groups.map((g) => `
-    <tr data-group="${esc(g.name)}">
-      <td><b>${esc(g.name)}</b></td>
-      <td><input class="gdesc" value="${esc(g.description || "")}" placeholder="what this system is, e.g. Core lending"></td>
-      <td><select class="genv"><option value="">(none)</option>${g.environments.map((e) => `<option${e === g.default_environment ? " selected" : ""}>${esc(e)}</option>`).join("")}</select></td>
-      <td><input type="radio" name="defgroup" class="gdef"${STATE.default_group === g.name ? " checked" : ""}></td>
-      <td><button class="btn" data-savegroup="${esc(g.name)}">Save</button></td>
-    </tr>`).join("");
+function secretBadge(e) {
+  if (e.secret_source === "env") return '<span class="badge ok">token from environment</span>';
+  if (e.secret_source === "saved") return `<span class="badge ok">${e.auth === "basic" ? "password" : "token"} saved</span>`;
+  return `<span class="badge warn">${e.auth === "basic" ? "password" : "token"} missing</span>`;
 }
-function renderRepos() {
-  const rows = STATE.groups.flatMap((g) => (g.repos || []).map((r) => {
-    const status = r.kind === "url" ? '<span class="chip">matched by git remote</span>'
-      : !r.exists ? '<span class="chip fail">folder not found</span>'
-      : [r.remote ? `<span class="chip">${esc(r.remote)}</span>` : "",
-         r.project_config ? '<span class="chip ok">.graylog-mcp.toml</span>' : '<span class="chip warn">no .graylog-mcp.toml</span>',
-         r.claude_code ? '<span class="chip ok">Claude Code</span>' : '<span class="chip">no .mcp.json</span>'].join(" ");
-    return `<tr><td>${esc(g.name)}</td><td><code>${esc(r.entry)}</code></td><td>${status}</td>
-      <td style="white-space:nowrap">${r.kind === "path" && r.exists && !(r.project_config && r.claude_code)
-        ? `<button class="btn" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">Set up</button> ` : ""}<button class="btn danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></td></tr>`;
-  }));
-  $("reporows").innerHTML = rows.join("") || '<tr><td colspan="4" class="muted">No repository yet.</td></tr>';
-  const keep = $("r_group").value;
-  $("r_group").innerHTML = STATE.groups.map((g) => `<option${g.name === keep ? " selected" : ""}>${esc(g.name)}</option>`).join("");
+
+// ------------------------------------------------------------------ navigation
+function showPage(name) {
+  document.querySelectorAll(".nav").forEach((b) => b.classList.toggle("active", b.dataset.page === name));
+  document.querySelectorAll(".page").forEach((s) => s.classList.toggle("active", s.id === name));
+  const page = $(name);
+  $("pageTitle").innerHTML = page.dataset.title; $("pageSub").textContent = page.dataset.sub || "";
+  history.replaceState(null, "", `#${name}`);
+  const active = document.querySelector(".nav.active"); if (active) active.scrollIntoView({block: "nearest", inline: "nearest"});
+  if (name === "config") loadRaw();
+  if (name === "clients") loadClients();
+  if (name === "redaction") previewRedaction();
+  if (name === "settings") loadScope().catch((e) => toast(e.message, "fail"));
 }
-$("reporows").addEventListener("click", (ev) => {
-  const s = ev.target.closest("[data-setuprepo]");
-  if (s) {
-    busy(s, async () => { await api("/api/repos/setup", "POST", {group: s.dataset.group, repo: s.dataset.setuprepo}); toast("Repository set up"); await loadState(); });
-    return;
-  }
-  const b = ev.target.closest("[data-rmrepo]");
-  if (!b || !confirm(`Remove ${b.dataset.rmrepo} from ${b.dataset.group}? (files in the repository are not touched)`)) return;
-  busy(b, async () => { await api("/api/repos/remove", "POST", {group: b.dataset.group, repo: b.dataset.rmrepo}); toast("Removed"); await loadState(); });
-});
-$("addRepo").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const path = $("r_path").value.trim();
-  if (!path) throw new Error("Enter the folder of the repository");
-  const r = await api("/api/repos", "POST", {group: $("r_group").value, repo: path, project_config: $("r_project").checked, claude_code: $("r_claude").checked});
-  $("repoResult").innerHTML = `<span class="status-ok">✓ added to ${esc($("r_group").value)}</span>`
-    + (r.remote ? ` · remote <code>${esc(r.remote)}</code>` : "")
-    + (r.project_config ? ` · wrote <code>${esc(r.project_config)}</code>` : "")
-    + (r.claude_code ? ` · Claude Code: <code>${esc(r.claude_code)}</code>` : "");
-  $("r_path").value = ""; await loadState();
-}));
-$("grouprows").addEventListener("click", (ev) => {
-  const b = ev.target.closest("[data-savegroup]");
-  if (!b) return;
-  const tr = b.closest("tr");
-  busy(b, async () => {
-    await api("/api/groups", "POST", {group: tr.dataset.group, description: tr.querySelector(".gdesc").value.trim(),
-      default_environment: tr.querySelector(".genv").value, make_default: tr.querySelector(".gdef").checked});
-    toast(`Saved group ${tr.dataset.group}`); await loadState();
-  });
+document.querySelectorAll(".nav").forEach((b) => b.addEventListener("click", () => showPage(b.dataset.page)));
+document.addEventListener("click", (e) => { const g = e.target.closest("[data-goto]"); if (g) { e.preventDefault(); showPage(g.dataset.goto); } });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeDrawer(); $("modalWrap").classList.add("hidden"); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && $("playground").classList.contains("active")) $("runTool").click();
 });
 
-// ---------------------------------------------------------------- environments
-let editing = null;
-let editingEntry = null;
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const isBasic = () => $("f_auth").value === "basic";
-function fullName() { const g = $("f_group").value.trim(); const n = $("f_name").value.trim(); return g ? `${g}/${n}` : n; }
-function autoVar() {
-  const n = (fullName() || "STAGING").toUpperCase().replace(/[^A-Z0-9]/g, "_");
-  return `GRAYLOG_${n}_${isBasic() ? "PASSWORD" : "TOKEN"}`;
+// ------------------------------------------------------------------ state
+async function loadState() {
+  STATE = await api("/api/state");
+  $("cfgPath").textContent = STATE.config_path; $("cfgPath").title = STATE.config_path;
+  $("ver").textContent = `v${STATE.version}`;
+  const st = $("cfgStatus");
+  if (STATE.error) { st.className = "badge fail"; st.textContent = "config needs a fix"; }
+  else if (!STATE.exists) { st.className = "badge warn"; st.textContent = "no config yet"; }
+  else { st.className = "badge ok"; st.textContent = "config valid"; }
+  $("banner").innerHTML = STATE.error
+    ? `<div class="banner fail"><b>✕</b><div><b>The config file has a problem.</b> ${esc(STATE.error)}<div class="small" style="margin-top:4px">Fix it from <a href="#" data-goto="envs">Environments</a> or <a href="#" data-goto="config">Config file</a>.</div></div></div>` : "";
+  try { SCOPES = (await api("/api/scope?scope=global")).scopes; } catch (e) { /* invalid config */ }
+  renderStats(); renderEnvGroups(); renderEnvTable(); renderGroups(); renderFields(); renderRedaction(); renderPlayground();
 }
+
+// ------------------------------------------------------------------ overview
+function envHealth(e) {
+  if (!CHECKS) return {cls: "busy", text: "checking…"};
+  const mine = CHECKS.filter((c) => c.instance === e.name);
+  const worst = mine.some((c) => c.status === "fail") ? "fail" : mine.some((c) => c.status === "warn") ? "warn" : mine.length ? "ok" : "";
+  const main = mine.find((c) => c.status === "fail") || mine.find((c) => c.name === "connection") || mine[0];
+  return {cls: worst, text: main ? main.detail : ""};
+}
+function renderStats() {
+  const envs = STATE.instances;
+  let ok = 0, bad = 0;
+  if (CHECKS) for (const e of envs) { const h = envHealth(e).cls; if (h === "ok") ok++; else if (h === "fail" || h === "warn") bad++; }
+  const missing = envs.filter((e) => !e.secret_set).length;
+  const tile = (n, l, cls = "") => `<div class="stat ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  $("stats").innerHTML = tile(envs.length, "environments") + tile(CHECKS ? ok : "…", "healthy", "ok")
+    + tile(CHECKS ? bad : "…", "need attention", bad ? "fail" : "") + tile(missing, "missing token or password", missing ? "warn" : "");
+  const issues = CHECKS ? CHECKS.filter((c) => c.status === "fail").length : 0;
+  $("navIssues").textContent = issues; $("navIssues").className = issues ? "badge fail" : "badge hidden";
+}
+function byGroup(envs) { const out = {}; for (const e of envs) (out[e.group || ""] ||= []).push(e); return Object.entries(out).sort(([a], [b]) => (a || "~").localeCompare(b || "~")); }
+function groupInfo(g) { return (STATE.groups || []).find((x) => x.name === g) || {}; }
+function renderEnvGroups() {
+  const envs = STATE.instances;
+  if (!envs.length) {
+    $("envGroups").innerHTML = `<div class="card empty"><h3>No environment yet</h3><div>Add the Graylog of each environment, optionally grouped by system (ERP, CXP, PAYMENT…).</div>
+      <div class="actions"><button class="btn primary" onclick="openDrawer(null)">+ Add your first environment</button></div></div>`;
+    return;
+  }
+  $("envGroups").innerHTML = byGroup(envs).map(([g, items]) => {
+    const info = groupInfo(g);
+    const desc = info.description && info.description.toLowerCase() !== g.toLowerCase() ? info.description : "";
+    return `${g ? `<div class="group-title"><h3>${esc(g)}</h3><span class="muted small">${esc(desc)}</span>${STATE.default_group === g ? '<span class="badge info">default group</span>' : ""}</div>` : '<div style="height:16px"></div>'}
+      <div class="env-grid">${items.map((e) => { const h = envHealth(e); return `
+        <div class="env-card" data-open="${esc(e.name)}">
+          <div class="top"><span class="dot ${h.cls}"></span><span class="name">${esc(e.environment || e.name)}</span>${e.default ? '<span class="badge info">default</span>' : ""}${e.local ? "" : '<span class="badge">shared file</span>'}</div>
+          <div class="muted small">${esc(e.description || e.url)}</div>
+          <div>${secretBadge(e)}</div>
+          ${!e.secret_set && e.local
+            ? `<div class="cta">Add the ${e.auth === "basic" ? "password" : "token"} →</div>`
+            : `<div class="detail" title="${esc(h.text)}">${esc(h.text)}</div>`}
+        </div>`; }).join("")}</div>`;
+  }).join("");
+}
+document.addEventListener("click", (ev) => {
+  const card = ev.target.closest("[data-open]");
+  if (card) { const e = STATE.instances.find((x) => x.name === card.dataset.open); if (e && e.local) openDrawer(e); else if (e) toast("This environment comes from the shared config file; edit it there.", "info"); }
+});
+async function runDoctor() {
+  $("runDoctor").disabled = true; $("runDoctor").classList.add("loading");
+  try { CHECKS = (await api("/api/doctor")).checks; $("checkedAt").textContent = `checked ${new Date().toLocaleTimeString()}`; }
+  catch (e) { toast(e.message, "fail"); }
+  finally { $("runDoctor").disabled = false; $("runDoctor").classList.remove("loading"); }
+  renderChecks(); renderStats(); renderEnvGroups();
+}
+function renderChecks() {
+  if (!CHECKS) return;
+  const only = $("onlyProblems").checked;
+  const icon = {ok: "✓", warn: "!", fail: "✕", info: "·"};
+  const list = CHECKS.filter((c) => !only || c.status === "fail" || c.status === "warn");
+  $("doctorOut").innerHTML = list.length ? list.map((c) => `
+    <div class="check-item"><span class="icon ${c.status}">${icon[c.status]}</span>
+      <div><b>${esc(c.instance || "general")}</b><div class="muted small">${esc(c.name)}</div></div>
+      <div>${esc(c.detail)}${c.fix ? `<div class="fix">Fix: ${esc(c.fix).replace(/graylog-mcp [\w/ .-]+/g, (m) => `<code>${m}</code>`)}</div>` : ""}</div></div>`).join("")
+    : `<div class="inline-msg"><span class="status-ok">✓</span> Everything looks good${only ? " — untick “Only problems” to see every check" : ""}.</div>`;
+}
+$("runDoctor").addEventListener("click", runDoctor);
+$("onlyProblems").addEventListener("change", renderChecks);
+
+// ------------------------------------------------------------------ environments table
+function renderEnvTable() {
+  const q = $("envSearch").value.trim().toLowerCase();
+  const envs = STATE.instances.filter((e) => !q || [e.name, e.group, e.url, e.description].join(" ").toLowerCase().includes(q));
+  if (!STATE.instances.length) {
+    $("envTable").innerHTML = `<div class="card empty"><h3>No environment yet</h3><div>Each environment points to one Graylog. Name it as you like: dev, uat, sandbox, prod…</div>
+      <div class="actions"><button class="btn primary" onclick="openDrawer(null)">+ Add environment</button></div></div>`;
+    return;
+  }
+  const rows = byGroup(envs).map(([g, items]) => `${g ? `<tr class="group-row"><td colspan="5">${esc(g)}</td></tr>` : ""}${items.map((e) => `
+    <tr>
+      <td><div style="display:flex;gap:8px;align-items:center"><span class="dot ${envHealth(e).cls}"></span><b>${esc(e.environment || e.name)}</b>${e.default ? '<span class="badge info">default</span>' : ""}${e.invalid ? '<span class="badge fail">needs a fix</span>' : ""}</div>
+        <div class="muted small">${esc(e.description)}</div></td>
+      <td class="mono small">${esc(e.url)}</td>
+      <td>${e.auth === "basic" ? "username + password" : "access token"}</td>
+      <td>${secretBadge(e)}</td>
+      <td style="white-space:nowrap">${e.local
+        ? `<button class="btn sm" data-edit="${esc(e.name)}">Edit</button> <button class="btn sm ghost danger" data-del="${esc(e.name)}">Delete</button>`
+        : '<span class="muted small">from the shared file</span>'}</td>
+    </tr>`).join("")}`).join("");
+  $("envTable").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Environment</th><th>URL</th><th>Sign-in</th><th>Credentials</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="muted">No match.</td></tr>'}</tbody></table></div>`;
+}
+$("envSearch").addEventListener("input", renderEnvTable);
+$("newEnv").addEventListener("click", () => openDrawer(null));
+$("envTable").addEventListener("click", async (ev) => {
+  const edit = ev.target.closest("[data-edit]"), del = ev.target.closest("[data-del]");
+  if (edit) openDrawer(STATE.instances.find((e) => e.name === edit.dataset.edit));
+  if (del && await confirmBox(`Delete ${del.dataset.del}?`, "It is removed from the config file. Saved tokens and passwords stay on this machine.", "Delete", true)) {
+    try { await api(`/api/instances/${encodeURIComponent(del.dataset.del)}`, "DELETE"); toast(`Deleted ${del.dataset.del}`); await loadState(); runDoctor(); } catch (e) { toast(e.message, "fail"); }
+  }
+});
+
+// ------------------------------------------------------------------ environment drawer
+let editing = null, editingEntry = null;
+const isBasic = () => $("f_auth").value === "basic";
+function fullName() { const g = $("f_group").value.trim(), n = $("f_name").value.trim(); return g ? `${g}/${n}` : n; }
+function autoVar() { const n = (fullName() || "STAGING").toUpperCase().replace(/[^A-Z0-9]/g, "_"); return `GRAYLOG_${n}_${isBasic() ? "PASSWORD" : "TOKEN"}`; }
 function secretVar() { return $("f_secret_env").value.trim() || autoVar(); }
 function syncAuth() {
   const kind = isBasic() ? "password" : "token";
@@ -434,141 +583,137 @@ function syncAuth() {
   $("varKind").textContent = kind;
   $("f_secret_env").placeholder = autoVar();
   const src = editingEntry && editingEntry.secret_source;
-  $("f_secret").placeholder = src === "saved" ? `•••••••• ${kind} saved; leave empty to keep it`
-    : src === "env" ? `taken from $${editingEntry.secret_env}; type to save one here instead`
-    : `paste the ${kind}`;
+  $("f_secret").placeholder = src === "saved" ? `•••••••• saved — leave empty to keep it` : src === "env" ? `taken from $${editingEntry.secret_env}` : `paste the ${kind}`;
+  $("secretHint").textContent = src === "saved" ? "A value is saved on this machine. Type a new one to replace it." : "Stored only on this machine, never in the repository.";
 }
-$("f_auth").addEventListener("change", syncAuth);
-$("f_name").addEventListener("input", syncAuth);
-$("f_group").addEventListener("input", syncAuth);
-$("f_secret_env").addEventListener("input", () => {
-  const v = $("f_secret_env").value, bad = v && !ENV_NAME.test(v);
-  $("f_secret_env").style.borderColor = bad ? "var(--fail)" : "";
-  $("f_secret_env").title = bad ? "A variable NAME such as GRAYLOG_PROD_TOKEN; type the secret itself in the field above" : "";
-});
-function envForm(e) {
-  editing = e ? e.name : null;
-  editingEntry = e || null;
+["f_auth", "f_name", "f_group"].forEach((id) => $(id).addEventListener("input", syncAuth));
+$("f_secret_env").addEventListener("input", () => $("f_secret_env").classList.toggle("invalid", !!$("f_secret_env").value && !ENV_NAME.test($("f_secret_env").value)));
+function openDrawer(e) {
+  editing = e ? e.name : null; editingEntry = e || null;
   const f = e ? e.fields : {};
   $("envformTitle").textContent = e ? `Edit ${label(e)}` : "Add environment";
-  $("f_group").value = e ? (e.group || "") : "";
-  $("f_name").value = e ? (e.environment || e.name) : "";
-  $("f_url").value = f.url || "";
-  $("f_description").value = f.description || "";
-  $("f_auth").value = e ? e.auth : "token";
-  $("f_username").value = f.username || "";
-  $("f_secret_env").value = (e && e.auth === "basic" ? f.password_env : f.token_env) || "";
-  $("f_secret_env").style.borderColor = "";
-  $("f_secret").value = "";
-  $("f_verify_tls").checked = f.verify_tls !== false;
-  $("f_ca_bundle").value = f.ca_bundle || "";
-  $("f_proxy").value = f.proxy || "";
-  $("f_timeout").value = f.timeout || "";
-  $("f_timezone").value = f.timezone || "";
+  $("f_group").value = e ? (e.group || "") : ""; $("f_name").value = e ? (e.environment || e.name) : "";
+  $("f_url").value = f.url || ""; $("f_description").value = f.description || "";
+  $("f_auth").value = e ? e.auth : "token"; $("f_username").value = f.username || "";
+  $("f_secret_env").value = (e && e.auth === "basic" ? f.password_env : f.token_env) || ""; $("f_secret_env").classList.remove("invalid");
+  $("f_secret").value = ""; $("f_verify_tls").checked = f.verify_tls !== false;
+  $("f_ca_bundle").value = f.ca_bundle || ""; $("f_proxy").value = f.proxy || ""; $("f_timeout").value = f.timeout || ""; $("f_timezone").value = f.timezone || "";
   $("f_default").checked = e ? e.default : STATE.instances.length === 0;
-  $("envResult").innerHTML = "";
+  $("envResult").innerHTML = ""; ["name", "url"].forEach((k) => { $(`err_${k}`).classList.add("hidden"); $(`f_${k}`).classList.remove("invalid"); });
+  $("groupList").innerHTML = (STATE.groups || []).map((g) => `<option value="${esc(g.name)}">`).join("");
+  const envNames = new Set([...Object.keys(STATE.environments || {}), ...STATE.instances.map((x) => x.environment).filter(Boolean)]);
+  $("envList").innerHTML = [...envNames].map((n) => `<option value="${esc(n)}">`).join("");
   syncAuth();
+  $("drawerWrap").classList.remove("hidden");
+  setTimeout(() => (e ? $("f_secret") : $("f_group")).focus(), 50);
 }
+function closeDrawer() { $("drawerWrap").classList.add("hidden"); }
+document.querySelectorAll("#drawerWrap [data-close]").forEach((b) => b.addEventListener("click", closeDrawer));
 function formFields() {
-  const fields = {
-    url: $("f_url").value.trim(), description: $("f_description").value.trim(), auth: $("f_auth").value,
-    ca_bundle: $("f_ca_bundle").value.trim(), proxy: $("f_proxy").value.trim(), timezone: $("f_timezone").value.trim(),
-  };
-  if (isBasic()) { fields.username = $("f_username").value.trim(); fields.password_env = secretVar(); }
-  else { fields.token_env = secretVar(); }
+  const fields = {url: $("f_url").value.trim(), description: $("f_description").value.trim(), auth: $("f_auth").value,
+    ca_bundle: $("f_ca_bundle").value.trim(), proxy: $("f_proxy").value.trim(), timezone: $("f_timezone").value.trim()};
+  if (isBasic()) { fields.username = $("f_username").value.trim(); fields.password_env = secretVar(); } else { fields.token_env = secretVar(); }
   if (!$("f_verify_tls").checked) fields.verify_tls = false;
   if ($("f_timeout").value) fields.timeout = Number($("f_timeout").value);
   return fields;
 }
-function showTest(target, r) {
-  target.innerHTML = r.ok
-    ? `<span class="status-ok">✓ Graylog ${esc(r.version)}</span> · ${r.streams} streams · ${Number(r.messages_24h).toLocaleString()} messages in 24h · messages via <code>${esc(r.message_api)}</code>, aggregations via <code>${esc(r.aggregation_api)}</code>`
-    : `<span class="status-fail">✗ ${esc(r.error)}</span>${r.fix ? `<div class="muted">fix: ${esc(r.fix)}</div>` : ""}`;
+["name", "url"].forEach((k) => $(`f_${k}`).addEventListener("input", () => { $(`err_${k}`).classList.add("hidden"); $(`f_${k}`).classList.remove("invalid"); }));
+function validateForm() {
+  let ok = true;
+  const setErr = (k, msg) => { $(`err_${k}`).textContent = msg || ""; $(`err_${k}`).classList.toggle("hidden", !msg); $(`f_${k}`).classList.toggle("invalid", !!msg); if (msg) ok = false; };
+  setErr("name", $("f_name").value.trim() ? (/^[A-Za-z0-9_.-]+$/.test($("f_name").value.trim()) ? "" : "Letters, digits, '_', '-' or '.' only") : "Give the environment a name");
+  const url = $("f_url").value.trim();
+  setErr("url", !url ? "The Graylog address is required" : /^https?:\/\//.test(url) ? "" : "Start with http:// or https://");
+  return ok;
 }
-$("testEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const r = await api("/api/test", "POST", {name: fullName().replace("/", "-") || "test", fields: formFields(), token: $("f_secret").value || null});
-  showTest($("envResult"), r);
-}));
-$("saveEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const name = fullName();
-  if (!$("f_name").value.trim()) throw new Error("Environment name is required");
-  if (!$("f_url").value.trim()) throw new Error("Graylog URL is required");
-  const fields = formFields();
+function showTest(r) {
+  $("envResult").innerHTML = r.ok
+    ? `<div class="banner info" style="margin:0"><b class="status-ok">✓</b><div><b>Connected to Graylog ${esc(r.version)}</b><div class="small">${r.streams} streams · ${Number(r.messages_24h).toLocaleString()} messages in 24h · messages via ${esc(r.message_api)}, aggregations via ${esc(r.aggregation_api)}</div></div></div>`
+    : `<div class="banner fail" style="margin:0"><b>✕</b><div><b>${esc(r.error)}</b>${r.fix ? `<div class="small">Fix: ${esc(r.fix)}</div>` : ""}</div></div>`;
+}
+$("testEnv").addEventListener("click", (ev) => { if (!validateForm()) return; busy(ev.target, async () => {
+  showTest(await api("/api/test", "POST", {name: fullName().replace("/", "-") || "test", fields: formFields(), token: $("f_secret").value || null}));
+}); });
+$("saveEnv").addEventListener("click", (ev) => { if (!validateForm()) return; busy(ev.target, async () => {
+  const name = fullName(), fields = formFields(), secret = $("f_secret").value;
   await api("/api/instances", "POST", {name, original_name: editing, fields, make_default: $("f_default").checked});
-  const secret = $("f_secret").value;
-  if (secret) {
-    await api("/api/secrets", "POST", {name: secretVar(), value: secret});
-    $("f_secret").value = "";
-  }
+  if (secret) await api("/api/secrets", "POST", {name: secretVar(), value: secret});
   toast(secret ? `Saved ${name} and its ${isBasic() ? "password" : "token"} (on this machine only)` : `Saved ${name}`);
-  editing = name; await loadState();
-  envForm(STATE.instances.find((e) => e.name === name) || null);
-}));
-$("cancelEnv").addEventListener("click", () => envForm(null));
-$("newEnv").addEventListener("click", () => { envForm(null); $("f_name").focus(); });
-$("envrows").addEventListener("click", async (ev) => {
-  const edit = ev.target.closest("[data-edit]"); const del = ev.target.closest("[data-del]");
-  if (edit) envForm(STATE.instances.find((e) => e.name === edit.dataset.edit));
-  if (del && confirm(`Delete environment ${del.dataset.del}?`)) {
-    try { await api(`/api/instances/${encodeURIComponent(del.dataset.del)}`, "DELETE"); toast("Deleted"); await loadState(); } catch (e) { toast(e.message); }
+  closeDrawer(); await loadState(); runDoctor();
+}); });
+
+// ------------------------------------------------------------------ groups & repositories
+function renderGroups() {
+  const groups = STATE.groups || [];
+  if (!groups.length) {
+    $("groupCards").innerHTML = `<div class="card empty"><h3>No group yet</h3><div>Groups are systems with their own environments, e.g. ERP, CXP, PAYMENT.<br>Create one by filling the <b>Group</b> field when you add an environment.</div>
+      <div class="actions"><button class="btn primary" onclick="openDrawer(null)">+ Add an environment in a group</button></div></div>`;
+    return;
+  }
+  $("groupCards").innerHTML = groups.map((g) => {
+    const repos = (g.repos || []).map((r) => {
+      const meta = r.kind === "url" ? '<span class="badge">matched by git remote</span>'
+        : !r.exists ? '<span class="badge fail">folder not found</span>'
+        : [r.remote ? `<span class="badge mono">${esc(r.remote)}</span>` : '<span class="badge">no git remote</span>',
+           r.project_config ? '<span class="badge ok">.graylog-mcp.toml</span>' : '<span class="badge warn">not set up</span>',
+           r.claude_code ? '<span class="badge ok">Claude Code</span>' : ""].join(" ");
+      const canSetup = r.kind === "path" && r.exists && !(r.project_config && r.claude_code);
+      return `<div class="repo"><div><span class="mono">${esc(r.entry)}</span><div class="meta">${meta}</div></div>
+        <div class="actions">${canSetup ? `<button class="btn sm" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">Set up</button>` : ""}
+          <button class="btn sm ghost danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></div></div>`;
+    }).join("");
+    return `<div class="card" data-group="${esc(g.name)}">
+      <div class="card-head"><h2>${esc(g.name)}</h2>${STATE.default_group === g.name ? '<span class="badge info">default group</span>' : ""}
+        <div class="chips">${g.environments.map((e) => `<span class="badge">${esc(e)}</span>`).join("")}</div></div>
+      <div class="grid2">
+        <div class="field"><span class="label">Description</span><input class="gdesc" value="${esc(g.description || "")}" placeholder="what this system is"></div>
+        <div class="field"><span class="label">Default environment</span><select class="genv"><option value="">(none)</option>${g.environments.map((e) => `<option${e === g.default_environment ? " selected" : ""}>${esc(e)}</option>`).join("")}</select>
+          <span class="hint">Used when a question names only this group.</span></div>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <label class="check small"><input type="checkbox" class="gdef"${STATE.default_group === g.name ? " checked" : ""}>Default group for questions that name no system</label>
+        <span style="flex:1"></span><button class="btn sm primary" data-savegroup="${esc(g.name)}" disabled title="No change yet">Save group</button></div>
+      <div class="section-title">Repositories <span class="faint" style="text-transform:none;letter-spacing:0;font-weight:400">· inside these, this group is the default</span></div>
+      ${repos || '<div class="inline-msg">No repository yet.</div>'}
+      <div class="row" style="margin-top:12px">
+        <div class="field" style="flex:2 1 300px"><input class="rpath" placeholder="Folder on this machine, e.g. ~/code/payment-api" spellcheck="false"></div>
+        <button class="btn" data-addrepo="${esc(g.name)}">Add repository</button>
+      </div>
+      <div class="actions small" style="margin-top:8px">
+        <label class="check small"><input type="checkbox" class="rproject" checked>write .graylog-mcp.toml in it</label>
+        <label class="check small"><input type="checkbox" class="rclaude" checked>register Claude Code (.mcp.json)</label>
+      </div>
+    </div>`;
+  }).join("");
+}
+// Save group lights up only after a change; Enter in the folder box adds the repository
+$("groupCards").addEventListener("input", (ev) => {
+  if (!ev.target.matches(".gdesc, .genv, .gdef")) return;
+  const btn = ev.target.closest(".card").querySelector("[data-savegroup]"); btn.disabled = false; btn.title = "";
+});
+$("groupCards").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.matches(".rpath")) ev.target.closest(".card").querySelector("[data-addrepo]").click(); });
+$("groupCards").addEventListener("click", async (ev) => {
+  const card = ev.target.closest("[data-group]");
+  const save = ev.target.closest("[data-savegroup]"), add = ev.target.closest("[data-addrepo]");
+  const setup = ev.target.closest("[data-setuprepo]"), rm = ev.target.closest("[data-rmrepo]");
+  if (save) busy(save, async () => {
+    await api("/api/groups", "POST", {group: save.dataset.savegroup, description: card.querySelector(".gdesc").value.trim(),
+      default_environment: card.querySelector(".genv").value, make_default: card.querySelector(".gdef").checked});
+    toast(`Saved group ${save.dataset.savegroup}`); await loadState();
+  });
+  if (add) busy(add, async () => {
+    const path = card.querySelector(".rpath").value.trim();
+    if (!path) throw new Error("Enter the folder of the repository");
+    const r = await api("/api/repos", "POST", {group: add.dataset.addrepo, repo: path, project_config: card.querySelector(".rproject").checked, claude_code: card.querySelector(".rclaude").checked});
+    toast(`Added to ${add.dataset.addrepo}${r.remote ? ` (${r.remote})` : ""}${r.project_config ? ", set up" : ""}`); await loadState();
+  });
+  if (setup) busy(setup, async () => { await api("/api/repos/setup", "POST", {group: setup.dataset.group, repo: setup.dataset.setuprepo}); toast("Repository set up"); await loadState(); });
+  if (rm && await confirmBox(`Remove ${rm.dataset.rmrepo}?`, `It is detached from ${rm.dataset.group}. Files in the repository are not touched.`, "Remove", true)) {
+    try { await api("/api/repos/remove", "POST", {group: rm.dataset.group, repo: rm.dataset.rmrepo}); toast("Removed"); await loadState(); } catch (e) { toast(e.message, "fail"); }
   }
 });
 
-// ---------------------------------------------------------------- doctor
-$("runDoctor").addEventListener("click", (ev) => busy(ev.target, async () => {
-  $("doctorOut").innerHTML = '<p class="muted">Running…</p>';
-  const {checks} = await api("/api/doctor");
-  const icon = {ok: "✓", warn: "!", fail: "✗", info: "·"};
-  $("doctorOut").innerHTML = `<table><thead><tr><th></th><th>Environment</th><th>Check</th><th>Result</th></tr></thead><tbody>${
-    checks.map((c) => `<tr><td class="status-${c.status}"><b>${icon[c.status]}</b></td><td>${esc(c.instance || "")}</td><td>${esc(c.name)}</td>
-      <td>${esc(c.detail)}${c.fix ? `<div class="muted">fix: ${esc(c.fix)}</div>` : ""}</td></tr>`).join("")}</tbody></table>`;
-  for (const e of STATE.instances) {
-    const mine = checks.filter((c) => c.instance === e.name);
-    const worst = mine.some((c) => c.status === "fail") ? "fail" : mine.some((c) => c.status === "warn") ? "warn" : "ok";
-    const conn = mine.find((c) => c.name === "connection" || c.name === "credentials");
-    const el = document.getElementById(`card-${e.name}`);
-    if (el) el.innerHTML = `<span class="chip ${worst}">${worst}</span> ${esc(conn ? conn.detail : "")}`;
-  }
-}));
-
-// ---------------------------------------------------------------- field mapping
-function renderFields() {
-  const inv = STATE.data.investigation || {};
-  const st = STATE.data.stacktrace || {};
-  $("currentMapping").textContent = JSON.stringify({investigation: inv, stacktrace: st}, null, 2);
-}
-let lastDetect = null;
-$("runDetect").addEventListener("click", (ev) => busy(ev.target, async () => {
-  $("detectOut").innerHTML = '<p class="muted">Detecting…</p>';
-  const r = await api("/api/detect", "POST", {instance: $("d_env").value, range: $("d_range").value, token: $("d_token").value || null});
-  lastDetect = r;
-  if (!r.suggested || !Object.keys(r.suggested).length) { $("detectOut").innerHTML = `<p class="muted">${esc(r.hint || "Nothing to suggest.")}</p>`; return; }
-  const rows = Object.entries(r.suggested).map(([k, v]) => `<tr><td><input type="checkbox" data-key="${esc(k)}" checked></td><td><code>${esc(k)}</code></td><td><code>${esc(JSON.stringify(v))}</code></td></tr>`);
-  if (r.app_packages && r.app_packages.length) rows.push(`<tr><td><input type="checkbox" data-key="__app_packages" checked></td><td><code>stacktrace.app_packages</code></td><td><code>${esc(JSON.stringify(r.app_packages))}</code></td></tr>`);
-  const evidence = Object.entries(r.evidence || {}).flatMap(([kind, items]) => items.slice(0, 3).map((i) =>
-    `<tr><td>${esc(kind)}</td><td><code>${esc(i.field)}</code></td><td>${i.coverage_pct}%</td><td class="muted">${esc((i.samples || []).join(", "))}</td></tr>`));
-  $("detectOut").innerHTML = `
-    <p>${Number(r.total_messages).toLocaleString()} messages analysed in <b>${esc(r.instance)}</b>${r.error_query_reason ? ` · ${esc(r.error_query_reason)}` : ""}.</p>
-    <table><thead><tr><th></th><th>Setting</th><th>Suggested value</th></tr></thead><tbody>${rows.join("")}</tbody></table>
-    <div class="row" style="margin-top:12px"><label style="flex:2 1 380px">Apply to <select id="applyScope">${scopeOptions(r.instance)}</select></label>
-    <button class="btn primary" id="applyDetect">Apply selected</button></div>
-    <h3>Evidence</h3>
-    <table><thead><tr><th>Kind</th><th>Field</th><th>Coverage</th><th>Sample values (redacted)</th></tr></thead><tbody>${evidence.join("")}</tbody></table>`;
-  $("applyDetect").addEventListener("click", (e2) => busy(e2.target, async () => {
-    const keys = [...document.querySelectorAll("#detectOut input[data-key]:checked")].map((i) => i.dataset.key);
-    const suggested = Object.fromEntries(Object.entries(lastDetect.suggested).filter(([k]) => keys.includes(k)));
-    await api("/api/detect/apply", "POST", {suggested, scope: $("applyScope").value, app_packages: keys.includes("__app_packages") ? lastDetect.app_packages : []});
-    toast("Field mapping saved"); await loadState();
-  }));
-}));
-
-// ---------------------------------------------------------------- settings by scope
-let SCOPES = [{scope: "global", label: "All environments (global defaults)"}];
-function scopeOptions(instance) {
-  const inst = STATE.instances.find((e) => e.name === instance);
-  const preferred = inst && inst.group ? `group:${inst.group}` : "global";
-  return SCOPES.map((s) => `<option value="${esc(s.scope)}"${s.scope === preferred ? " selected" : ""}>${esc(s.label)}</option>`).join("");
-}
+// ------------------------------------------------------------------ settings by scope
 const SETTING_META = {
   description: ["Description", "text", "shown to the model, e.g. Production"],
   trace_fields: ["Trace / correlation id fields", "list", "used by trace_request and the service map"],
@@ -577,7 +722,7 @@ const SETTING_META = {
   latency_fields: ["Latency fields (ms)", "list", "used by root_cause"],
   default_fields: ["Fields shown in search results", "list", ""],
   error_query: ["Error query", "text", "Lucene, e.g. level:<=3 or level:(ERROR OR FATAL)"],
-  change_query: ["Start/stop lines query", "text", "lines that mark a restart or config reload"],
+  change_query: ["Start / stop lines", "text", "lines that mark a restart or config reload"],
   message_lookup_range: ["get_message lookup range", "text", "e.g. 30d"],
   "group_fields.exception": ["Exception class field", "text", "error_summary group_by=exception"],
   "group_fields.logger": ["Logger field", "text", "error_summary group_by=logger"],
@@ -588,101 +733,121 @@ const SETTING_META = {
   timeout: ["Timeout (seconds)", "number", ""],
   message_api: ["Message API", "select:auto,universal,views,scripting", "auto picks by Graylog version"],
   aggregation_api: ["Aggregation API", "select:auto,views,scripting", "auto picks by Graylog version"],
-  default_group: ["Default group", "groups", "used when a question names no system"],
-  default_environment: ["Default environment", "text", "used when only a system is named"],
+  default_group: ["Default group", "groups", "when a question names no system"],
+  default_environment: ["Default environment", "text", "when only a system is named"],
   default_instance: ["Default instance", "instances", "overrides the two above"],
   app_packages: ["Application packages", "list", "stack frames from these are kept, e.g. com.f88"],
 };
 const SETTING_SECTIONS = [
-  ["General", ["description", "timezone", "default_group", "default_environment", "default_instance"]],
-  ["Field names in your logs", ["service_fields", "trace_fields", "version_fields", "latency_fields", "group_fields.exception", "group_fields.logger", "default_fields", "app_packages"]],
-  ["Queries", ["error_query", "change_query", "message_lookup_range"]],
-  ["Connection", ["verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api"]],
+  ["General", "Defaults and display", ["description", "timezone", "default_group", "default_environment", "default_instance"]],
+  ["Field names in your logs", "Leave empty to use what the parent level uses", ["service_fields", "trace_fields", "version_fields", "latency_fields", "group_fields.exception", "group_fields.logger", "default_fields", "app_packages"]],
+  ["Queries", "", ["error_query", "change_query", "message_lookup_range"]],
+  ["Connection", "", ["verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api"]],
 ];
-const show = (v) => Array.isArray(v) ? v.join(", ") : (v === null || v === undefined ? "" : String(v));
 let scopeData = null;
 async function loadScope() {
   const scope = $("s_scope").value || "global";
   scopeData = await api(`/api/scope?scope=${encodeURIComponent(scope)}`);
   SCOPES = scopeData.scopes;
-  const keep = scope;
   $("s_scope").innerHTML = SCOPES.map((s) => `<option value="${esc(s.scope)}">${esc(s.label)}</option>`).join("");
-  $("s_scope").value = keep;
+  $("s_scope").value = scope;
   const keys = new Set(scopeData.keys);
-  $("s_form").innerHTML = SETTING_SECTIONS.map(([title, names]) => {
-    const fields = names.filter((k) => keys.has(k)).map((k) => settingInput(k)).join("");
-    return fields ? `<h3>${esc(title)}</h3><div class="grid2">${fields}</div>` : "";
+  $("s_form").innerHTML = SETTING_SECTIONS.map(([title, sub, names]) => {
+    const fields = names.filter((k) => keys.has(k)).map(settingInput).join("");
+    return fields ? `<div class="card"><div class="card-head"><h2>${esc(title)}</h2><span class="muted small">${esc(sub)}</span></div><div class="grid2">${fields}</div></div>` : "";
   }).join("");
 }
 function settingInput(key) {
-  const [label, type, hint] = SETTING_META[key] || [key, "text", ""];
-  const value = scopeData.values[key];
-  const eff = scopeData.effective[key];
+  const [lbl, type, hint] = SETTING_META[key] || [key, "text", ""];
+  const value = scopeData.values[key], eff = scopeData.effective[key];
   const inherited = eff === undefined || eff === null || eff === "" ? "not set" : show(eff);
-  const ph = `in effect: ${inherited}`;
   let input;
   if (type === "bool" || type.startsWith("select:") || type === "groups" || type === "instances") {
-    let opts = type === "bool" ? [["true", "yes"], ["false", "no"]]
-      : type === "groups" ? (STATE.groups || []).map((g) => [g.name, g.name])
-      : type === "instances" ? STATE.instances.map((e) => [e.name, e.name])
-      : type.slice(7).split(",").map((o) => [o, o]);
-    input = `<select data-key="${esc(key)}"><option value="">(inherit: ${esc(inherited)})</option>${
-      opts.map(([v, t]) => `<option value="${esc(v)}"${show(value) === v ? " selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+    const opts = type === "bool" ? [["true", "yes"], ["false", "no"]] : type === "groups" ? (STATE.groups || []).map((g) => [g.name, g.name])
+      : type === "instances" ? STATE.instances.map((e) => [e.name, e.name]) : type.slice(7).split(",").map((o) => [o, o]);
+    input = `<select data-key="${esc(key)}"><option value="">Inherit (${esc(inherited)})</option>${opts.map(([v, t]) => `<option value="${esc(v)}"${show(value) === v ? " selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
   } else {
-    input = `<input data-key="${esc(key)}" ${type === "number" ? 'type="number" min="1"' : ""} value="${esc(show(value))}" placeholder="${esc(ph)}" spellcheck="false">`;
+    input = `<input data-key="${esc(key)}" ${type === "number" ? 'type="number" min="1"' : ""} value="${esc(show(value))}" placeholder="${esc(inherited)}" spellcheck="false">`;
   }
-  return `<label>${esc(label)}${value !== undefined ? ' <span class="chip info">set here</span>' : ""} ${hint ? `<span class="muted">· ${esc(hint)}</span>` : ""}${input}</label>`;
+  return `<div class="field"><span class="label">${esc(lbl)}${value !== undefined ? '<span class="badge info">set here</span>' : ""}</span>${input}${hint ? `<span class="hint">${esc(hint)}</span>` : ""}</div>`;
 }
 function scopeValues(clear) {
   const out = {};
   for (const el of $("s_form").querySelectorAll("[data-key]")) {
-    const key = el.dataset.key;
     let v = clear ? "" : el.value.trim();
-    if ((SETTING_META[key] || [])[1] === "bool") v = v === "" ? null : v === "true";
-    out[key] = v;
+    if ((SETTING_META[el.dataset.key] || [])[1] === "bool") v = v === "" ? null : v === "true";
+    out[el.dataset.key] = v;
   }
   return out;
 }
-$("s_scope").addEventListener("change", () => loadScope().catch((e) => toast(e.message)));
+$("s_scope").addEventListener("change", () => loadScope().catch((e) => toast(e.message, "fail")));
 $("saveScope").addEventListener("click", (ev) => busy(ev.target, async () => {
-  await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(false)});
-  toast("Settings saved"); await loadState(); await loadScope();
+  await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(false)}); toast("Settings saved"); await loadState(); await loadScope();
 }));
-$("resetScope").addEventListener("click", (ev) => {
-  if (!confirm("Remove every setting written at this level? They will be inherited again.")) return;
-  busy(ev.target, async () => {
-    await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(true)});
-    toast("Cleared"); await loadState(); await loadScope();
-  });
+$("resetScope").addEventListener("click", async () => {
+  if (!await confirmBox("Clear this level?", "Every setting written at this level is removed and inherited again.", "Clear", true)) return;
+  try { await api("/api/scope", "POST", {scope: $("s_scope").value, values: scopeValues(true)}); toast("Cleared"); await loadState(); await loadScope(); } catch (e) { toast(e.message, "fail"); }
 });
 
-// ---------------------------------------------------------------- redaction
+// ------------------------------------------------------------------ field detection
+function scopeOptions(instance) {
+  const inst = STATE.instances.find((e) => e.name === instance);
+  const preferred = inst && inst.group ? `group:${inst.group}` : "global";
+  return SCOPES.map((s) => `<option value="${esc(s.scope)}"${s.scope === preferred ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+}
+function renderFields() {
+  for (const sel of [$("d_env"), $("p_env")]) {
+    const keep = sel.value;
+    sel.innerHTML = STATE.instances.map((e) => `<option value="${esc(e.name)}"${e.default ? " selected" : ""}>${esc(label(e))}</option>`).join("");
+    if (STATE.instances.some((e) => e.name === keep)) sel.value = keep;
+  }
+}
+let lastDetect = null;
+$("runDetect").addEventListener("click", (ev) => busy(ev.target, async () => {
+  $("detectOut").innerHTML = '<div class="card"><div class="inline-msg">Reading your logs…</div></div>';
+  const r = await api("/api/detect", "POST", {instance: $("d_env").value, range: $("d_range").value});
+  lastDetect = r;
+  if (!r.suggested || !Object.keys(r.suggested).length) { $("detectOut").innerHTML = `<div class="card empty"><h3>Nothing to suggest</h3><div>${esc(r.hint || "")}</div></div>`; return; }
+  const rows = Object.entries(r.suggested).map(([k, v]) => `<tr><td><input type="checkbox" data-key="${esc(k)}" checked></td><td><b>${esc((SETTING_META[k] || [k])[0])}</b><div class="faint small mono">${esc(k)}</div></td><td class="mono small">${esc(show(typeof v === "object" && !Array.isArray(v) ? Object.entries(v).map(([a, b]) => `${a}: ${b}`) : v))}</td></tr>`);
+  if (r.app_packages && r.app_packages.length) rows.push(`<tr><td><input type="checkbox" data-key="__app_packages" checked></td><td><b>Application packages</b><div class="faint small mono">stacktrace.app_packages</div></td><td class="mono small">${esc(r.app_packages.join(", "))}</td></tr>`);
+  const evidence = Object.entries(r.evidence || {}).flatMap(([kind, items]) => items.slice(0, 3).map((i) => `<tr><td>${esc(kind)}</td><td class="mono small">${esc(i.field)}</td>
+    <td style="min-width:140px"><div style="display:flex;gap:8px;align-items:center"><div style="flex:1;height:6px;border-radius:3px;background:var(--line)"><div style="width:${Math.min(100, i.coverage_pct)}%;height:6px;border-radius:3px;background:var(--accent)"></div></div><span class="small">${i.coverage_pct}%</span></div></td>
+    <td class="muted small">${esc((i.samples || []).join(", "))}</td></tr>`));
+  $("detectOut").innerHTML = `<div class="card"><div class="card-head"><h2>Suggested settings</h2><span class="muted small">${Number(r.total_messages).toLocaleString()} messages in ${esc(r.instance)}${r.error_query_reason ? ` · ${esc(r.error_query_reason)}` : ""}</span></div>
+    <div class="table-wrap"><table><tbody>${rows.join("")}</tbody></table></div>
+    <div class="row" style="margin-top:14px"><div class="field" style="flex:2 1 360px"><span class="label">Apply to</span><select id="applyScope">${scopeOptions(r.instance)}</select></div><button class="btn primary" id="applyDetect">Apply selected</button></div></div>
+    <div class="card"><div class="card-head"><h2>Evidence</h2><span class="muted small">coverage = share of messages carrying the field</span></div>
+    <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Field</th><th>Coverage</th><th>Sample values (redacted)</th></tr></thead><tbody>${evidence.join("")}</tbody></table></div></div>`;
+  $("applyDetect").addEventListener("click", (e2) => busy(e2.target, async () => {
+    const keys = [...document.querySelectorAll("#detectOut input[data-key]:checked")].map((i) => i.dataset.key);
+    const suggested = Object.fromEntries(Object.entries(lastDetect.suggested).filter(([k]) => keys.includes(k)));
+    await api("/api/detect/apply", "POST", {suggested, scope: $("applyScope").value, app_packages: keys.includes("__app_packages") ? lastDetect.app_packages : []});
+    toast("Field settings saved"); await loadState(); runDoctor();
+  }));
+}));
+
+// ------------------------------------------------------------------ redaction
 function renderRedaction() {
-  const r = STATE.data.redaction || {};
-  $("packs").innerHTML = STATE.packs.map((p) => `<label style="display:inline-block;margin-right:14px"><span><input type="checkbox" data-pack="${esc(p)}"${(r.packs || []).includes(p) ? " checked" : ""}>${esc(p)}</span></label>`).join("");
-  $("r_vn_cmnd").checked = !!r.vn_cmnd;
-  $("r_allow").value = (r.allow || []).join("\n");
-  $("r_sensitive").value = (r.sensitive_fields || []).join(", ");
-  $("r_exclude").value = (r.exclude_fields || []).join(", ");
-  $("patterns").innerHTML = "";
-  (r.patterns || []).forEach(addPatternRow);
+  const r = (STATE.data || {}).redaction || {};
+  $("packs").innerHTML = STATE.packs.map((p) => `<label class="badge" style="cursor:pointer;padding:5px 12px"><input type="checkbox" data-pack="${esc(p)}"${(r.packs || []).includes(p) ? " checked" : ""} style="width:14px;height:14px;margin:0 4px 0 0">${esc(p)}</label>`).join("");
+  $("r_vn_cmnd").checked = !!r.vn_cmnd; $("r_allow").value = (r.allow || []).join("\n");
+  $("r_sensitive").value = (r.sensitive_fields || []).join(", "); $("r_exclude").value = (r.exclude_fields || []).join(", ");
+  $("patterns").innerHTML = ""; (r.patterns || []).forEach(addPatternRow);
 }
 function addPatternRow(p = {}) {
-  const tr = document.createElement("tr");
-  tr.innerHTML = `<td><input class="pn" value="${esc(p.name || "")}"></td><td><input class="pp" value="${esc(p.pattern || "")}" placeholder="ORD-[0-9]{8}"></td><td><input class="pr" value="${esc(p.replacement || "")}" placeholder="[ORDER]"></td><td><button class="btn danger">×</button></td>`;
-  tr.querySelector("button").addEventListener("click", () => { tr.remove(); previewRedaction(); });
-  tr.querySelectorAll("input").forEach((i) => i.addEventListener("input", schedulePreview));
-  $("patterns").appendChild(tr);
+  const row = document.createElement("div"); row.className = "row"; row.style.marginBottom = "8px";
+  row.innerHTML = `<div class="field" style="flex:1 1 90px"><input class="pn" value="${esc(p.name || "")}" placeholder="name"></div>
+    <div class="field" style="flex:2 1 160px"><input class="pp mono" value="${esc(p.pattern || "")}" placeholder="ORD-[0-9]{8}"></div>
+    <div class="field" style="flex:1 1 100px"><input class="pr" value="${esc(p.replacement || "")}" placeholder="[ORDER]"></div>
+    <button class="btn sm ghost danger" title="Remove">✕</button>`;
+  row.querySelector("button").addEventListener("click", () => { row.remove(); previewRedaction(); });
+  row.querySelectorAll("input").forEach((i) => i.addEventListener("input", schedulePreview));
+  $("patterns").appendChild(row);
 }
 function redactionSettings() {
-  const out = {
-    packs: [...document.querySelectorAll("[data-pack]:checked")].map((i) => i.dataset.pack),
-    vn_cmnd: $("r_vn_cmnd").checked,
-    allow: $("r_allow").value.split("\n").map((x) => x.trim()).filter(Boolean),
-    sensitive_fields: splitList($("r_sensitive").value),
-    exclude_fields: splitList($("r_exclude").value),
-    patterns: [...$("patterns").querySelectorAll("tr")].map((tr) => ({name: tr.querySelector(".pn").value.trim(), pattern: tr.querySelector(".pp").value, replacement: tr.querySelector(".pr").value})).filter((p) => p.pattern),
-  };
+  const out = {packs: [...document.querySelectorAll("[data-pack]:checked")].map((i) => i.dataset.pack), vn_cmnd: $("r_vn_cmnd").checked,
+    allow: $("r_allow").value.split("\n").map((x) => x.trim()).filter(Boolean), sensitive_fields: splitList($("r_sensitive").value), exclude_fields: splitList($("r_exclude").value),
+    patterns: [...$("patterns").children].map((r) => ({name: r.querySelector(".pn").value.trim(), pattern: r.querySelector(".pp").value, replacement: r.querySelector(".pr").value})).filter((p) => p.pattern)};
   if (!out.vn_cmnd) delete out.vn_cmnd;
   for (const p of out.patterns) { if (!p.name) delete p.name; if (!p.replacement) delete p.replacement; }
   return out;
@@ -692,99 +857,83 @@ function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeo
 async function previewRedaction() {
   try {
     const r = await api("/api/redact", "POST", {text: $("r_input").value, redaction: redactionSettings()});
-    $("r_output").textContent = r.masked;
-    $("r_hits").textContent = r.hits.length ? "Rules applied: " + r.hits.join(", ") : "Nothing masked.";
+    $("r_output").textContent = r.masked; $("r_hits").textContent = r.hits.length ? `${r.hits.length} rule${r.hits.length > 1 ? "s" : ""} applied` : "nothing masked";
+    $("r_hits").title = r.hits.join(", ");
   } catch (e) { $("r_hits").textContent = e.message; }
 }
 ["r_input", "r_allow", "r_sensitive", "r_exclude"].forEach((id) => $(id).addEventListener("input", schedulePreview));
-$("packs").addEventListener("change", schedulePreview);
-$("r_vn_cmnd").addEventListener("change", schedulePreview);
+$("packs").addEventListener("change", schedulePreview); $("r_vn_cmnd").addEventListener("change", schedulePreview);
 $("addPattern").addEventListener("click", () => addPatternRow());
-$("saveRedaction").addEventListener("click", (ev) => busy(ev.target, async () => {
-  await api("/api/settings", "POST", {redaction: redactionSettings()}); toast("Redaction rules saved"); await loadState();
-}));
+$("saveRedaction").addEventListener("click", (ev) => busy(ev.target, async () => { await api("/api/settings", "POST", {redaction: redactionSettings()}); toast("Redaction rules saved"); await loadState(); }));
 
-// ---------------------------------------------------------------- playground
+// ------------------------------------------------------------------ playground
 const TEMPLATES = {
-  root_cause: {range: "1h"}, detect_changes: {range: "6h"}, service_map: {range: "1h"},
-  search_logs: {query: "level:<=3", range: "15m", limit: 20}, count_logs: {query: "*", range: "1h"},
-  error_summary: {range: "1h", group_by: "exception"}, log_histogram: {query: "level:<=3", range: "6h"},
-  top_values: {field: "source", range: "1h"}, compare_periods: {window: "1h"},
-  trace_request: {trace_id: "", range: "24h"}, context_around: {ref: "index/id", seconds: 30},
-  get_message: {ref: "index/id"}, list_streams: {}, list_fields: {contains: ""},
+  root_cause: {range: "1h"}, detect_changes: {range: "6h"}, service_map: {range: "1h"}, search_logs: {query: "level:<=3", range: "15m", limit: 20},
+  count_logs: {query: "*", range: "1h"}, error_summary: {range: "1h", group_by: "exception"}, log_histogram: {query: "level:<=3", range: "6h"},
+  top_values: {field: "source", range: "1h"}, compare_periods: {window: "1h"}, trace_request: {trace_id: "", range: "24h"},
+  context_around: {ref: "index/id", seconds: 30}, get_message: {ref: "index/id"}, list_streams: {}, list_fields: {contains: ""},
 };
 function renderPlayground() {
-  const sel = $("p_tool"); const keep = sel.value || "root_cause";
+  const sel = $("p_tool"), keep = sel.value || "root_cause";
   sel.innerHTML = STATE.tools.map((t) => `<option${t === keep ? " selected" : ""}>${esc(t)}</option>`).join("");
   if (!$("p_args").value) $("p_args").value = JSON.stringify(TEMPLATES[sel.value] || {}, null, 2);
 }
 $("p_tool").addEventListener("change", () => { $("p_args").value = JSON.stringify(TEMPLATES[$("p_tool").value] || {}, null, 2); });
 $("runTool").addEventListener("click", (ev) => busy(ev.target, async () => {
-  let args;
-  try { args = JSON.parse($("p_args").value || "{}"); } catch (e) { throw new Error("Arguments are not valid JSON"); }
-  $("p_meta").textContent = "Running…";
-  try {
-    const r = await api("/api/run", "POST", {tool: $("p_tool").value, instance: $("p_env").value, args});
-    $("p_meta").textContent = `${r.chars.toLocaleString()} characters (~${r.approx_tokens.toLocaleString()} tokens) · ${r.ms} ms`;
-    $("p_out").textContent = JSON.stringify(r.result, null, 2);
-    $("p_out").classList.remove("hidden");
-  } catch (e) { $("p_meta").textContent = e.message; $("p_out").classList.add("hidden"); }
+  let args; try { args = JSON.parse($("p_args").value || "{}"); } catch (e) { throw new Error("Arguments are not valid JSON"); }
+  const r = await api("/api/run", "POST", {tool: $("p_tool").value, instance: $("p_env").value, args});
+  $("p_meta").textContent = `${r.chars.toLocaleString()} characters · ~${r.approx_tokens.toLocaleString()} tokens · ${r.ms} ms`;
+  $("p_out").textContent = JSON.stringify(r.result, null, 2); $("p_result").classList.remove("hidden");
 }));
+$("p_copy").addEventListener("click", async () => { await navigator.clipboard.writeText($("p_out").textContent); toast("Copied"); });
 
-// ---------------------------------------------------------------- clients
+// ------------------------------------------------------------------ clients
 async function loadClients() {
   const data = await api(`/api/clients?source=${encodeURIComponent($("c_source").value)}`);
   $("ccCommand").textContent = data["claude-code-command"];
   $("clientCards").innerHTML = STATE.clients.map((c) => c.scopes.map((scope) => `
-    <div class="panel" style="margin:12px 0 0">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <div><b>${esc(c.title)}</b> <span class="chip">${esc(scope)}</span><div class="muted">${esc(data[c.key][scope].path)}</div></div>
-        <div class="actions" style="margin:0">
-          ${c.key === "claude-desktop" ? `<label><span><input type="checkbox" data-secrets="${esc(c.key)}">copy current token values</span></label>` : ""}
-          <button class="btn" data-copy="${esc(c.key)}|${esc(scope)}">Copy</button>
-          <button class="btn primary" data-install="${esc(c.key)}|${esc(scope)}">Install</button>
-        </div>
-      </div>
-      ${c.note ? `<p class="muted">${esc(c.note)}</p>` : ""}
-      <pre>${esc(data[c.key][scope].snippet)}</pre>
-    </div>`).join("")).join("");
+    <div class="card"><div class="card-head"><h2>${esc(c.title)}</h2><span class="badge">${esc(scope)}</span><span class="muted small mono" style="overflow:hidden;text-overflow:ellipsis">${esc(data[c.key][scope].path)}</span>
+      <span class="spacer"></span>${c.key === "claude-desktop" ? `<label class="check small"><input type="checkbox" data-secrets="${esc(c.key)}">copy token values</label>` : ""}
+      <button class="btn sm" data-copy="${esc(c.key)}|${esc(scope)}">Copy</button><button class="btn sm primary" data-install="${esc(c.key)}|${esc(scope)}">Install</button></div>
+      ${c.note ? `<div class="muted small" style="margin-bottom:8px">${esc(c.note)}</div>` : ""}<pre>${esc(data[c.key][scope].snippet)}</pre></div>`).join("")).join("");
   $("clientCards").onclick = async (ev) => {
-    const copy = ev.target.closest("[data-copy]"); const inst = ev.target.closest("[data-install]");
+    const copy = ev.target.closest("[data-copy]"), inst = ev.target.closest("[data-install]");
     if (copy) { const [k, s] = copy.dataset.copy.split("|"); await navigator.clipboard.writeText(data[k][s].snippet); toast("Copied"); }
-    if (inst) {
-      const [k, s] = inst.dataset.install.split("|");
-      const secretsBox = document.querySelector(`[data-secrets="${k}"]`);
-      await busy(inst, async () => {
-        const r = await api("/api/clients/install", "POST", {client: k, scope: s, source: $("c_source").value, with_secrets: !!(secretsBox && secretsBox.checked)});
-        toast(`${r.replaced ? "Updated" : "Added"} in ${r.path}`);
-      });
-    }
+    if (inst) { const [k, s] = inst.dataset.install.split("|"); const box = document.querySelector(`[data-secrets="${k}"]`);
+      busy(inst, async () => { const r = await api("/api/clients/install", "POST", {client: k, scope: s, source: $("c_source").value, with_secrets: !!(box && box.checked)}); toast(`${r.replaced ? "Updated" : "Added"} in ${r.path}`); }); }
   };
 }
 $("c_source").addEventListener("change", loadClients);
+$("ccCopy").addEventListener("click", async () => { await navigator.clipboard.writeText($("ccCommand").textContent); toast("Copied"); });
 
-// ---------------------------------------------------------------- raw config
+// ------------------------------------------------------------------ raw config
+let rawLoaded = "";
 async function loadRaw() {
   const r = await api("/api/config");
-  $("rawTitle").textContent = "Config file · " + r.path;
-  $("rawText").value = r.text || "# No config file yet. Add an environment, or paste a config here and save.\n";
-  $("rawResult").innerHTML = "";
+  $("rawPath").textContent = r.path; rawLoaded = r.text || "";
+  $("rawText").value = rawLoaded || "# No config file yet. Add an environment, or paste a config here and save.\n"; $("rawState").innerHTML = "";
 }
+$("rawText").addEventListener("input", () => { $("rawState").innerHTML = $("rawText").value !== rawLoaded ? '<span class="badge warn">unsaved changes</span>' : ""; });
 $("validateRaw").addEventListener("click", (ev) => busy(ev.target, async () => {
   const r = await api("/api/config/validate", "POST", {text: $("rawText").value});
-  $("rawResult").innerHTML = r.ok ? `<span class="status-ok">✓ valid · environments: ${esc(r.instances.join(", "))}</span>` : `<span class="status-fail">✗ ${esc(r.error)}</span>`;
+  $("rawState").innerHTML = r.ok ? `<span class="badge ok">valid · ${esc(r.instances.length)} environments</span>` : `<span class="badge fail" title="${esc(r.error)}">invalid</span>`;
+  if (!r.ok) toast(r.error, "fail");
 }));
 $("saveRaw").addEventListener("click", (ev) => busy(ev.target, async () => {
   const r = await api("/api/config", "POST", {text: $("rawText").value});
-  $("rawResult").innerHTML = `<span class="status-ok">✓ saved${r.backup ? ` (previous version: ${esc(r.backup)})` : ""}</span>`;
-  await loadState();
+  toast(`Saved${r.backup ? " (previous version kept as .bak)" : ""}`); rawLoaded = $("rawText").value; $("rawState").innerHTML = '<span class="badge ok">saved</span>'; await loadState();
 }));
 $("reloadRaw").addEventListener("click", loadRaw);
 
-// ---------------------------------------------------------------- start
+// ------------------------------------------------------------------ start
 (async () => {
-  if (!TOKEN) { $("noauth").classList.remove("hidden"); return; }
-  try { await loadState(); envForm(null); } catch (e) { $("noauth").classList.remove("hidden"); $("noauth").textContent = e.message; }
+  if (!TOKEN) { $("banner").innerHTML = '<div class="banner fail"><b>✕</b><div>Missing access token. Open the link printed by <code>graylog-mcp ui</code>.</div></div>'; return; }
+  try {
+    await loadState();
+    const start = location.hash.slice(1);
+    showPage($(start) && $(start).classList.contains("page") ? start : "overview");
+    if (STATE.instances.length) runDoctor(); else { CHECKS = []; renderChecks(); renderStats(); }
+  } catch (e) { $("banner").innerHTML = `<div class="banner fail"><b>✕</b><div>${esc(e.message)}</div></div>`; }
 })();
 </script>
 </body>

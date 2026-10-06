@@ -35,6 +35,9 @@ All notable changes to this project are documented here. The format follows
   them up (`.graylog-mcp.toml` with `include`, Claude Code registration).
 - Admin UI Settings page: edit settings per scope (global, environment, group, instance) with the inherited
   value shown; field detection can be applied to a chosen scope.
+- Admin UI redesign: sidebar navigation, an overview with health per group that runs checks on load, an
+  environment drawer with inline validation, one card per group with its repositories, a sticky save bar,
+  confirm dialogs, toasts, loading states, dark mode and a phone layout.
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
