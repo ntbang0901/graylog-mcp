@@ -58,9 +58,14 @@ Scanning (for "is anything wrong?", "scan for errors", "check X", a health check
   Put several checks in one call; rules=[names or tags] runs configured rules (list_scan_rules).
 - Accurate queries: quoted phrases ("Connection refused") and field:value with real field names (list_fields);
   no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.
-- Window from the question; baseline='24h' when the window is short or traffic is spiky.
+- Growth checks on things that follow traffic (errors, 5xx, timeouts) take per_traffic=true: a busy hour
+  is not an incident. A growth fires only when significant ('confidence' in the result); a 'note' on a quiet
+  rule says it grew but within chance: do not report that as a problem.
+- Window from the question. Baseline: the period right before by default; baseline='24h' when the window is
+  short; baseline_shift='1d' (or '7d') when traffic has a daily (weekly) curve, e.g. morning peaks.
 - Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call
-  it healthy). Report severity, count vs baseline, trend, first seen and the sample's ref.
+  it healthy); 'baseline_note' means the comparison is weaker (missing baseline data). Report severity,
+  count vs baseline, trend, confidence, first seen and the sample's ref.
 - Then drill into a finding with its 'query': log_histogram (when), error_summary (what), search_logs (lines);
   several findings at once: root_cause.
 
@@ -419,6 +424,17 @@ def build_server(app: App) -> MCPServer:
                 "the window by default. A longer one ('24h') is steadier for spiky traffic"
             ),
         ] = None,
+        baseline_shift: Annotated[
+            str | None,
+            Field(
+                description="Seasonal baseline instead: compare with the same window shifted back by this ('1d' "
+                "for the same hour yesterday, '7d' for last week), several times; the median period is the "
+                "reference. Use it for traffic with a daily or weekly curve"
+            ),
+        ] = None,
+        baseline_periods: Annotated[
+            int, Field(description="How many shifted periods baseline_shift compares with", ge=1, le=10)
+        ] = 3,
         rules: Annotated[
             list[str] | None,
             Field(
@@ -433,7 +449,9 @@ def build_server(app: App) -> MCPServer:
                 "{'name': 'declined', 'query': 'message:declined', 'threshold': 0} fires on any match; "
                 "{'query': '...', 'growth': 2, 'min_count': 10} on a doubled rate; "
                 "{'errors_only': true, 'group_by': 'exception', 'new_groups': true} on new error groups. "
-                "Optional keys: severity, exclude, baseline, group_by"
+                "Add 'per_traffic': true to a growth check on anything that follows traffic (errors, 5xx, "
+                "timeouts) so it compares shares of traffic, with 'traffic_query' for what counts as traffic. "
+                "Optional keys: severity, exclude, baseline, baseline_shift, confidence (default 0.99), group_by"
             ),
         ] = None,
         query: Annotated[
@@ -452,6 +470,8 @@ def build_server(app: App) -> MCPServer:
             from_time=from_time,
             to_time=to_time,
             baseline=baseline,
+            baseline_shift=baseline_shift,
+            baseline_periods=baseline_periods,
             rules=rules,
             checks=checks,
             query=query,

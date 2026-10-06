@@ -100,8 +100,12 @@ min_count = 30
 description = "Bank declines"
 query = 'service:payment AND message:"declined"'
 severity = "high"                    # critical | high | medium | low
-growth = 2.0                         # fires when the rate doubled against the baseline...
-min_count = 20                       # ...with at least this many matches
+growth = 2.0                         # fires when the share doubled against the baseline...
+min_count = 20                       # ...with at least this many matches, and the rise is significant
+per_traffic = true                   # declines / payment traffic, not declines per hour
+traffic_query = "service:payment"
+baseline_shift = "7d"                # against the same hour of the last baseline_periods (3) weeks
+# confidence = 0.99                  # how unlikely the rise must be by chance
 group_by = "bank_code"
 tags = ["payment"]
 

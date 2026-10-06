@@ -175,8 +175,10 @@ SEVERITIES = ("critical", "high", "medium", "low")
 @dataclass(frozen=True)
 class ScanRule:
     """One check run by the ``scan`` tool. It fires when ``count > threshold``, when the rate grew by
-    ``growth`` (with at least ``min_count`` matches), or, with ``new_groups``, when a ``group_by`` value
-    absent from the baseline shows up at least ``min_count`` times."""
+    ``growth`` with at least ``min_count`` matches and the rise is significant at ``confidence``, or, with
+    ``new_groups``, when a ``group_by`` value absent from the baseline shows up at least ``min_count`` times.
+    ``per_traffic`` compares the share of traffic (matches / ``traffic_query`` matches) instead of the rate per
+    second, so errors that only follow traffic do not fire."""
 
     name: str
     description: str = ""
@@ -189,6 +191,11 @@ class ScanRule:
     group_by: str | None = None
     new_groups: bool = False
     baseline: str | None = None  # length of the period before the window; default: the window's length
+    baseline_shift: str | None = None  # compare with the window shifted back by this ('1d', '7d'), seasonally
+    baseline_periods: int | None = None  # how many shifted periods (their median is the baseline); default 3
+    per_traffic: bool = False
+    traffic_query: str = "*"  # what counts as traffic for per_traffic
+    confidence: float = 0.99  # a growth must be this unlikely to be chance
     exclude: str | None = None  # Lucene query of noise to drop
     requires: tuple[str, ...] = ()  # skip unless one of these fields exists
     instances: tuple[str, ...] = ()  # only on these instances, groups or environments; empty: everywhere
@@ -388,6 +395,7 @@ _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
+MAX_BASELINE_PERIODS = 10
 _SCAN_RULE_KEYS = {f for f in ScanRule.__dataclass_fields__ if f not in ("name", "builtin")}
 
 
@@ -744,10 +752,10 @@ def parse_scan_rule(name: str, data: Any, base: dict[str, Any] | None = None, bu
             if not isinstance(merged[key], str):
                 raise ConfigError(f"{where}.{key}: expected a string")
             out[key] = merged[key]
-    for key in ("query", "exclude"):
+    for key in ("query", "exclude", "traffic_query"):
         if key in merged:
             out[key] = _check_query(f"{where}.{key}", merged[key])
-    for key in ("errors_only", "new_groups"):
+    for key in ("errors_only", "new_groups", "per_traffic"):
         if key in merged:
             if not isinstance(merged[key], bool):
                 raise ConfigError(f"{where}.{key}: expected true or false")
@@ -768,17 +776,36 @@ def parse_scan_rule(name: str, data: Any, base: dict[str, Any] | None = None, bu
         out["growth"] = float(g)
     if "min_count" in merged:
         out["min_count"] = _positive_int(f"{where}.min_count", merged["min_count"])
-    if "baseline" in merged:
-        from graylog_mcp.timerange import parse_duration  # local import: avoid a cycle
+    for key in ("baseline", "baseline_shift"):
+        if key in merged:
+            from graylog_mcp.timerange import parse_duration  # local import: avoid a cycle
 
-        try:
-            parse_duration(merged["baseline"])
-        except ValueError as exc:
-            raise ConfigError(f"{where}.baseline: {exc}") from None
-        out["baseline"] = merged["baseline"]
+            try:
+                parse_duration(merged[key])
+            except ValueError as exc:
+                raise ConfigError(f"{where}.{key}: {exc}") from None
+            out[key] = merged[key]
+    if "baseline" in data and "baseline_shift" in data:
+        raise ConfigError(f"{where}: set baseline (the period right before) or baseline_shift (seasonal), not both")
+    if "baseline_shift" in data:
+        out.pop("baseline", None)  # a seasonal override replaces the built-in's contiguous baseline
+    elif "baseline" in data:
+        out.pop("baseline_shift", None)
+    if "baseline_periods" in merged:
+        n = _positive_int(f"{where}.baseline_periods", merged["baseline_periods"])
+        if n > MAX_BASELINE_PERIODS:
+            raise ConfigError(f"{where}.baseline_periods: at most {MAX_BASELINE_PERIODS}")
+        out["baseline_periods"] = n
+    if "confidence" in merged:
+        c = merged["confidence"]
+        if not isinstance(c, int | float) or isinstance(c, bool) or not 0.5 <= c < 1:
+            raise ConfigError(f"{where}.confidence: expected a number from 0.5 to below 1 (e.g. 0.99)")
+        out["confidence"] = float(c)
     for key in ("requires", "instances", "tags"):
         if key in merged:
             out[key] = _str_list(f"{where}.{key}", merged[key])
+    if out.get("per_traffic") and "growth" not in out:
+        raise ConfigError(f"{where}: per_traffic compares growth; set growth (e.g. growth = 2.0)")
     if out.get("new_groups") and not out.get("group_by"):
         raise ConfigError(f'{where}: new_groups needs group_by (e.g. group_by = "exception")')
     if "threshold" not in out and "growth" not in out and not out.get("new_groups"):
