@@ -418,6 +418,29 @@ graylog-mcp repo list
 graylog-mcp repo remove payment ~/code/payment-api
 ```
 
+### Focus: search this repository's service by default
+
+Inside a repository, "errors in the last hour" means that service's errors. `search_logs`, `count_logs`,
+`error_summary`, `log_histogram`, `top_values`, `compare_periods` and `detect_changes` add a filter on the
+service field and say so in their result (`focus`). Other services and streams are searched only when asked for:
+`streams=["*"]` (everything), explicit `streams`, or a query that names a service field
+(`application:"other-service"`). `trace_request`, `service_map` and `root_cause` always span every service.
+
+Each repository sets its focus in its own `.graylog-mcp.toml`:
+
+```toml
+[focus]
+service = "cobra-mdm-service"   # value of the service field; a list for several; false = no service filter
+streams = ["MDM"]               # optional: streams searched by default
+# field = "application"         # optional: the service field (default: the first of service_fields present)
+```
+
+Without `[focus]`, the service is guessed from the repository name (folder or git remote) by matching it against
+the values of the service fields (`service`, `application`, ...) over the last 24 hours: `cobra-mdm` finds
+`cobra-mdm-service`. No clear match, no filter; `list_instances` shows what was picked. Set it from the admin UI
+(Groups & repositories > Focus), with `graylog-mcp repo focus cobra-mdm-service --streams MDM` inside the
+repository, or for one MCP client with `GRAYLOG_MCP_SERVICE=<name>` (`off` disables it).
+
 ### Settings by scope
 
 The admin UI's **Settings** page edits field names, queries and connection options for a chosen scope: global,

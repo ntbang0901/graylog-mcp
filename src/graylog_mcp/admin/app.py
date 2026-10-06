@@ -193,6 +193,7 @@ def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
         out["project_config"] = (path / ".graylog-mcp.toml").is_file()
         mcp = path / ".mcp.json"
         out["claude_code"] = mcp.is_file() and '"graylog"' in mcp.read_text(encoding="utf-8", errors="replace")
+        out["focus"] = configfile.repo_focus(path)
     return out
 
 
@@ -431,6 +432,24 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         return JSONResponse({"ok": True, "project_config": str(project), "claude_code": str(installed.path)})
 
+    async def focus_repo(request: Request) -> Response:
+        """Set what the MCP server searches by default inside a repository ([focus] in its .graylog-mcp.toml)."""
+        body = await _body(request)
+        group, entry = str(body.get("group") or ""), str(body.get("repo") or "")
+        if not is_repo_path(entry):
+            return _err("only a local folder has a focus")
+        path = resolve_repo_path(entry, state.path.parent)
+        if not path.is_dir():
+            return _err(f"folder not found: {path}")
+        raw_streams = body.get("streams") or []
+        streams = raw_streams.split(",") if isinstance(raw_streams, str) else [str(s) for s in raw_streams]
+        service = False if body.get("off") else str(body.get("service") or "")
+        try:
+            focus = configfile.set_repo_focus(path, state.path, group, service, streams)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, "focus": focus})
+
     async def remove_repo(request: Request) -> Response:
         body = await _body(request)
         group, entry = str(body.get("group") or ""), str(body.get("repo") or "")
@@ -627,6 +646,7 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/repos", add_repo, methods=["POST"]),
         Route("/api/repos/remove", remove_repo, methods=["POST"]),
         Route("/api/repos/setup", setup_repo, methods=["POST"]),
+        Route("/api/repos/focus", focus_repo, methods=["POST"]),
         Route("/api/scope", get_scope),
         Route("/api/scope", save_scope, methods=["POST"]),
         Route("/api/detect", run_detect, methods=["POST"]),

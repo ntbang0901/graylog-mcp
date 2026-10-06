@@ -39,7 +39,7 @@ DEFAULT_TRACE_FIELDS = [
     "x_request_id",
     "span_id",
 ]
-DEFAULT_SERVICE_FIELDS = ["service", "service_name", "application_name", "app", "facility", "source"]
+DEFAULT_SERVICE_FIELDS = ["service", "service_name", "application", "application_name", "app", "facility", "source"]
 DEFAULT_ERROR_QUERY = "level:<=3"
 DEFAULT_GROUP_FIELDS = {
     "source": "source",
@@ -175,6 +175,21 @@ class HttpConfig:
 
 
 @dataclass(frozen=True)
+class Focus:
+    """What tools search by default (see graylog_mcp.focus)."""
+
+    services: tuple[str, ...] = ()  # values of the service field
+    auto: bool = False  # guess the service from repo_names
+    field: str | None = None  # service field; default: the first service field present
+    streams: tuple[str, ...] = ()  # stream titles or ids
+    repo_names: tuple[str, ...] = ()
+
+    @property
+    def active(self) -> bool:
+        return bool(self.services or self.streams or (self.auto and self.repo_names))
+
+
+@dataclass(frozen=True)
 class GroupInfo:
     name: str
     description: str = ""
@@ -201,6 +216,7 @@ class Config:
     scope: tuple[str, ...] | None = None  # groups this server loads; None = every group
     scope_reason: str | None = None  # 'repository' (run inside a group's repository) or 'only_groups'
     out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
+    focus: Focus = Focus()
 
     def instance(self, name: str | None) -> InstanceConfig:
         """Resolve 'payment/prod', 'payment prod', 'payment' (its default environment), 'prod' (in the
@@ -277,6 +293,7 @@ _TOP_KEYS = {
     "default_instance",
     "default_group",
     "only_groups",
+    "focus",
     "default_environment",
     "groups",
     "environments",
@@ -901,6 +918,11 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         st = dict(data.get("stacktrace", {}))
         st["app_packages"] = [p.strip() for p in os.environ["GRAYLOG_APP_PACKAGES"].split(",") if p.strip()]
         data["stacktrace"] = st
+    if os.environ.get("GRAYLOG_MCP_SERVICE"):
+        focus = dict(data.get("focus") or {})
+        value = os.environ["GRAYLOG_MCP_SERVICE"].strip()
+        focus["service"] = False if value.lower() in ("off", "none", "false") else value
+        data["focus"] = focus
     if os.environ.get("GRAYLOG_MCP_GROUPS"):
         data["only_groups"] = [g.strip() for g in os.environ["GRAYLOG_MCP_GROUPS"].split(",") if g.strip()]
     if os.environ.get("GRAYLOG_MCP_HTTP_TOKEN"):
@@ -967,6 +989,45 @@ def load_config(
         data = read_config_file(file_path)
         source = str(file_path)
     return parse_config(data, source=source, require_usable=require_usable, repo_dir=repo_dir or Path.cwd())
+
+
+def _repo_names(repo: RepoInfo | None) -> tuple[str, ...]:
+    if repo is None or repo.root is None:
+        return ()
+    names = [repo.root.name]
+    if repo.remote:
+        names.append(repo.remote.rsplit("/", 1)[-1])
+    return tuple(dict.fromkeys(n for n in names if n))
+
+
+def _parse_focus(raw: Any, repo: RepoInfo | None) -> Focus:
+    """[focus] service = "name" | ["a", "b"] | "auto" (default inside a repository) | false; field; streams."""
+    names = _repo_names(repo)
+    if raw is None:
+        return Focus(auto=True, repo_names=names)
+    if not isinstance(raw, dict):
+        raise ConfigError("focus: expected a table")
+    _check_keys("focus", raw, {"service", "field", "streams"})
+    service = raw.get("service", "auto")
+    services: tuple[str, ...] = ()
+    auto = False
+    if service == "auto":
+        auto = True
+    elif isinstance(service, str) and service.strip():
+        services = (service.strip(),)
+    elif isinstance(service, list) and service and all(isinstance(v, str) and v.strip() for v in service):
+        services = tuple(v.strip() for v in service)
+    elif service not in (False, ""):
+        raise ConfigError('focus.service: expected a service name, a list of names, "auto" or false')
+    field_name = raw.get("field")
+    if field_name is not None and (not isinstance(field_name, str) or not field_name.strip()):
+        raise ConfigError("focus.field: expected a field name")
+    streams = raw.get("streams", [])
+    if isinstance(streams, str):
+        streams = [streams]
+    if not isinstance(streams, list) or not all(isinstance(v, str) and v.strip() for v in streams):
+        raise ConfigError("focus.streams: expected a list of stream names or ids")
+    return Focus(services, auto, field_name.strip() if field_name else None, tuple(streams), names)
 
 
 def _only_groups(value: Any, groups: dict[str, GroupInfo]) -> tuple[str, ...] | None:
@@ -1050,8 +1111,8 @@ def parse_config(
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
     current_repo = repo_group = None
-    if repo_dir is not None and any(g.repos for g in groups.values()):
-        repo = detect_repo(repo_dir)
+    repo = detect_repo(repo_dir) if repo_dir is not None else None
+    if repo is not None and repo_dir is not None and any(g.repos for g in groups.values()):
         base_dir = (
             Path(source).parent if source not in ("env", "test", "editor") and Path(source).is_file() else repo_dir
         )
@@ -1113,6 +1174,7 @@ def parse_config(
         scope=scope,
         scope_reason=scope_reason,
         out_of_scope=out_of_scope,
+        focus=_parse_focus(data.get("focus"), repo),
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),

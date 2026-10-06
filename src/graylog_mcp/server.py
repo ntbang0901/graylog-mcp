@@ -38,6 +38,10 @@ system group (ERP, CXP, PAYMENT...). Call list_instances to see them. Pass insta
 (e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only
 one group has it. When the user names a system or an environment, pick that instance; when it is
 ambiguous, ask. Never mix results from different instances without saying which is which.
+Focus: inside a repository, search/count/summary/histogram/top/compare/detect_changes only look at that
+repository's service (results carry 'focus' with the filter added). Search other services or streams only when
+the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service
+field (e.g. application:"other-service"). trace_request, service_map and root_cause always span every service.
 Inside a group's repository only that group is loaded (list_instances shows 'scope'); if the user
 asks about another group, say it is not loaded here and how to enable it, as the error explains.
 
@@ -78,7 +82,13 @@ FromTime = Annotated[
     Field(description="Absolute start: ISO 8601 or 'YYYY-MM-DD HH:MM' in the instance timezone; overrides range"),
 ]
 ToTime = Annotated[str | None, Field(description="Absolute end, same formats as from_time; default now")]
-Streams = Annotated[list[str] | None, Field(description="Stream titles or ids to search in; all streams when omitted")]
+Streams = Annotated[
+    list[str] | None,
+    Field(
+        description="Stream titles or ids to search in. When omitted: the repository's focus (its service) if "
+        "one is set, else every stream. ['*'] searches every stream and every service"
+    ),
+]
 
 
 def build_server(app: App) -> MCPServer:

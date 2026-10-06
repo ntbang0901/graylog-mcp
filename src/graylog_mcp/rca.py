@@ -36,6 +36,7 @@ from graylog_mcp.tools import (
     _is_error,
     _range,
     and_queries,
+    apply_focus,
     escape_field,
     phrase,
 )
@@ -634,10 +635,11 @@ async def detect_changes(
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "6h")
-    stream_ids = await gl.resolve_streams(streams)
+    focused, stream_ids, focus = await apply_focus(app, gl, query, streams)
     sf = await service_field(gl)
     _unit, secs = choose_interval(tr)
-    changes = await _changes(app, gl, tr, stream_ids, query, sf, timedelta(seconds=max(2 * secs, 300)))
+    window = timedelta(seconds=max(2 * secs, 300))
+    changes = await _changes(app, gl, tr, stream_ids, None if focused == "*" else focused, sf, window)
 
     def fmt(dt: datetime) -> str:
         return format_ts(dt, gl.cfg.tz)
@@ -645,6 +647,7 @@ async def detect_changes(
     out: dict[str, Any] = {
         "instance": gl.cfg.name,
         "range": tr.display(gl.cfg.tz),
+        **({"focus": focus} if focus else {}),
         "service_field": sf,
         "version_fields": [f for f in gl.cfg.version_fields if f in await gl.field_names()][:3],
         "changes": [_change_out(app, sf, c, fmt) for c in changes][:50],
