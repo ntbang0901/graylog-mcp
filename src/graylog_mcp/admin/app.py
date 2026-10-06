@@ -28,7 +28,16 @@ from starlette.routing import Route
 from graylog_mcp import __version__, rca, tools
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, find_project_config
+from graylog_mcp.config import (
+    ENV_NAME,
+    PROJECT_CONFIG_NAMES,
+    Config,
+    ConfigError,
+    detect_repo,
+    find_project_config,
+    is_repo_path,
+    resolve_repo_path,
+)
 from graylog_mcp.config import _parse_redaction as parse_redaction
 from graylog_mcp.redact import PACKS, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
@@ -173,7 +182,21 @@ def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _groups_view(config: Config | None) -> list[dict[str, Any]]:
+def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
+    """What we know about one repository entry of a group (a local path or a git URL)."""
+    if not is_repo_path(entry):
+        return {"entry": entry, "kind": "url"}
+    path = resolve_repo_path(entry, base_dir)
+    out: dict[str, Any] = {"entry": entry, "kind": "path", "path": str(path), "exists": path.is_dir()}
+    if path.is_dir():
+        out["remote"] = detect_repo(path).remote
+        out["project_config"] = (path / ".graylog-mcp.toml").is_file()
+        mcp = path / ".mcp.json"
+        out["claude_code"] = mcp.is_file() and '"graylog"' in mcp.read_text(encoding="utf-8", errors="replace")
+    return out
+
+
+def _groups_view(config: Config | None, base_dir: Path) -> list[dict[str, Any]]:
     if config is None:
         return []
     return [
@@ -182,6 +205,7 @@ def _groups_view(config: Config | None) -> list[dict[str, Any]]:
             "description": g.description,
             "default_environment": g.default_environment,
             "environments": sorted(i.environment or "" for i in config.instances.values() if i.group == g.name),
+            "repos": [_repo_view(r, base_dir) for r in g.repos],
         }
         for g in config.groups.values()
     ]
@@ -224,7 +248,7 @@ def build_app(state: AdminState) -> Starlette:
                 "error": error,
                 "data": configfile.scrub(data),
                 "instances": _instances_view(data, config) if config or not data else _raw_instances_view(data),
-                "groups": _groups_view(config),
+                "groups": _groups_view(config, state.path.parent),
                 "environments": config.environments if config else {},
                 "default_group": config.default_group if config else None,
                 "secret_envs": [{"name": n, "source": secret_store.source(n)} for n in secret_names],
@@ -304,6 +328,123 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         return JSONResponse({"ok": True})
 
+    def _scopes(config: Config | None) -> list[dict[str, str]]:
+        out = [{"scope": "global", "label": "All environments (global defaults)"}]
+        if config is None:
+            return out
+        for g in config.groups.values():
+            out.append(
+                {
+                    "scope": f"group:{g.name}",
+                    "label": f"Group {g.name}" + (f" ({g.description})" if g.description else ""),
+                }
+            )
+        envs = list(config.environments) + sorted(
+            {i.environment for i in config.instances.values() if i.environment} - set(config.environments)
+        )
+        for env in envs:
+            out.append({"scope": f"env:{env}", "label": f"Environment {env} (every group)"})
+        for inst in sorted(config.instances.values(), key=lambda i: i.name):
+            out.append({"scope": f"instance:{inst.name}", "label": f"Only {inst.name}"})
+        return out
+
+    async def get_scope(request: Request) -> Response:
+        scope = request.query_params.get("scope", "global")
+        data = state.raw()
+        try:
+            config = configfile.validate(data, base_dir=state.path.parent) if data else None
+            values = configfile.read_scope(data, scope)
+            keys = list(configfile.scope_keys(scope))
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse(
+            {
+                "scope": scope,
+                "keys": keys,
+                "values": values,
+                "effective": configfile.effective_scope(config, scope) if config else {},
+                "scopes": _scopes(config),
+            }
+        )
+
+    async def save_scope(request: Request) -> Response:
+        body = await _body(request)
+        try:
+            data = configfile.write_scope(state.raw(), str(body.get("scope") or "global"), body.get("values") or {})
+            configfile.validate(data, base_dir=state.path.parent)
+            configfile.save(state.path, data)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True})
+
+    async def add_repo(request: Request) -> Response:
+        """Attach a repository to a group; for a local path, optionally set the repository up."""
+        body = await _body(request)
+        group, entry = str(body.get("group") or ""), str(body.get("repo") or "").strip()
+        if not group or not entry:
+            return _err("group and repo are required")
+        result: dict[str, Any] = {"ok": True}
+        try:
+            data = state.raw()
+            config = configfile.validate(data, base_dir=state.path.parent)
+            if group not in config.groups:
+                return _err(f"unknown group {group!r}")
+            if is_repo_path(entry):
+                path = resolve_repo_path(entry, state.path.parent)
+                if not path.is_dir():
+                    return _err(f"folder not found: {path}")
+                entry = configfile.display_path(path)
+                result["remote"] = detect_repo(path).remote
+            repos = [*config.groups[group].repos, entry]
+            data = configfile.set_repos(data, group, repos)
+            configfile.validate(data, base_dir=state.path.parent)
+            configfile.save(state.path, data)
+            if is_repo_path(entry) and (body.get("project_config") or body.get("claude_code")):
+                path = resolve_repo_path(entry, state.path.parent)
+                if body.get("project_config") and path != state.path.parent:
+                    result["project_config"] = str(configfile.setup_repo(path, state.path, group))
+                if body.get("claude_code"):
+                    names = configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"]
+                    project_file = path / ".graylog-mcp.toml"
+                    installed = clients.install(
+                        "claude-code", "project", path, project_file if project_file.exists() else state.path, names
+                    )
+                    result["claude_code"] = str(installed.path)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse(result)
+
+    async def setup_repo(request: Request) -> Response:
+        """Write .graylog-mcp.toml (and register Claude Code) in a repository already attached to a group."""
+        body = await _body(request)
+        group, entry = str(body.get("group") or ""), str(body.get("repo") or "")
+        if not is_repo_path(entry):
+            return _err("only a local folder can be set up")
+        path = resolve_repo_path(entry, state.path.parent)
+        if not path.is_dir():
+            return _err(f"folder not found: {path}")
+        try:
+            project = configfile.setup_repo(path, state.path, group)
+            names = configfile.secret_envs(state.raw(), state.path.parent) or ["GRAYLOG_TOKEN"]
+            installed = clients.install("claude-code", "project", path, project, names)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, "project_config": str(project), "claude_code": str(installed.path)})
+
+    async def remove_repo(request: Request) -> Response:
+        body = await _body(request)
+        group, entry = str(body.get("group") or ""), str(body.get("repo") or "")
+        try:
+            data = state.raw()
+            config = configfile.validate(data, base_dir=state.path.parent)
+            repos = [r for r in config.groups[group].repos if r != entry] if group in config.groups else []
+            data = configfile.set_repos(data, group, repos)
+            configfile.validate(data, base_dir=state.path.parent)
+            configfile.save(state.path, data)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True})
+
     async def save_secret(request: Request) -> Response:
         """Save a token/password for this user, outside the repository. Never echoed back."""
         body = await _body(request)
@@ -350,10 +491,17 @@ def build_app(state: AdminState) -> Starlette:
 
     async def apply_detect(request: Request) -> Response:
         body = await _body(request)
+        scope = str(body.get("scope") or "global")
+        values: dict[str, Any] = {}
+        for key, value in (body.get("suggested") or {}).items():
+            if key == "group_fields" and isinstance(value, dict):
+                values.update({f"group_fields.{k}": v for k, v in value.items() if k in ("exception", "logger")})
+            else:
+                values[key] = value
+        if body.get("app_packages") and scope == "global":
+            values["app_packages"] = body["app_packages"]
         try:
-            data = configfile.apply_investigation(state.raw(), body.get("suggested") or {}, body.get("instance"))
-            if body.get("app_packages"):
-                data.setdefault("stacktrace", {})["app_packages"] = body["app_packages"]
+            data = configfile.write_scope(state.raw(), scope, values)
             configfile.validate(data, base_dir=state.path.parent)
             configfile.save(state.path, data)
         except ConfigError as exc:
@@ -476,6 +624,11 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/settings", save_settings, methods=["POST"]),
         Route("/api/groups", save_group, methods=["POST"]),
         Route("/api/secrets", save_secret, methods=["POST"]),
+        Route("/api/repos", add_repo, methods=["POST"]),
+        Route("/api/repos/remove", remove_repo, methods=["POST"]),
+        Route("/api/repos/setup", setup_repo, methods=["POST"]),
+        Route("/api/scope", get_scope),
+        Route("/api/scope", save_scope, methods=["POST"]),
         Route("/api/detect", run_detect, methods=["POST"]),
         Route("/api/detect/apply", apply_detect, methods=["POST"]),
         Route("/api/redact", redact_preview, methods=["POST"]),

@@ -909,6 +909,8 @@ async def list_instances(app: App) -> dict[str, Any]:
         out["how_to_choose"] = "instance='<group>/<environment>' (e.g. 'payment/prod'), or just the group name"
     if cfg.environments:
         out["environments"] = {e: d or None for e, d in cfg.environments.items()}
+    if cfg.current_repo:
+        out["current_repo"] = {"repo": cfg.current_repo, "group": cfg.repo_group}
     out["instances"] = [gl.status() for gl in app.instances.values()]
     out["redaction"] = app.redactor.active_rules
     return out

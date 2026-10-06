@@ -151,9 +151,14 @@ def check_redaction(config: Config) -> Check:
 
 
 async def run(app: App) -> list[Check]:
-    checks = [
-        Check("config", "info", f"loaded from {app.config.source}; default instance '{app.config.default_instance}'")
-    ]
+    cfg = app.config
+    checks = [Check("config", "info", f"loaded from {cfg.source}; default instance '{cfg.default_instance}'")]
+    if cfg.current_repo:
+        if cfg.repo_group:
+            checks.append(Check("repository", "ok", f"{cfg.current_repo} belongs to group '{cfg.repo_group}'"))
+        else:
+            hint = "add it in the admin UI (Groups) or with 'graylog-mcp repo add <group>'"
+            checks.append(Check("repository", "warn", f"{cfg.current_repo} is not listed in any group's repos", hint))
     results = await asyncio.gather(*(check_instance(app, gl) for gl in app.instances.values()))
     for items in results:
         checks.extend(items)

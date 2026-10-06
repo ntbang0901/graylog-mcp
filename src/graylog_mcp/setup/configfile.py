@@ -223,3 +223,202 @@ def scrub(data: Any) -> Any:
 def default_token_env(name: str) -> str:
     """'payment/prod' -> GRAYLOG_PAYMENT_PROD_TOKEN"""
     return "GRAYLOG_" + "".join(c if c.isalnum() else "_" for c in name.upper()) + "_TOKEN"
+
+
+# --------------------------------------------------------------------------- settings by scope
+# A scope is "global", "group:<g>", "env:<e>" or "instance:<name>". Values are flat: list settings are
+# lists, "group_fields.exception" stands for group_fields = { exception = ... }.
+
+INVESTIGATION_SETTINGS = (
+    "trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields",
+    "error_query", "change_query", "message_lookup_range", "group_fields.exception", "group_fields.logger",
+)  # fmt: skip
+CONNECTION_SETTINGS = ("timezone", "verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api")
+GLOBAL_SETTINGS = ("default_group", "default_environment", "default_instance", "app_packages")
+LIST_SETTINGS = {"trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields", "app_packages"}
+
+
+def scope_keys(scope: str) -> tuple[str, ...]:
+    if scope == "global":
+        return ("timezone", *INVESTIGATION_SETTINGS, *GLOBAL_SETTINGS)
+    if scope.startswith("env:"):
+        return ("description", *INVESTIGATION_SETTINGS, *CONNECTION_SETTINGS)
+    if scope.startswith(("group:", "instance:")):
+        return (*INVESTIGATION_SETTINGS, *CONNECTION_SETTINGS)
+    raise ConfigError(f"unknown scope {scope!r}")
+
+
+def _section(data: dict[str, Any], scope: str, create: bool) -> dict[str, Any] | None:
+    """The table holding a scope's settings (created when asked)."""
+    if scope == "global":
+        return data
+    kind, _, name = scope.partition(":")
+    if not name:
+        raise ConfigError(f"scope {scope!r} needs a name")
+    if kind == "group":
+        groups = data.setdefault("groups", {}) if create else data.get("groups") or {}
+        return groups.setdefault(name, {}) if create else groups.get(name)
+    if kind == "env":
+        envs = data.setdefault("environments", {}) if create else data.get("environments") or {}
+        return envs.setdefault(name, {}) if create else envs.get(name)
+    if kind == "instance":
+        if name in (data.get("instances") or {}):
+            return data["instances"][name]
+        group, env = split_name(name)
+        if group is None:
+            if create:
+                raise ConfigError(f"instance {name!r} is not defined in this file")
+            return None
+        if not create:
+            return (((data.get("groups") or {}).get(group) or {}).get("environments") or {}).get(env)
+        return data.setdefault("groups", {}).setdefault(group, {}).setdefault("environments", {}).setdefault(env, {})
+    raise ConfigError(f"unknown scope {scope!r}")
+
+
+def read_scope(data: dict[str, Any], scope: str) -> dict[str, Any]:
+    """Values written at this scope in this file (not inherited ones)."""
+    section = _section(data, scope, create=False) or {}
+    inv = (data.get("investigation") or {}) if scope == "global" else section
+    out: dict[str, Any] = {}
+    for key in scope_keys(scope):
+        if key.startswith("group_fields."):
+            value = (inv.get("group_fields") or {}).get(key.split(".", 1)[1])
+        elif key == "app_packages":
+            value = (data.get("stacktrace") or {}).get("app_packages")
+        elif scope == "global" and key in INVESTIGATION_SETTINGS:
+            value = inv.get(key)
+        else:
+            value = section.get(key)
+        if value not in (None, "", []):
+            out[key] = value
+    return out
+
+
+def write_scope(data: dict[str, Any], scope: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Set (or, for empty values, remove so they are inherited) the given settings at a scope."""
+    data = copy.deepcopy(data)
+    allowed = scope_keys(scope)
+    unknown = sorted(set(values) - set(allowed))
+    if unknown:
+        raise ConfigError(f"{scope}: cannot set {', '.join(unknown)} here")
+    section = _section(data, scope, create=True)
+    assert section is not None
+    inv = data.setdefault("investigation", {}) if scope == "global" else section
+    for key, raw in values.items():
+        value = raw
+        if key in LIST_SETTINGS and isinstance(raw, str):
+            value = [v.strip() for v in raw.split(",") if v.strip()]
+        if key == "timeout" and isinstance(raw, str):
+            value = float(raw) if raw.strip() else None
+        empty = value in (None, "", [])
+        if key.startswith("group_fields."):
+            sub = key.split(".", 1)[1]
+            gf = dict(inv.get("group_fields") or {})
+            if empty:
+                gf.pop(sub, None)
+            else:
+                gf[sub] = value
+            if gf:
+                inv["group_fields"] = gf
+            else:
+                inv.pop("group_fields", None)
+            continue
+        target = inv if scope == "global" and key in INVESTIGATION_SETTINGS else section
+        if key == "app_packages":
+            target = data.setdefault("stacktrace", {})
+        if empty:
+            target.pop(key, None)
+        else:
+            target[key] = value
+    for key in ("investigation", "stacktrace", "environments"):
+        if key in data and not data[key]:
+            del data[key]
+    return data
+
+
+def effective_scope(config: Config, scope: str) -> dict[str, Any]:
+    """What a representative instance of the scope actually uses (shown as the inherited value)."""
+    insts = list(config.instances.values())
+    kind, _, name = scope.partition(":")
+    if kind == "group":
+        insts = [i for i in insts if i.group == name]
+    elif kind == "env":
+        insts = [i for i in insts if (i.environment or i.name) == name]
+    elif kind == "instance":
+        insts = [i for i in insts if i.name == name]
+    else:
+        insts = [config.instances[config.default_instance]]
+    if not insts:
+        return {}
+    inst = insts[0]
+    out: dict[str, Any] = {
+        "timezone": inst.timezone,
+        "trace_fields": list(inst.trace_fields),
+        "service_fields": list(inst.service_fields),
+        "version_fields": list(inst.version_fields),
+        "latency_fields": list(inst.latency_fields),
+        "default_fields": list(inst.default_fields),
+        "error_query": inst.error_query,
+        "change_query": inst.change_query,
+        "message_lookup_range": inst.message_lookup_range,
+        "group_fields.exception": inst.group_fields.get("exception"),
+        "group_fields.logger": inst.group_fields.get("logger"),
+        "verify_tls": inst.verify_tls,
+        "ca_bundle": inst.ca_bundle,
+        "proxy": inst.proxy,
+        "timeout": inst.timeout,
+        "message_api": inst.message_api,
+        "aggregation_api": inst.aggregation_api,
+        "app_packages": list(config.stacktrace.app_packages),
+        "default_group": config.default_group,
+        "default_environment": config.default_environment,
+        "default_instance": config.default_instance,
+    }
+    if kind == "env":
+        out["description"] = config.environments.get(name, "")
+    return {k: v for k, v in out.items() if k in scope_keys(scope)}
+
+
+# --------------------------------------------------------------------------- repositories of a group
+
+
+def display_path(path: Path) -> str:
+    """'~/code/x' when under the home directory, the absolute path otherwise."""
+    try:
+        return "~/" + path.resolve().relative_to(Path.home().resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def set_repos(data: dict[str, Any], group: str, repos: list[str]) -> dict[str, Any]:
+    """Write a group's full repository list (a list from an include is replaced, not extended)."""
+    data = copy.deepcopy(data)
+    entry = data.setdefault("groups", {}).setdefault(group, {})
+    if repos:
+        entry["repos"] = list(dict.fromkeys(repos))
+    else:
+        entry.pop("repos", None)
+    return data
+
+
+def setup_repo(repo: Path, config_file: Path, group: str) -> Path:
+    """Make a repository use the shared config for its group: .graylog-mcp.toml with include + default_group."""
+    import os
+
+    target = repo / PROJECT_FILE
+    data = load_raw(target)
+    if target.resolve() == config_file.resolve():
+        raise ConfigError("this repository holds the shared config itself")
+    rel = os.path.relpath(config_file.resolve(), repo.resolve())
+    includes = data.get("include", [])
+    includes = [includes] if isinstance(includes, str) else list(includes)
+    if rel not in includes:
+        includes.append(rel)
+    data["include"] = includes[0] if len(includes) == 1 else includes
+    data["default_group"] = group
+    validate(data, base_dir=repo)
+    save(target, data)
+    return target
+
+
+PROJECT_FILE = ".graylog-mcp.toml"

@@ -98,12 +98,13 @@ async def _check(config: Config) -> int:
     return 0 if all(i["status"] == "ok" for i in status["instances"]) else 1
 
 
-SUBCOMMANDS = ("serve", "init", "login", "logout", "doctor", "detect", "install", "ui")
+SUBCOMMANDS = ("serve", "init", "login", "logout", "repo", "doctor", "detect", "install", "ui")
 HELP = """\
 usage: graylog-mcp [serve] [options]          run the MCP server (default)
        graylog-mcp init [options]             guided setup: environments, field detection, client config
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
+       graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
@@ -284,6 +285,71 @@ def _logout(argv: list[str]) -> int:
     return 0
 
 
+def _repo(argv: list[str]) -> int:
+    from graylog_mcp.config import default_config_path, detect_repo, is_repo_path, resolve_repo_path
+    from graylog_mcp.setup import clients, configfile
+
+    parser = argparse.ArgumentParser(prog="graylog-mcp repo", description="Repositories served by each group")
+    parser.add_argument("--config", "-c", help="config file holding the groups (default: the one found from here)")
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("list", help="show each group's repositories")
+    add = sub.add_parser("add", help="attach a repository (a local folder or a git URL) to a group")
+    add.add_argument("group")
+    add.add_argument("repo", nargs="?", default=".", help="folder (default: current directory) or git URL")
+    add.add_argument("--no-setup", action="store_true", help="do not write .graylog-mcp.toml / .mcp.json in it")
+    rm = sub.add_parser("remove", help="detach a repository from a group")
+    rm.add_argument("group")
+    rm.add_argument("repo")
+    args = parser.parse_args(argv)
+    path = Path(args.config).expanduser() if args.config else default_config_path()
+    if path is None or not path.is_file():
+        print("graylog-mcp repo: no config file found (use --config or run 'graylog-mcp init')", file=sys.stderr)
+        return 2
+    path = path.resolve()
+    try:
+        data = configfile.load_raw(path)
+        config = configfile.validate(data, base_dir=path.parent)
+        if args.action == "list":
+            for group in config.groups.values():
+                print(f"{group.name}:" + ("" if group.repos else " (no repository)"))
+                for entry in group.repos:
+                    where = resolve_repo_path(entry, path.parent) if is_repo_path(entry) else None
+                    note = "" if where is None else ("" if where.is_dir() else "  (folder not found)")
+                    print(f"  {entry}{note}")
+            return 0
+        if args.group not in config.groups:
+            raise ConfigError(f"unknown group {args.group!r}; groups: {', '.join(config.groups) or 'none'}")
+        if args.action == "remove":
+            repos = [r for r in config.groups[args.group].repos if r != args.repo]
+            configfile.save(path, configfile.set_repos(data, args.group, repos))
+            print(f"✓ removed {args.repo} from {args.group}")
+            return 0
+        entry = args.repo
+        folder = None
+        if is_repo_path(entry) or entry == ".":
+            folder = resolve_repo_path(entry if entry != "." else "./", Path.cwd())
+            if not folder.is_dir():
+                raise ConfigError(f"folder not found: {folder}")
+            entry = configfile.display_path(folder)
+        data = configfile.set_repos(data, args.group, [*config.groups[args.group].repos, entry])
+        configfile.save(path, data)
+        print(f"✓ {entry} added to group {args.group} in {path}")
+        if folder is not None:
+            remote = detect_repo(folder).remote
+            if remote:
+                print(f"  git remote: {remote}")
+            if not args.no_setup and folder != path.parent:
+                project = configfile.setup_repo(folder, path, args.group)
+                print(f"  ✓ wrote {project} (includes {path.name}, default group {args.group})")
+                names = configfile.secret_envs(data, path.parent) or ["GRAYLOG_TOKEN"]
+                installed = clients.install("claude-code", "project", folder, project, names)
+                print(f"  ✓ Claude Code: {installed.path}")
+    except ConfigError as exc:
+        print(f"graylog-mcp repo: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _load_for_tools(path: str | None) -> Config:
     return load_config(path, require_usable=False)
 
@@ -452,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         "init": _init,
         "login": _login,
         "logout": _logout,
+        "repo": _repo,
         "doctor": _doctor,
         "detect": _detect,
         "install": _install,

@@ -30,6 +30,11 @@ All notable changes to this project are documented here. The format follows
   set automatically (editable under Advanced for CI). `init` no longer asks for variable names.
 - `*_env` values must be variable names; a secret typed into such a field is refused without being echoed,
   and the admin UI scrubs it from what it shows.
+- Group repositories: `[groups.<g>] repos = [...]` lists local folders or git remotes; running inside one of
+  them makes its group the default. Admin UI and `graylog-mcp repo add|remove|list` attach repositories and set
+  them up (`.graylog-mcp.toml` with `include`, Claude Code registration).
+- Admin UI Settings page: edit settings per scope (global, environment, group, instance) with the inherited
+  value shown; field detection can be applied to a chosen scope.
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
