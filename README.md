@@ -84,6 +84,13 @@ search endpoints that execute or check a query without saving it (`/views/search
 
 All tools are annotated `readOnlyHint` and accept an optional `instance`.
 
+**Scan**
+- `scan` — "is anything wrong?" in one call. Runs every scan rule concurrently (crashes, resource exhaustion,
+  error spikes, new error types, HTTP 5xx, connectivity, database, auth failures, plus your own) with exact counts
+  against a baseline, and returns only what fired, most severe first, with its query, top groups and a sample.
+  Ad hoc rules (`checks`) cover a specific request in the same call. See [Scan rules](#scan-rules).
+- `list_scan_rules` — the rules with their query, condition, severity and tags.
+
 **Root cause analysis**
 - `root_cause` — "what broke first, and why?" in one call. Compares every service's errors, traffic and
   latency with a baseline window, pins each service's first error to the millisecond, detects deploys in
@@ -119,6 +126,100 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `list_instances` — instances with detected version and the API in use.
 
 The server also sends the model instructions about Lucene syntax and a suggested investigation flow.
+
+## Scan rules
+
+`scan` answers "is anything wrong?" or "scan X" with one call. Each rule is a Lucene query plus a condition, and
+fires when:
+
+| Condition | Fires when | Use it for |
+|-----------|-----------|------------|
+| `threshold = N` | more than N matches in the window (`0`: any match) | things that should never happen: crashes, OOM, data corruption |
+| `growth = X`, `min_count = M` | the rate is X times the baseline's (or the baseline had none), with at least M matches, and the rise is significant | things that always happen a little: timeouts, 5xx, auth failures |
+| `group_by` + `new_groups = true` | a value of the field (exception, logger, ...) appears that the baseline never saw, at least `min_count` times | new kinds of errors after a deploy |
+
+What keeps false alarms out:
+
+- **Share of traffic** (`per_traffic = true`): the rule compares matches / traffic instead of matches per
+  hour, so errors that triple because a sale tripled the traffic stay quiet, and a rise from 1% to 10% of a busy
+  hour fires. Traffic is every message in the scan's scope, or `traffic_query` (e.g. `path:/checkout` for checkout
+  errors). The built-in error, 5xx, connectivity and database rules use it.
+- **Seasonal baseline** (`baseline_shift = "1d"` or `"7d"`, `baseline_periods = 3`): the window is compared with
+  the same window one day (week) earlier, three times; the period with the median rate is the reference, so the
+  morning peak is compared with yesterday's morning peak, and one bad day among the three changes nothing.
+  Periods without any data (older than the index retention) are dropped and the finding says so
+  (`baseline_note`). By default the baseline is the period right before the window, as long as the window, or
+  `baseline = "24h"`.
+- **Significance**: a growth fires only if it is unlikely to be chance, by an exact conditional binomial test of
+  the window's count against the reference period's (the standard test comparing two Poisson rates). 3 errors
+  then 7 (x2.3) stays quiet with a `note` saying so; 400 then 600 (x1.5, with `growth = 1.4`) fires. Each growth
+  result carries its `confidence`; the rule's `confidence` (default 0.99) is the bar.
+
+Every rule costs two exact counts, plus one per extra baseline period and for traffic; identical counts are made
+once per scan (rules share the error query, the traffic) and run concurrently (`limits.scan_concurrency`). Groups
+and one sample are fetched only for rules that fired or need them to decide, and a sample shown by one finding is
+not repeated by the next. The result has `findings` (fired, most severe first), `quiet` (checked and normal, with
+counts and trend) and `skipped` (could not be checked, e.g. a field these logs do not have).
+
+Built-in rules: `crash` and `resource_exhaustion` (critical, any match); `error_spike` (share of errors x2),
+`new_error_types` (exception unseen in 24 h), `http_5xx` (share x2, only where a status field exists),
+`connectivity` (timeouts, refused/reset connections, DNS; share x3) and `database` (deadlocks, lock timeouts,
+too many connections; share x3), all high; `auth_failures` (rate x3, at least 20), medium.
+
+```toml
+[scan]
+disable = ["auth_failures"]                 # built-in rules to turn off
+exclude = 'logger_name:HealthCheck OR "GET /health"'   # noise dropped from every rule
+
+[scan.rules.connectivity]                   # a built-in: only the keys you set change
+min_count = 30
+
+[scan.rules.card_declined]
+description = "Bank declines"
+query = 'service:payment AND message:"declined"'
+severity = "high"                           # critical | high | medium | low
+growth = 2.0
+min_count = 20
+per_traffic = true                          # compare declines / payment traffic, not declines per hour
+traffic_query = "service:payment"
+baseline_shift = "7d"                       # against the same hour of the last 3 weeks (payday, weekends)
+group_by = "bank_code"                      # top groups shown with the finding
+tags = ["payment"]
+
+[scan.rules.ledger_mismatch]
+query = '"ledger mismatch"'                 # no condition: any match fires
+severity = "critical"
+instances = ["payment/prod"]                # instances, groups or environments; everywhere when omitted
+
+[scan.rules.consumer_lag]
+query = "consumer_lag:>10000"
+requires = ["consumer_lag"]                 # skipped (and said so) where the field does not exist
+```
+
+Other keys: `errors_only = true` ANDs the instance's `error_query`, `exclude` drops noise for one rule, `baseline`
+sets the rule's own baseline length, `baseline_periods` the number of shifted periods, `confidence` the
+significance bar. A rule's own baseline wins over the call's. The config is validated at startup like the rest (unknown keys, a rule that
+would fire on all traffic, `new_groups` without `group_by`).
+
+Selecting what to run: `scan(rules=["payment"])` takes rule names or tags, `min_severity="high"` leaves out
+lower rules before any request, and `checks=[{"name": "declined", "query": "message:declined", "growth": 2}]`
+adds rules written for the request at hand (same keys as above). A preset with `tool = "scan"` saves a scan
+the team runs often, and the `scan` MCP prompt (`/mcp__graylog__scan` in Claude Code) runs scan, verifies each
+finding and reports them as a table.
+
+Writing rules that are fast and accurate:
+
+- Match on fields when you have them (`http_status:[500 TO 599]`, `exception_class:...`); otherwise quoted
+  phrases (`"Connection refused"`). Avoid leading wildcards and regex: they scan every term in the index.
+- Pick the condition from how often the event normally happens: never, then `threshold = 0`; always a little,
+  then `growth` (the significance test handles noise; `min_count` only sets the smallest count worth a look).
+- Anything that grows with traffic gets `per_traffic = true`; traffic with a daily or weekly curve gets
+  `baseline_shift`.
+- Drop known noise with `exclude` (per rule or under `[scan]`) rather than raising thresholds.
+- Use a longer baseline (`baseline = "24h"`) for rules on spiky or low-volume traffic, and `requires` for rules
+  that depend on a field only some systems log.
+- Give each rule a severity that matches who should be woken up, and tags that match how people ask
+  ("payment", "security", "dependencies").
 
 ## Root cause analysis
 

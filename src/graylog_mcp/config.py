@@ -20,6 +20,8 @@ from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
+
 
 class ConfigError(Exception):
     """Invalid or incomplete configuration."""
@@ -66,6 +68,7 @@ DEFAULT_CHANGE_QUERY = (
 )
 
 PRESET_TOOLS = {
+    "scan",
     "root_cause",
     "detect_changes",
     "service_map",
@@ -92,6 +95,7 @@ class Limits:
     max_output_chars: int = 24000
     max_groups: int = 100
     sample_concurrency: int = 4
+    scan_concurrency: int = 8
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,53 @@ class Preset:
     args: dict[str, Any]
 
 
+SEVERITIES = ("critical", "high", "medium", "low")
+
+
+@dataclass(frozen=True)
+class ScanRule:
+    """One check run by the ``scan`` tool. It fires when ``count > threshold``, when the rate grew by
+    ``growth`` with at least ``min_count`` matches and the rise is significant at ``confidence``, or, with
+    ``new_groups``, when a ``group_by`` value absent from the baseline shows up at least ``min_count`` times.
+    ``per_traffic`` compares the share of traffic (matches / ``traffic_query`` matches) instead of the rate per
+    second, so errors that only follow traffic do not fire."""
+
+    name: str
+    description: str = ""
+    query: str = "*"
+    errors_only: bool = False  # AND the instance's error_query
+    severity: str = "medium"
+    threshold: int | None = None
+    growth: float | None = None
+    min_count: int = 1
+    group_by: str | None = None
+    new_groups: bool = False
+    baseline: str | None = None  # length of the period before the window; default: the window's length
+    baseline_shift: str | None = None  # compare with the window shifted back by this ('1d', '7d'), seasonally
+    baseline_periods: int | None = None  # how many shifted periods (their median is the baseline); default 3
+    per_traffic: bool = False
+    traffic_query: str = "*"  # what counts as traffic for per_traffic
+    confidence: float = 0.99  # a growth must be this unlikely to be chance
+    exclude: str | None = None  # Lucene query of noise to drop
+    requires: tuple[str, ...] = ()  # skip unless one of these fields exists
+    instances: tuple[str, ...] = ()  # only on these instances, groups or environments; empty: everywhere
+    tags: tuple[str, ...] = ()
+    builtin: bool = False
+
+    def applies_to(self, inst: InstanceConfig) -> bool:
+        if not self.instances:
+            return True
+        names = {inst.name.lower(), (inst.group or "").lower(), (inst.environment or "").lower()} - {""}
+        return any(i.lower() in names for i in self.instances)
+
+
+@dataclass(frozen=True)
+class ScanConfig:
+    rules: dict[str, ScanRule] = field(default_factory=dict)  # enabled rules, built-in and configured
+    exclude: str | None = None  # noise dropped from every rule
+    disabled: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class HttpConfig:
     host: str = "127.0.0.1"
@@ -217,6 +268,7 @@ class Config:
     scope_reason: str | None = None  # 'repository' (run inside a group's repository) or 'only_groups'
     out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
     focus: Focus = Focus()
+    scan: ScanConfig = field(default_factory=lambda: _parse_scan({}))
 
     def instance(self, name: str | None) -> InstanceConfig:
         """Resolve 'payment/prod', 'payment prod', 'payment' (its default environment), 'prod' (in the
@@ -305,6 +357,7 @@ _TOP_KEYS = {
     "investigation",
     "instances",
     "presets",
+    "scan",
     "http",
 }
 _INVESTIGATION_KEYS = {
@@ -341,6 +394,9 @@ _REDACTION_KEYS = {"packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "al
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts"}
 _PRESET_KEYS = {"description", "tool", "args"}
+_SCAN_KEYS = {"disable", "exclude", "rules"}
+MAX_BASELINE_PERIODS = 10
+_SCAN_RULE_KEYS = {f for f in ScanRule.__dataclass_fields__ if f not in ("name", "builtin")}
 
 
 def _check_keys(where: str, data: dict[str, Any], allowed: set[str]) -> None:
@@ -679,6 +735,113 @@ def _parse_presets(data: Any) -> dict[str, Preset]:
             raise ConfigError(f"{where}.args: expected a table")
         out[name] = Preset(name=name, description=str(item.get("description", "")), tool=tool, args=dict(args))
     return out
+
+
+def parse_scan_rule(name: str, data: Any, base: dict[str, Any] | None = None, builtin: bool = False) -> ScanRule:
+    """Validate one scan rule; ``base`` holds the built-in rule a table of the same name overrides."""
+    where = f"scan.rules.{name}"
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: expected a table")
+    _check_keys(where, data, _SCAN_RULE_KEYS)
+    if not re.fullmatch(_LABEL, name):
+        raise ConfigError(f"{where}: rule names may only contain letters, digits, '_', '-', '.'")
+    merged = {**(base or {}), **data}
+    out: dict[str, Any] = {"name": name, "builtin": builtin}
+    for key in ("description", "group_by"):
+        if key in merged:
+            if not isinstance(merged[key], str):
+                raise ConfigError(f"{where}.{key}: expected a string")
+            out[key] = merged[key]
+    for key in ("query", "exclude", "traffic_query"):
+        if key in merged:
+            out[key] = _check_query(f"{where}.{key}", merged[key])
+    for key in ("errors_only", "new_groups", "per_traffic"):
+        if key in merged:
+            if not isinstance(merged[key], bool):
+                raise ConfigError(f"{where}.{key}: expected true or false")
+            out[key] = merged[key]
+    severity = merged.get("severity", "medium")
+    if severity not in SEVERITIES:
+        raise ConfigError(f"{where}.severity: expected one of {', '.join(SEVERITIES)}")
+    out["severity"] = severity
+    if "threshold" in merged:
+        t = merged["threshold"]
+        if not isinstance(t, int) or isinstance(t, bool) or t < 0:
+            raise ConfigError(f"{where}.threshold: expected an integer >= 0 (fires when the count is above it)")
+        out["threshold"] = t
+    if "growth" in merged:
+        g = merged["growth"]
+        if not isinstance(g, int | float) or isinstance(g, bool) or g <= 1:
+            raise ConfigError(f"{where}.growth: expected a number above 1 (e.g. 2.0 = the rate doubled)")
+        out["growth"] = float(g)
+    if "min_count" in merged:
+        out["min_count"] = _positive_int(f"{where}.min_count", merged["min_count"])
+    for key in ("baseline", "baseline_shift"):
+        if key in merged:
+            from graylog_mcp.timerange import parse_duration  # local import: avoid a cycle
+
+            try:
+                parse_duration(merged[key])
+            except ValueError as exc:
+                raise ConfigError(f"{where}.{key}: {exc}") from None
+            out[key] = merged[key]
+    if "baseline" in data and "baseline_shift" in data:
+        raise ConfigError(f"{where}: set baseline (the period right before) or baseline_shift (seasonal), not both")
+    if "baseline_shift" in data:
+        out.pop("baseline", None)  # a seasonal override replaces the built-in's contiguous baseline
+    elif "baseline" in data:
+        out.pop("baseline_shift", None)
+    if "baseline_periods" in merged:
+        n = _positive_int(f"{where}.baseline_periods", merged["baseline_periods"])
+        if n > MAX_BASELINE_PERIODS:
+            raise ConfigError(f"{where}.baseline_periods: at most {MAX_BASELINE_PERIODS}")
+        out["baseline_periods"] = n
+    if "confidence" in merged:
+        c = merged["confidence"]
+        if not isinstance(c, int | float) or isinstance(c, bool) or not 0.5 <= c < 1:
+            raise ConfigError(f"{where}.confidence: expected a number from 0.5 to below 1 (e.g. 0.99)")
+        out["confidence"] = float(c)
+    for key in ("requires", "instances", "tags"):
+        if key in merged:
+            out[key] = _str_list(f"{where}.{key}", merged[key])
+    if out.get("per_traffic") and "growth" not in out:
+        raise ConfigError(f"{where}: per_traffic compares growth; set growth (e.g. growth = 2.0)")
+    if out.get("new_groups") and not out.get("group_by"):
+        raise ConfigError(f'{where}: new_groups needs group_by (e.g. group_by = "exception")')
+    if "threshold" not in out and "growth" not in out and not out.get("new_groups"):
+        out["threshold"] = 0  # a plain query: any match is a finding
+    if out.get("query", "*").strip() == "*" and not out.get("errors_only") and "growth" not in out:
+        raise ConfigError(
+            f"{where}: a rule matching every message needs errors_only = true or a growth condition; "
+            "otherwise it fires on all traffic"
+        )
+    return ScanRule(**out)
+
+
+def _parse_scan(data: Any) -> ScanConfig:
+    if not isinstance(data, dict):
+        raise ConfigError("scan: expected a table")
+    _check_keys("scan", data, _SCAN_KEYS)
+    disabled = _str_list("scan.disable", data.get("disable", []))
+    unknown = sorted(set(disabled) - set(BUILTIN_SCAN_RULES) - set(data.get("rules") or {}))
+    if unknown:
+        raise ConfigError(
+            f"scan.disable: unknown rule(s) {', '.join(unknown)}; built-in rules: {', '.join(BUILTIN_SCAN_RULES)}"
+        )
+    exclude = _check_query("scan.exclude", data["exclude"]) if "exclude" in data else None
+    raw = data.get("rules") or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("scan.rules: expected a table of [scan.rules.<name>]")
+    rules: dict[str, ScanRule] = {}
+    for name, base in BUILTIN_SCAN_RULES.items():
+        if name not in raw:
+            rules[name] = parse_scan_rule(name, {}, base, builtin=True)
+    for name, item in raw.items():
+        builtin = BUILTIN_SCAN_RULES.get(name)
+        rules[name] = parse_scan_rule(name, item, builtin, builtin=builtin is not None)
+    for name in disabled:
+        rules.pop(name, None)
+    return ScanConfig(rules=rules, exclude=exclude, disabled=disabled)
 
 
 def _parse_http(data: Any) -> HttpConfig:
@@ -1179,6 +1342,7 @@ def parse_config(
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),
         presets=_parse_presets(data.get("presets", {})),
+        scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
         source=source,
     )
