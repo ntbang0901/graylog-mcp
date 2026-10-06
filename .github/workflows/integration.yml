@@ -8,10 +8,16 @@ on:
     paths:
       - "src/graylog_mcp/backends/**"
       - "src/graylog_mcp/client.py"
+      - "src/graylog_mcp/rca.py"
+      - "tests/fake_graylog.py"
       - "tests/integration/**"
 
 permissions:
   contents: read
+
+concurrency:
+  group: integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   graylog:
@@ -33,10 +39,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
+          enable-cache: true
       - run: uv sync --locked
       - run: sudo sysctl -w vm.max_map_count=262144
       - run: docker compose -f tests/integration/docker-compose.yml --profile ${{ matrix.profile }} up -d
-      - run: uv run python tests/integration/seed.py
-      - run: uv run pytest -m integration -v -s tests/integration
+      - name: Seed Graylog
+        run: uv run python tests/integration/seed.py
+      - name: Run every tool against Graylog
+        run: uv run pytest -m integration -v -s tests/integration
       - if: failure()
         run: docker compose -f tests/integration/docker-compose.yml --profile ${{ matrix.profile }} logs --tail 200

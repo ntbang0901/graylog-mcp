@@ -133,8 +133,9 @@ class Graylog:
         if self.version is not None:
             return
         async with self._lock:
+            # another coroutine may have finished detection while we waited for the lock
             if self.version is not None:
-                return
+                return  # type: ignore[unreachable]
             try:
                 await self.detect()
             except GraylogError as exc:

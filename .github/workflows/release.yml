@@ -13,9 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --locked && uv run pytest -q
-      - name: Check tag matches version
-        run: test "v$(uv run python -c 'import graylog_mcp; print(graylog_mcp.__version__)')" = "${GITHUB_REF_NAME}"
+      - run: uv sync --locked && uv run pytest -q && uv run mypy
+      - name: Check tag matches version and changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test "$(uv run python -c 'import graylog_mcp; print(graylog_mcp.__version__)')" = "$version"
+          grep -q "^version = \"$version\"" pyproject.toml
+          grep -q "^## \[$version\]" CHANGELOG.md
       - run: uv build
       - uses: actions/upload-artifact@v4
         with:

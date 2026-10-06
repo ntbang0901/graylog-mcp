@@ -2,32 +2,133 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
+    tags-ignore: ["**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  UV_LOCKED: "1"   # every uv command must match uv.lock
+
+# Branch pushes run CI directly; pull requests run only when they come from a fork (a same-repo
+# PR is already covered by the push of its branch). Each job repeats this condition.
+
 jobs:
-  test:
+  lint:
+    name: Lint and type check
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync
+      - name: Lockfile up to date
+        run: uv lock --check
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github
+      - name: Ruff format
+        run: uv run ruff format --check
+      - name: Mypy
+        run: uv run mypy
+
+  test:
+    name: Test (${{ matrix.os }}, py${{ matrix.python }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
+        include:
+          - { os: windows-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --locked
-      - run: uv run ruff check
-      - run: uv run ruff format --check
-      - run: uv run pytest -q
+          enable-cache: true
+      - run: uv sync
+      - name: Unit and contract tests
+        run: uv run pytest -q --cov --cov-report=term --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        with:
+          name: coverage
+          path: coverage.xml
 
-  docker:
+  build:
+    name: Build and check distribution
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t graylog-mcp:ci .
-      - run: docker run --rm --entrypoint graylog-mcp graylog-mcp:ci --version
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv build
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+      - name: Smoke test the wheel in a clean environment
+        run: |
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke dist/*.whl
+          /tmp/smoke/bin/graylog-mcp --version
+          # --check exits 1 when an instance is unreachable, 2 on a configuration error
+          set +e
+          GRAYLOG_URL=http://127.0.0.1:9 GRAYLOG_TOKEN=x /tmp/smoke/bin/graylog-mcp --check > /dev/null
+          test $? -eq 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  docker:
+    name: Docker image
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: graylog-mcp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the image
+        run: |
+          docker run --rm --entrypoint graylog-mcp graylog-mcp:ci --version
+          docker run -d --name mcp -p 8000:8000 -e GRAYLOG_URL=http://127.0.0.1:9 -e GRAYLOG_TOKEN=x \
+            -e GRAYLOG_MCP_HTTP_TOKEN=ci graylog-mcp:ci
+          for i in $(seq 1 30); do curl -fs localhost:8000/healthz && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/mcp)" = 401
+          docker rm -f mcp
+
+  # Single required check for branch protection.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [lint, test, build, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'

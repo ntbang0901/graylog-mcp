@@ -11,7 +11,7 @@ import contextlib
 import inspect
 import re
 import statistics
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -524,7 +524,7 @@ async def _sample(app: App, gl: Graylog, query: str, tr: TimeRange, streams: tup
     return app.shaper(gl).message(m.fields, m.index, m.id, limit=SAMPLE_CHARS)
 
 
-async def _bounded(app: App, coros: list[Awaitable[Any]]) -> list[Any]:
+async def _bounded(app: App, coros: Sequence[Awaitable[Any]]) -> list[Any]:
     sem = asyncio.Semaphore(app.config.limits.sample_concurrency)
 
     async def run(c: Awaitable[Any]) -> Any:
@@ -652,22 +652,23 @@ async def log_histogram(
     fmt = "%Y-%m-%d %H:%M" if secs >= 60 else "%Y-%m-%d %H:%M:%S"
     if tr.seconds <= 86400 and secs < 86400:
         fmt = fmt[9:]  # drop the date for ranges within a day
-    buckets = [[datetime.fromtimestamp(k, UTC).astimezone(tz).strftime(fmt), counts.get(k, 0)] for k in keys]
-    values = [b[1] for b in buckets]
+    labels = [datetime.fromtimestamp(k, UTC).astimezone(tz).strftime(fmt) for k in keys]
+    values = [counts.get(k, 0) for k in keys]
+    buckets = [[label, value] for label, value in zip(labels, values, strict=True)]
     total = agg.total if agg.total is not None else sum(values)
     out = _header(gl, tr, query=query or "*", interval=unit, total=total)
     out["timezone"] = f"{gl.cfg.timezone} ({format_ts(tr.end, tz)[-6:]})"
     if values and any(values):
         peak_i = max(enumerate(values), key=lambda iv: iv[1])[0]
-        out["peak"] = {"at": buckets[peak_i][0], "count": values[peak_i]}
+        out["peak"] = {"at": labels[peak_i], "count": values[peak_i]}
         nz = [i for i, v in enumerate(values) if v]
-        out["first_nonzero"] = buckets[nz[0]][0]
-        out["last_nonzero"] = buckets[nz[-1]][0]
+        out["first_nonzero"] = labels[nz[0]]
+        out["last_nonzero"] = labels[nz[-1]]
         median = statistics.median(values)
         threshold = max(median * 3, median + 5)
         onset = next((i for i, v in enumerate(values) if v > threshold), None)
         if onset is not None:
-            out["onset"] = {"at": buckets[onset][0], "count": values[onset], "median": median}
+            out["onset"] = {"at": labels[onset], "count": values[onset], "median": median}
     budget = app.budget()
     budget.take(out)
     out["buckets"] = budget.fit(buckets)
