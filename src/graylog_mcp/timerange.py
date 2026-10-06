@@ -85,6 +85,7 @@ def parse_time(value: str, tz: tzinfo, now: datetime | None = None) -> datetime:
         return local_now.replace(hour=parts[0], minute=parts[1], second=parts[2], microsecond=0).astimezone(UTC)
 
     iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    parsed: datetime | None
     try:
         parsed = datetime.fromisoformat(iso)
     except ValueError:
@@ -100,6 +101,7 @@ def parse_time(value: str, tz: tzinfo, now: datetime | None = None) -> datetime:
                 f"cannot parse time {value!r}; use ISO 8601 (2024-05-01T10:00:00+07:00), "
                 "'2024-05-01 10:00' (configured timezone), 'now' or '-2h'"
             ) from None
+    assert parsed is not None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=tz)
     return parsed.astimezone(UTC)

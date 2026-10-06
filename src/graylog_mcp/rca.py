@@ -821,9 +821,9 @@ async def root_cause(
         {"service": disp(c.service), "score": round(c.score, 1), "reasons": c.reasons} for c in ranked[:5]
     ]
     timeline: list[tuple[datetime, dict[str, Any]]] = []
-    for c in changes:
-        if c.at >= base_tr.start:
-            timeline.append((c.at, {"service": disp(c.service), "event": describe_change(c)}))
+    for change in changes:
+        if change.at >= base_tr.start:
+            timeline.append((change.at, {"service": disp(change.service), "event": describe_change(change)}))
     for items in onsets.values():
         for o in items:
             desc = {

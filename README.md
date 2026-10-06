@@ -1,5 +1,12 @@
 # graylog-mcp
 
+[![CI](https://github.com/ntbang0901/graylog-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ntbang0901/graylog-mcp/actions/workflows/ci.yml)
+[![Integration](https://github.com/ntbang0901/graylog-mcp/actions/workflows/integration.yml/badge.svg)](https://github.com/ntbang0901/graylog-mcp/actions/workflows/integration.yml)
+[![CodeQL](https://github.com/ntbang0901/graylog-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/ntbang0901/graylog-mcp/actions/workflows/codeql.yml)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![Graylog](https://img.shields.io/badge/graylog-4.3%20%E2%80%93%207.0-green)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+
 A read-only [Model Context Protocol](https://modelcontextprotocol.io) server for **Graylog 4.x to 7.x**.
 It lets an LLM investigate incidents on its own: search logs, follow one request across services,
 group errors with exact counts, and find when a problem started. Sensitive data is masked
@@ -229,8 +236,8 @@ docker run -p 8000:8000 \
 
 ```bash
 uv sync
-uv run pytest              # unit + contract tests (no network)
-uv run ruff check && uv run ruff format --check
+uv run pytest              # unit + contract tests (no network), coverage >= 85%
+uv run ruff check && uv run ruff format --check && uv run mypy
 ```
 
 - **Unit tests**: masking (including values that must *not* be masked), stack traces in five languages,
@@ -246,7 +253,12 @@ uv run ruff check && uv run ruff format --check
   tests/integration/run.sh v50      # or v43 v52 v61 v70
   ```
 
-  CI runs the whole matrix weekly and on changes to the backends.
+  CI runs the whole matrix weekly, on demand, and on pull requests that change the backends.
+
+CI on every push: ruff, mypy, tests on Linux (Python 3.11-3.13), Windows and macOS, wheel build with
+metadata check and a smoke test in a clean environment, and a Docker build with an HTTP smoke test. CodeQL
+scans the code and workflows; Dependabot keeps dependencies and actions current. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Project layout
 

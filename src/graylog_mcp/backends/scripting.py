@@ -76,7 +76,7 @@ class ScriptingBackend:
             body["streams"] = list(streams)
         data = await self.client.post("search/aggregate", body)
         cols = _columns(data)
-        kinds = []
+        kinds: list[tuple[str, Any]] = []
         for col in cols:
             if col.get("column_type") == "metric":
                 fn = str(col.get("function", "")).lower()

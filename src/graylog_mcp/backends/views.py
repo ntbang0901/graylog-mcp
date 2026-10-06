@@ -128,7 +128,7 @@ class ViewsBackend:
         return _result(data or {}, st_id)
 
     async def search(self, mq: MessageQuery) -> MessagePage:
-        st = {
+        st: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "type": "messages",
             "limit": mq.limit,

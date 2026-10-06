@@ -1,0 +1,16 @@
+name: Feature request
+description: A tool, option or behaviour you would like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to investigate or automate, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How it could work. Note that the server must stay read-only towards Graylog.
