@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, tools
+from graylog_mcp import __version__, rca, scan, tools
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -45,6 +45,7 @@ from graylog_mcp.setup.detect import detect, local_timezone
 from graylog_mcp.shaping import dumps
 
 TOOLS: dict[str, Any] = {
+    "scan": scan.scan,
     "root_cause": rca.root_cause,
     "detect_changes": rca.detect_changes,
     "service_map": rca.service_map,

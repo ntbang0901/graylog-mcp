@@ -13,6 +13,7 @@ max_message_chars = 20000            # get_message
 max_output_chars = 24000             # per tool call (~6-8k tokens)
 max_groups = 100
 sample_concurrency = 4
+scan_concurrency = 8               # Graylog requests in flight during one scan
 
 [redaction]
 packs = ["vn"]                       # vn (phone, CCCD), us (SSN), eu (IBAN), uk (NINO), in (Aadhaar, PAN)
@@ -80,6 +81,38 @@ args = { query = "service:payment", range = "1h" }
 description = "Requests slower than 2s"
 tool = "search_logs"
 args = { query = "took_ms:>2000", range = "30m", fields = ["timestamp", "source", "path", "took_ms"] }
+
+[presets.health]
+description = "Quick health scan: high and critical rules"
+tool = "scan"
+args = { range = "1h", min_severity = "high" }
+
+# Scan rules (README: Scan rules). Built-in rules: crash, resource_exhaustion, error_spike, new_error_types,
+# http_5xx, connectivity, database, auth_failures.
+[scan]
+disable = ["auth_failures"]
+exclude = 'logger_name:HealthCheck OR "GET /health"'
+
+[scan.rules.connectivity]            # override one key of a built-in rule
+min_count = 30
+
+[scan.rules.card_declined]
+description = "Bank declines"
+query = 'service:payment AND message:"declined"'
+severity = "high"                    # critical | high | medium | low
+growth = 2.0                         # fires when the share doubled against the baseline...
+min_count = 20                       # ...with at least this many matches, and the rise is significant
+per_traffic = true                   # declines / payment traffic, not declines per hour
+traffic_query = "service:payment"
+baseline_shift = "7d"                # against the same hour of the last baseline_periods (3) weeks
+# confidence = 0.99                  # how unlikely the rise must be by chance
+group_by = "bank_code"
+tags = ["payment"]
+
+[scan.rules.ledger_mismatch]
+query = '"ledger mismatch"'          # no condition: any match fires
+severity = "critical"
+instances = ["prod"]                 # only on these instances, groups or environments
 
 # Only used with --transport streamable-http
 [http]
