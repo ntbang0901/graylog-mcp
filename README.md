@@ -371,6 +371,7 @@ A service repository then only says which group it belongs to:
 # payment-api/.graylog-mcp.toml
 include = "../platform/graylog-org.toml"   # relative to this file; a list is allowed
 default_group = "payment"
+only_groups = "payment"                    # load only this group here (a list, or "*" for every group)
 ```
 
 How the model (and you) pick an instance, in every tool's `instance` argument:
@@ -396,12 +397,19 @@ git remotes (`git@gitlab.corp:f88/payment-api.git`, `f88/payment-api` or just `p
 repos = ["~/code/payment-api", "../payment-worker", "f88/payment-gateway"]
 ```
 
-When the server runs inside one of them (a folder or any subfolder, or a clone whose `origin` matches), that
-group becomes the default, so "errors on prod" means that system's production. `list_instances` and
-`graylog-mcp doctor` show which repository was recognised.
+When the server runs inside one of them (a folder or any subfolder, or a clone whose `origin` matches), it
+loads **only that group**: "errors on prod" means that system's production, and the other groups' Graylog
+servers are not reachable from that repository. Asking for one returns an error that says why and how to
+enable it. `list_instances` shows the repository and the `scope`; `graylog-mcp doctor` shows which repository
+was recognised.
+
+To reach more groups from a repository, set `only_groups = ["payment", "erp"]` (or `"*"` for all) in its
+`.graylog-mcp.toml`, or `GRAYLOG_MCP_GROUPS=payment,erp` in the MCP client's environment. `only_groups` also
+works without repositories, e.g. in a personal config. The admin UI always shows every group.
 
 Manage them in the admin UI (Environments > Groups > Repositories: add a local folder, see its git remote and
-whether it is set up, "Set up" writes `.graylog-mcp.toml` with an `include` of the shared file and registers
+whether it is set up, "Set up" writes `.graylog-mcp.toml` with an `include` of the shared file and
+`only_groups`, so the scope holds on every machine whatever its folder layout, and registers
 Claude Code there) or from the command line:
 
 ```bash

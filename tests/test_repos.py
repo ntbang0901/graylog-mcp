@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from graylog_mcp import tools
-from graylog_mcp.config import detect_repo, load_config, normalize_repo, parse_config
+from graylog_mcp.config import ConfigError, detect_repo, load_config, normalize_repo, parse_config
 from graylog_mcp.setup import connect
 from graylog_mcp.tools import App
 from tests.fake_graylog import FakeGraylog
@@ -78,11 +78,46 @@ def test_match_by_remote_and_name(tmp_path):
     assert parse_config(org(["f88/other"]), repo_dir=repo).repo_group is None
 
 
-def test_explicit_default_group_wins(tmp_path):
+def test_repository_loads_only_its_group(tmp_path):
     repo = make_repo(tmp_path, "payment-api")
-    data = {**org([str(repo)]), "default_group": "erp"}
-    cfg = parse_config(data, repo_dir=repo)
-    assert cfg.repo_group == "payment" and cfg.default_group == "erp"
+    cfg = parse_config({**org([str(repo)]), "default_group": "erp"}, repo_dir=repo)
+    assert sorted(cfg.instances) == ["payment/prod", "payment/sandbox"]
+    assert cfg.scope == ("payment",) and cfg.scope_reason == "repository" and cfg.default_group == "payment"
+    assert list(cfg.groups) == ["payment"] and cfg.out_of_scope == {"erp/prod": "erp"}
+    for name in ("erp/prod", "erp", "ERP prod"):
+        with pytest.raises(ConfigError, match=r"which this server does not load.*belongs to group payment"):
+            cfg.instance(name)
+    with pytest.raises(ConfigError, match="unknown instance"):
+        cfg.instance("cxp/prod")
+
+
+def test_only_groups(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, "payment-api")
+    every = parse_config({**org([str(repo)]), "default_group": "erp", "only_groups": "*"}, repo_dir=repo)
+    assert len(every.instances) == 3 and every.scope is None and every.default_group == "erp"
+    both = parse_config({**org([str(repo)]), "only_groups": ["Payment", "erp"]}, repo_dir=repo)
+    assert len(both.instances) == 3 and both.scope == ("payment", "erp") and both.default_group == "payment"
+    erp = parse_config({**org([]), "only_groups": "erp"})
+    assert list(erp.instances) == ["erp/prod"] and erp.default_instance == "erp/prod"
+    with pytest.raises(ConfigError, match="only_groups limits it to erp"):
+        erp.instance("payment/prod")
+    with pytest.raises(ConfigError, match="unknown group 'cxp'"):
+        parse_config({**org([]), "only_groups": ["cxp"]})
+    with pytest.raises(ConfigError, match="only_groups: expected"):
+        parse_config({**org([]), "only_groups": []})
+    monkeypatch.setenv("GRAYLOG_MCP_GROUPS", "payment, erp")
+    assert len(parse_config(org([str(repo)]), repo_dir=repo).instances) == 3
+    monkeypatch.setenv("GRAYLOG_MCP_GROUPS", "*")
+    assert len(parse_config(org([str(repo)]), repo_dir=repo).instances) == 3
+
+
+def test_editors_see_every_group(tmp_path):
+    from graylog_mcp.setup import configfile
+
+    repo = make_repo(tmp_path, "payment-api")
+    cfg = parse_config({**org([str(repo)]), "only_groups": "payment"}, repo_dir=repo, scoped=False)
+    assert len(cfg.instances) == 3 and cfg.scope is None and not cfg.out_of_scope
+    assert len(configfile.validate({**org([]), "only_groups": "erp"}).instances) == 3
 
 
 def test_relative_paths_from_config_file(tmp_path, monkeypatch):
@@ -103,6 +138,8 @@ async def test_list_instances_shows_repo(tmp_path):
     cfg = parse_config(org(["f88/payment-api"]), repo_dir=repo)
     listing = await tools.list_instances(App.create(cfg, transport=FakeGraylog("6.1.2").transport))
     assert listing["current_repo"] == {"repo": "github.com/f88/payment-api", "group": "payment"}
+    assert listing["scope"] == {"groups": ["payment"], "because": "repository", "not_loaded": ["erp"]}
+    assert [g["group"] for g in listing["groups"]] == ["payment"]
 
 
 @pytest.fixture
@@ -134,10 +171,11 @@ async def test_admin_repos(admin):
     body = res.json()
     assert body["ok"] and body["remote"] == "github.com/f88/payment-api"
     project = tomllib.loads((repo / ".graylog-mcp.toml").read_text())
-    assert project == {"include": "../platform/graylog-org.toml", "default_group": "payment"}
+    assert project == {"include": "../platform/graylog-org.toml", "default_group": "payment", "only_groups": "payment"}
     mcp = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
     assert "GRAYLOG_MCP_CONFIG" not in mcp["env"]  # Claude Code finds .graylog-mcp.toml in the repo
-    assert load_config(repo / ".graylog-mcp.toml", repo_dir=repo).default_instance == "payment/prod"
+    loaded = load_config(repo / ".graylog-mcp.toml", repo_dir=root)  # scoped even where the path does not match
+    assert loaded.default_instance == "payment/prod" and list(loaded.instances) == ["payment/prod"]
 
     assert (await client.post("/api/repos", json={"group": "erp", "repo": "git@github.com:f88/erp.git"})).json()["ok"]
     state = (await client.get("/api/state")).json()

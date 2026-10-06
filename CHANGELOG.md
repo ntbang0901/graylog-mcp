@@ -35,6 +35,9 @@ All notable changes to this project are documented here. The format follows
   them up (`.graylog-mcp.toml` with `include`, Claude Code registration).
 - Admin UI Settings page: edit settings per scope (global, environment, group, instance) with the inherited
   value shown; field detection can be applied to a chosen scope.
+- A repository loads only its group: inside a repository listed by a group (or with `only_groups` /
+  `GRAYLOG_MCP_GROUPS`), the other groups' instances are not loaded, and asking for one explains why and
+  how to enable it. `list_instances` reports the `scope`; repository setup writes `only_groups`.
 - Admin UI redesign: sidebar navigation, an overview with health per group that runs checks on load, an
   environment drawer with inline validation, one card per group with its repositories, a sticky save bar,
   confirm dialogs, toasts, loading states, dark mode and a phone layout.

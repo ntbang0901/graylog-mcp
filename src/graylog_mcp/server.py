@@ -38,6 +38,8 @@ system group (ERP, CXP, PAYMENT...). Call list_instances to see them. Pass insta
 (e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only
 one group has it. When the user names a system or an environment, pick that instance; when it is
 ambiguous, ask. Never mix results from different instances without saying which is which.
+Inside a group's repository only that group is loaded (list_instances shows 'scope'); if the user
+asks about another group, say it is not loaded here and how to enable it, as the error explains.
 
 Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
