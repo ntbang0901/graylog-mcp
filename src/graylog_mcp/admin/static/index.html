@@ -104,15 +104,22 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
   <section id="envs">
     <div class="panel">
       <h2>Environments</h2>
-      <table><thead><tr><th>Name</th><th>URL</th><th>Auth</th><th>Secret</th><th></th></tr></thead><tbody id="envrows"></tbody></table>
+      <table><thead><tr><th>Group</th><th>Environment</th><th>URL</th><th>Secret</th><th></th></tr></thead><tbody id="envrows"></tbody></table>
       <div class="actions"><button class="btn" id="newEnv">+ Add environment</button></div>
+    </div>
+    <div class="panel hidden" id="groupsPanel">
+      <h2>Groups</h2>
+      <p class="muted">A group is one system or product line (ERP, CXP, PAYMENT...) with its own environments. Ask for <code>payment/prod</code>, or just <code>payment</code> for its default environment.</p>
+      <table><thead><tr><th>Group</th><th>Description</th><th>Default environment</th><th>Default group</th><th></th></tr></thead><tbody id="grouprows"></tbody></table>
     </div>
     <div class="panel" id="envform">
       <h2 id="envformTitle">Add environment</h2>
       <div class="row">
-        <label>Name <input id="f_name" placeholder="staging"></label>
+        <label>Group <span class="muted">(optional: erp, cxp, payment...)</span> <input id="f_group" list="groupList" placeholder="payment"></label>
+        <label>Environment <span class="muted">(any name)</span> <input id="f_name" list="envList" placeholder="prod, uat, sandbox..."></label>
         <label style="flex:2 1 320px">Graylog URL <input id="f_url" placeholder="https://graylog.example.com"></label>
       </div>
+      <datalist id="groupList"></datalist><datalist id="envList"></datalist>
       <div class="row" style="margin-top:10px">
         <label style="flex:2 1 320px">Description <input id="f_description" placeholder="Staging, deployed on every merge"></label>
         <label>Auth <select id="f_auth"><option value="token">Access token</option><option value="basic">Username + password</option></select></label>
@@ -280,29 +287,60 @@ async function loadState() {
   renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
 }
 
+function groupDesc(g) { const d = (STATE.groups.find((x) => x.name === g) || {}).description || ""; return d.toLowerCase() === g.toLowerCase() ? "" : d; }
+function label(e) { return e.group ? `${e.group}/${e.environment}` : e.name; }
 function renderEnvs() {
   const envs = STATE.instances;
   $("noenvs").classList.toggle("hidden", envs.length > 0);
-  $("envcards").innerHTML = envs.map((e) => `
+  const byGroup = {};
+  for (const e of envs) (byGroup[e.group || ""] ||= []).push(e);
+  $("envcards").innerHTML = Object.entries(byGroup).map(([g, items]) => `
+    ${g ? `<h3 style="grid-column:1/-1;margin:4px 0 0">${esc(g)} <span class="muted" style="text-transform:none;letter-spacing:0">${esc(groupDesc(g))}</span></h3>` : ""}
+    ${items.map((e) => `
     <div class="card">
-      <div class="name">${esc(e.name)} ${e.default ? '<span class="chip info">default</span>' : ""}</div>
+      <div class="name">${esc(e.environment || e.name)} ${e.default ? '<span class="chip info">default</span>' : ""} ${e.local ? "" : '<span class="chip">included</span>'}</div>
       <div class="muted">${esc(e.description || e.url)}</div>
       <div style="margin-top:6px">${e.secret_set ? '<span class="chip ok">token set</span>' : `<span class="chip warn">${esc(e.secret_env)} not set</span>`}</div>
       <div class="muted" id="card-${esc(e.name)}" style="margin-top:6px"></div>
-    </div>`).join("");
+    </div>`).join("")}`).join("");
   $("envrows").innerHTML = envs.map((e) => `
     <tr>
-      <td><b>${esc(e.name)}</b> ${e.default ? '<span class="chip info">default</span>' : ""}<div class="muted">${esc(e.description)}</div></td>
-      <td>${esc(e.url)}</td><td>${esc(e.auth)}</td>
+      <td>${esc(e.group || "")}</td>
+      <td><b>${esc(e.environment || e.name)}</b> ${e.default ? '<span class="chip info">default</span>' : ""}<div class="muted">${esc(e.description)}</div></td>
+      <td>${esc(e.url)}</td>
       <td><code>${esc(e.secret_env)}</code> ${e.secret_set ? '<span class="chip ok">set</span>' : '<span class="chip warn">not set</span>'}</td>
-      <td style="white-space:nowrap"><button class="btn" data-edit="${esc(e.name)}">Edit</button> <button class="btn danger" data-del="${esc(e.name)}">Delete</button></td>
+      <td style="white-space:nowrap">${e.local
+        ? `<button class="btn" data-edit="${esc(e.name)}">Edit</button> <button class="btn danger" data-del="${esc(e.name)}">Delete</button>`
+        : '<span class="muted">from an included file</span>'}</td>
     </tr>`).join("") || '<tr><td colspan="5" class="muted">No environment yet.</td></tr>';
   for (const sel of [$("d_env"), $("p_env")]) {
     const keep = sel.value;
-    sel.innerHTML = envs.map((e) => `<option value="${esc(e.name)}"${e.default ? " selected" : ""}>${esc(e.name)}</option>`).join("");
+    sel.innerHTML = envs.map((e) => `<option value="${esc(e.name)}"${e.default ? " selected" : ""}>${esc(label(e))}</option>`).join("");
     if (envs.some((e) => e.name === keep)) sel.value = keep;
   }
+  $("groupList").innerHTML = STATE.groups.map((g) => `<option value="${esc(g.name)}">`).join("");
+  const envNames = new Set([...Object.keys(STATE.environments || {}), ...envs.map((e) => e.environment).filter(Boolean)]);
+  $("envList").innerHTML = [...envNames].map((n) => `<option value="${esc(n)}">`).join("");
+  $("groupsPanel").classList.toggle("hidden", STATE.groups.length === 0);
+  $("grouprows").innerHTML = STATE.groups.map((g) => `
+    <tr data-group="${esc(g.name)}">
+      <td><b>${esc(g.name)}</b></td>
+      <td><input class="gdesc" value="${esc(g.description || "")}" placeholder="Payment platform"></td>
+      <td><select class="genv"><option value="">(none)</option>${g.environments.map((e) => `<option${e === g.default_environment ? " selected" : ""}>${esc(e)}</option>`).join("")}</select></td>
+      <td><input type="radio" name="defgroup" class="gdef"${STATE.default_group === g.name ? " checked" : ""}></td>
+      <td><button class="btn" data-savegroup="${esc(g.name)}">Save</button></td>
+    </tr>`).join("");
 }
+$("grouprows").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-savegroup]");
+  if (!b) return;
+  const tr = b.closest("tr");
+  busy(b, async () => {
+    await api("/api/groups", "POST", {group: tr.dataset.group, description: tr.querySelector(".gdesc").value.trim(),
+      default_environment: tr.querySelector(".genv").value, make_default: tr.querySelector(".gdef").checked});
+    toast(`Saved group ${tr.dataset.group}`); await loadState();
+  });
+});
 
 // ---------------------------------------------------------------- environments
 let editing = null;
@@ -311,8 +349,9 @@ function syncAuth() { const basic = $("f_auth").value === "basic"; $("tokenRow")
 function envForm(e) {
   editing = e ? e.name : null;
   const f = e ? e.fields : {};
-  $("envformTitle").textContent = e ? `Edit ${e.name}` : "Add environment";
-  $("f_name").value = e ? e.name : "";
+  $("envformTitle").textContent = e ? `Edit ${label(e)}` : "Add environment";
+  $("f_group").value = e ? (e.group || "") : "";
+  $("f_name").value = e ? (e.environment || e.name) : "";
   $("f_url").value = f.url || "";
   $("f_description").value = f.description || "";
   $("f_auth").value = e ? e.auth : "token";
@@ -329,15 +368,18 @@ function envForm(e) {
   $("envResult").innerHTML = "";
   syncAuth();
 }
-$("f_name").addEventListener("input", () => {
+function fullName() { const g = $("f_group").value.trim(); const n = $("f_name").value.trim(); return g ? `${g}/${n}` : n; }
+const updatePlaceholders = () => {
   if (editing) return;
-  const n = $("f_name").value.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const n = fullName().toUpperCase().replace(/[^A-Z0-9]/g, "_");
   $("f_token_env").placeholder = `GRAYLOG_${n || "STAGING"}_TOKEN`;
   $("f_password_env").placeholder = `GRAYLOG_${n || "STAGING"}_PASSWORD`;
-});
+};
+$("f_name").addEventListener("input", updatePlaceholders);
+$("f_group").addEventListener("input", updatePlaceholders);
 function formFields() {
   const basic = $("f_auth").value === "basic";
-  const name = $("f_name").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const name = fullName().toUpperCase().replace(/[^A-Z0-9]/g, "_");
   const fields = {
     url: $("f_url").value.trim(), description: $("f_description").value.trim(), auth: $("f_auth").value,
     ca_bundle: $("f_ca_bundle").value.trim(), proxy: $("f_proxy").value.trim(), timezone: $("f_timezone").value.trim(),
@@ -354,12 +396,12 @@ function showTest(target, r) {
     : `<span class="status-fail">✗ ${esc(r.error)}</span>${r.fix ? `<div class="muted">fix: ${esc(r.fix)}</div>` : ""}`;
 }
 $("testEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const r = await api("/api/test", "POST", {name: $("f_name").value.trim() || "test", fields: formFields(), token: $("f_testtoken").value || null});
+  const r = await api("/api/test", "POST", {name: fullName().replace("/", "-") || "test", fields: formFields(), token: $("f_testtoken").value || null});
   showTest($("envResult"), r);
 }));
 $("saveEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const name = $("f_name").value.trim();
-  if (!name) throw new Error("Name is required");
+  const name = fullName();
+  if (!$("f_name").value.trim()) throw new Error("Environment name is required");
   await api("/api/instances", "POST", {name, original_name: editing, fields: formFields(), make_default: $("f_default").checked});
   toast(`Saved ${name}`); editing = name; await loadState();
 }));

@@ -46,6 +46,9 @@ latency_fields = ["took_ms", "duration_ms", "elapsed_ms", "response_time_ms"]
 # lines that mark a process start/stop or a config reload
 change_query = '(message:Started AND message:"running for") OR "Shutting down" OR "Graceful shutdown" OR SIGTERM'
 
+# Several systems (ERP, CXP, PAYMENT...) each with their own environments? Use [groups.<g>.environments.<e>]
+# and [environments.<e>] instead of [instances]: see "Groups and your own environments" in the README.
+#
 # One instance per environment. In an application repository, commit this file as .graylog-mcp.toml
 # at the root: the server finds it automatically. An instance whose token variable is not set is
 # disabled (shown by list_instances) instead of stopping the server.

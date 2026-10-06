@@ -131,13 +131,81 @@ async def test_wizard_non_interactive(tmp_path, monkeypatch, fake_transport):
 
 async def test_wizard_interactive_with_pasted_token(tmp_path, monkeypatch, fake_transport):
     monkeypatch.delenv("GRAYLOG_DEV_TOKEN", raising=False)
-    answers = iter(["dev", "https://dev.test", "Dev", "token", "", "dev", "UTC", "", "y", "none"])
+    answers = iter(["", "dev", "https://dev.test", "Dev", "token", "", "dev", "UTC", "", "y", "none"])
     lines: list[str] = []
     p = wizard.Prompter(ask_fn=lambda _q: next(answers), secret_fn=lambda _q: "pasted", out=lines.append)
     assert await wizard.run_init(wizard.InitOptions(project_dir=tmp_path), p) == 0
     saved = (tmp_path / ".graylog-mcp.toml").read_text()
     assert "pasted" not in saved and "GRAYLOG_DEV_TOKEN" in saved
     assert any("✓ Graylog" in line for line in lines)
+
+
+async def test_wizard_with_groups(tmp_path, monkeypatch, fake_transport):
+    for name in ("GRAYLOG_ERP_UAT_TOKEN", "GRAYLOG_ERP_PROD_TOKEN", "GRAYLOG_PAYMENT_SANDBOX_TOKEN"):
+        monkeypatch.setenv(name, "t")
+    answers = iter(
+        [
+            "erp, payment",  # groups
+            "uat, prod",  # environments of erp (any names)
+            "https://gl-erp-uat.test",
+            "https://gl-erp.test",
+            "sandbox,prod",  # payment has different environments
+            "https://gl-pay-sbx.test",
+            "https://gl-pay.test",
+            *[""] * 12,  # 4 environments x (description, auth, token variable): defaults
+            "payment",  # default group
+            "prod",  # default environment
+            "Asia/Ho_Chi_Minh",
+            "vn",
+            "y",
+            "none",
+        ]
+    )
+    lines: list[str] = []
+    p = wizard.Prompter(ask_fn=lambda _q: next(answers), secret_fn=lambda _q: "", out=lines.append)
+    assert await wizard.run_init(wizard.InitOptions(project_dir=tmp_path), p) == 0
+    data = tomllib.loads((tmp_path / ".graylog-mcp.toml").read_text())
+    assert set(data["groups"]) == {"erp", "payment"}
+    assert data["groups"]["payment"]["environments"]["sandbox"]["token_env"] == "GRAYLOG_PAYMENT_SANDBOX_TOKEN"
+    assert data["default_group"] == "payment" and data["default_environment"] == "prod"
+    cfg = configfile.validate(data, base_dir=tmp_path)
+    assert cfg.instance("prod").name == "payment/prod" and cfg.instance("erp").name == "erp/prod"
+    assert any("not tested: GRAYLOG_PAYMENT_PROD_TOKEN" in line for line in lines)
+
+
+async def test_admin_groups(admin):
+    client, project = admin
+    fields = {"url": "https://gl-pay.test", "token_env": "GRAYLOG_STAGING_TOKEN"}
+    assert (await client.post("/api/instances", json={"name": "payment/prod", "fields": fields})).json()["ok"]
+    assert (await client.post("/api/instances", json={"name": "payment/uat", "fields": fields})).json()["ok"]
+    saved = (await client.post("/api/groups", json={"group": "payment", "description": "Payment",
+                                                     "default_environment": "uat", "make_default": True}))  # fmt: skip
+    assert saved.json()["ok"]
+    state = (await client.get("/api/state")).json()
+    assert state["groups"][0] == {"name": "payment", "description": "Payment", "default_environment": "uat",
+                                  "environments": ["prod", "uat"]}  # fmt: skip
+    assert state["default_group"] == "payment"
+    view = {i["name"]: i for i in state["instances"]}
+    assert view["payment/uat"]["group"] == "payment" and view["payment/uat"]["default"]
+    assert "[groups.payment.environments.prod]" in (project / ".graylog-mcp.toml").read_text()
+    assert (await client.delete("/api/instances/payment/uat")).json()["ok"]
+    assert [i["name"] for i in (await client.get("/api/state")).json()["instances"]] == ["payment/prod"]
+
+
+async def test_admin_marks_included_instances(admin):
+    client, project = admin
+    (project / "org.toml").write_text(
+        '[groups.erp.environments.prod]\nurl = "https://gl-erp.test"\ntoken_env = "GRAYLOG_STAGING_TOKEN"\n',
+        encoding="utf-8",
+    )
+    (project / ".graylog-mcp.toml").write_text('include = "org.toml"\ndefault_group = "erp"\n', encoding="utf-8")
+    state = (await client.get("/api/state")).json()
+    assert state["error"] is None
+    erp = state["instances"][0]
+    assert erp["name"] == "erp/prod" and erp["local"] is False and erp["default"]
+    assert (await client.delete("/api/instances/erp/prod")).status_code == 400
+    run = await client.post("/api/run", json={"tool": "count_logs", "instance": "erp", "args": {"range": "2h"}})
+    assert run.json()["result"]["instance"] == "erp/prod"
 
 
 async def test_doctor_reports_fixes(fake_transport, monkeypatch):
@@ -219,8 +287,9 @@ async def test_admin_flow(admin):
     assert "typed" not in saved and "[instances.prod]" in saved
 
     state = (await client.get("/api/state")).json()
-    assert [i["name"] for i in state["instances"]] == ["staging", "prod"]
-    assert state["instances"][0]["secret_set"] and not state["instances"][1]["secret_set"]
+    by_name = {i["name"]: i for i in state["instances"]}
+    assert set(by_name) == {"staging", "prod"} and all(i["local"] for i in by_name.values())
+    assert by_name["staging"]["secret_set"] and not by_name["prod"]["secret_set"]
 
     detected = (await client.post("/api/detect", json={"instance": "staging"})).json()
     assert detected["suggested"]["trace_fields"] == ["trace_id"]
