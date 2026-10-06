@@ -27,6 +27,19 @@ error query) lives in configuration, not in code.
 
 ## Quick start
 
+The fastest way, inside your application repository:
+
+```bash
+uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp init   # guided setup
+uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp ui     # or the admin web UI
+```
+
+`init` asks for each environment, tests the connection (you can paste a token for the test; it is never
+saved), detects your field names from the logs, writes `.graylog-mcp.toml` and registers the server in your
+MCP client. See [Setup helpers](#setup-helpers-and-admin-ui).
+
+Or by hand:
+
 Two environment variables are enough:
 
 ```bash
@@ -276,6 +289,32 @@ one; the others keep working.
 
 Clients that do not start the server inside the repository (Claude Desktop) need the path explicitly:
 `GRAYLOG_MCP_CONFIG=/path/to/repo/.graylog-mcp.toml`.
+
+## Setup helpers and admin UI
+
+| Command | What it does |
+|---------|--------------|
+| `graylog-mcp init` | Guided setup: environments, connection test, field detection, config file, client registration. `--yes --env staging=https://... --env prod=https://...` for scripts. |
+| `graylog-mcp doctor` | Checks every environment (token set, reachable, TLS, version, readable streams, data, configured fields exist, error query matches, redaction) and prints a fix for each problem. Exit code 1 on failure, `--json` for CI. |
+| `graylog-mcp detect` | Suggests `service_fields`, `trace_fields`, `version_fields`, `latency_fields`, `error_query` (syslog numbers or words), exception/logger fields and `app_packages` from the logs, with coverage and redacted sample values. `--apply` writes them. |
+| `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). |
+| `graylog-mcp ui` | Local admin web UI (below). |
+
+`graylog-mcp ui` opens a page on `127.0.0.1` with:
+
+- **Overview**: environment cards and the doctor checks with fixes;
+- **Environments**: add, edit, delete, set default, test a connection (optionally with a pasted token held in
+  memory only);
+- **Field mapping**: run detection on an environment, review the evidence, apply the selected settings;
+- **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
+  mask your sample text;
+- **Playground**: run any tool against any environment and see the exact output, its size and an
+  approximate token count;
+- **Connect clients**: ready-to-copy snippets and one-click install for each client;
+- **Config file**: edit the TOML with validation and an automatic backup.
+
+The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
+link printed at startup. It writes the config file and client configs when you ask, never a secret.
 
 ## Shared HTTP server and Docker
 

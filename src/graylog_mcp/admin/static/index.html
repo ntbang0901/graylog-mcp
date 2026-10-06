@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graylog-mcp admin</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+  --accent: #2f6fec; --accent-text: #fff; --ok: #12805c; --warn: #b54708; --fail: #c4320a; --info: #4a6fa5;
+  --code: #f1f3f6; --chip: #eef2f7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151b; --panel: #1a1e26; --text: #e6e9ef; --muted: #98a2b3; --line: #2a303b;
+    --accent: #5b8cff; --accent-text: #0b0e13; --ok: #3ccb8d; --warn: #f5a14a; --fail: #ff7a59; --info: #8fb0e6;
+    --code: #222833; --chip: #262c37;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+header .path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
+nav button.active { background: var(--chip); color: var(--text); font-weight: 600; }
+main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+section { display: none; }
+section.active { display: block; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.panel h2 { font-size: 15px; margin: 0 0 12px; }
+.panel h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+.row > label { flex: 1 1 200px; }
+label { display: block; font-size: 12px; color: var(--muted); }
+label > input, label > select, label > textarea { margin-top: 4px; }
+input, select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+input[type=checkbox] { width: auto; margin-right: 6px; }
+button.btn { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+button.btn.danger { color: var(--fail); }
+button.btn:disabled { opacity: .5; cursor: progress; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; max-height: 520px; margin: 0; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--chip); color: var(--muted); }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.fail { color: var(--fail); } .chip.info { color: var(--info); }
+.status-ok { color: var(--ok); } .status-warn { color: var(--warn); } .status-fail { color: var(--fail); } .status-info { color: var(--info); }
+.muted { color: var(--muted); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.card .name { font-weight: 600; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.result { margin-top: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+#toast { position: fixed; bottom: 20px; right: 20px; max-width: 420px; padding: 10px 14px; border-radius: 8px; background: var(--text); color: var(--bg); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 5; }
+#toast.show { opacity: .95; }
+.hidden { display: none !important; }
+.banner { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 16px; }
+.banner.fail { border-color: var(--fail); color: var(--fail); }
+</style>
+</head>
+<body>
+<header>
+  <h1>graylog-mcp admin</h1>
+  <div class="path" id="cfgpath"></div>
+  <div style="flex:1"></div>
+  <span class="chip" id="ver"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="envs">Environments</button>
+  <button data-tab="fields">Field mapping</button>
+  <button data-tab="redaction">Redaction</button>
+  <button data-tab="playground">Playground</button>
+  <button data-tab="clients">Connect clients</button>
+  <button data-tab="config">Config file</button>
+</nav>
+<main>
+  <div id="noauth" class="banner fail hidden">Missing access token. Open the link printed by <code>graylog-mcp ui</code>.</div>
+  <div id="cfgerror" class="banner fail hidden"></div>
+
+  <section id="overview" class="active">
+    <div class="panel">
+      <h2>Environments</h2>
+      <div class="cards" id="envcards"></div>
+      <p class="muted hidden" id="noenvs">No environment yet. Add one in <a href="#" data-goto="envs">Environments</a>.</p>
+    </div>
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Health checks</h2>
+        <button class="btn primary" id="runDoctor">Run checks</button>
+      </div>
+      <div class="result" id="doctorOut"><p class="muted">Checks connectivity, permissions, field mapping and redaction for every environment.</p></div>
+    </div>
+  </section>
+
+  <section id="envs">
+    <div class="panel">
+      <h2>Environments</h2>
+      <table><thead><tr><th>Name</th><th>URL</th><th>Auth</th><th>Secret</th><th></th></tr></thead><tbody id="envrows"></tbody></table>
+      <div class="actions"><button class="btn" id="newEnv">+ Add environment</button></div>
+    </div>
+    <div class="panel" id="envform">
+      <h2 id="envformTitle">Add environment</h2>
+      <div class="row">
+        <label>Name <input id="f_name" placeholder="staging"></label>
+        <label style="flex:2 1 320px">Graylog URL <input id="f_url" placeholder="https://graylog.example.com"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label style="flex:2 1 320px">Description <input id="f_description" placeholder="Staging, deployed on every merge"></label>
+        <label>Auth <select id="f_auth"><option value="token">Access token</option><option value="basic">Username + password</option></select></label>
+      </div>
+      <div class="row" style="margin-top:10px" id="tokenRow">
+        <label>Token environment variable <input id="f_token_env" placeholder="GRAYLOG_STAGING_TOKEN"></label>
+      </div>
+      <div class="row hidden" style="margin-top:10px" id="basicRow">
+        <label>Username <input id="f_username"></label>
+        <label>Password environment variable <input id="f_password_env" placeholder="GRAYLOG_STAGING_PASSWORD"></label>
+      </div>
+      <details style="margin-top:10px"><summary class="muted">TLS, proxy, timeout, timezone</summary>
+        <div class="row" style="margin-top:10px">
+          <label><span><input type="checkbox" id="f_verify_tls" checked>Verify TLS certificate</span></label>
+          <label>CA bundle path <input id="f_ca_bundle" placeholder="/etc/ssl/internal-ca.pem"></label>
+          <label>Proxy <input id="f_proxy" placeholder="http://proxy:3128"></label>
+          <label>Timeout (s) <input id="f_timeout" type="number" min="1" placeholder="30"></label>
+          <label>Timezone override <input id="f_timezone" placeholder="Asia/Ho_Chi_Minh"></label>
+        </div>
+      </details>
+      <div class="row" style="margin-top:12px">
+        <label style="flex:2 1 320px">Token to test now <span class="muted">(kept in memory only, never saved)</span> <input id="f_testtoken" type="password" autocomplete="off" placeholder="optional if the variable is set"></label>
+        <label><span><input type="checkbox" id="f_default">Default environment</span></label>
+      </div>
+      <div class="actions">
+        <button class="btn" id="testEnv">Test connection</button>
+        <button class="btn primary" id="saveEnv">Save</button>
+        <button class="btn" id="cancelEnv">Clear</button>
+      </div>
+      <div class="result" id="envResult"></div>
+    </div>
+  </section>
+
+  <section id="fields">
+    <div class="panel">
+      <h2>Detect field names from the logs</h2>
+      <p class="muted">Looks at the last messages of one environment: which candidate fields exist, how many messages carry them, what the level field contains, and which application packages appear in stack traces.</p>
+      <div class="row">
+        <label>Environment <select id="d_env"></select></label>
+        <label>Range <select id="d_range"><option>1h</option><option selected>24h</option><option>7d</option></select></label>
+        <label style="flex:2 1 300px">Token <span class="muted">(only if the variable is not set; memory only)</span> <input id="d_token" type="password" autocomplete="off"></label>
+        <button class="btn primary" id="runDetect">Detect</button>
+      </div>
+      <div class="result" id="detectOut"></div>
+    </div>
+    <div class="panel">
+      <h2>Current mapping</h2>
+      <pre id="currentMapping"></pre>
+    </div>
+  </section>
+
+  <section id="redaction">
+    <div class="grid2">
+      <div class="panel">
+        <h2>Rules</h2>
+        <p class="muted">Core rules are always on: sensitive field names, emails, Bearer/Basic credentials, JWTs, key=value secrets, URL credentials, private keys, Luhn-checked card numbers.</p>
+        <h3>Country packs</h3>
+        <div id="packs"></div>
+        <label style="margin-top:6px"><span><input type="checkbox" id="r_vn_cmnd">vn: also mask bare 9-digit numbers (old CMND, noisy)</span></label>
+        <h3>Custom patterns</h3>
+        <table><thead><tr><th>Name</th><th>Regex</th><th>Replacement</th><th></th></tr></thead><tbody id="patterns"></tbody></table>
+        <div class="actions"><button class="btn" id="addPattern">+ Add pattern</button></div>
+        <h3>Never mask (allow list, one regex per line, full match)</h3>
+        <textarea id="r_allow" rows="3" placeholder="^noreply@example\.com$"></textarea>
+        <div class="row" style="margin-top:10px">
+          <label>Extra sensitive field names <input id="r_sensitive" placeholder="national_id, otp_code"></label>
+          <label>Field names never masked <input id="r_exclude" placeholder="token_count"></label>
+        </div>
+        <div class="actions"><button class="btn primary" id="saveRedaction">Save rules</button></div>
+      </div>
+      <div class="panel">
+        <h2>Try it</h2>
+        <textarea id="r_input" rows="9">user=alice@example.com password=hunter2 card 4111 1111 1111 1111
+call 0912345678 or +84 912 345 678, cccd 001099012345, order 1234567890123
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijk
+jdbc:postgresql://admin:s3cret@db:5432/orders</textarea>
+        <h3>Output</h3>
+        <pre id="r_output"></pre>
+        <p class="muted" id="r_hits"></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="playground">
+    <div class="panel">
+      <h2>Run a tool</h2>
+      <p class="muted">Calls the same tools the model uses, with the same redaction and size limits. Read-only.</p>
+      <div class="row">
+        <label>Environment <select id="p_env"></select></label>
+        <label>Tool <select id="p_tool"></select></label>
+        <button class="btn primary" id="runTool">Run</button>
+      </div>
+      <label style="margin-top:10px">Arguments (JSON) <textarea id="p_args" rows="5"></textarea></label>
+      <p class="muted" id="p_meta"></p>
+      <pre id="p_out" class="hidden"></pre>
+    </div>
+  </section>
+
+  <section id="clients">
+    <div class="panel">
+      <h2>Connect MCP clients</h2>
+      <div class="row">
+        <label>Start the server with <select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">installed graylog-mcp command</option></select></label>
+      </div>
+      <p class="muted">Tokens are never written: project files reference each developer's environment variables. Claude Desktop cannot expand variables; tick "copy current token values" to write them into your own Claude Desktop config.</p>
+      <div id="clientCards"></div>
+      <h3>Claude Code, for all your projects</h3>
+      <pre id="ccCommand"></pre>
+    </div>
+  </section>
+
+  <section id="config">
+    <div class="panel">
+      <h2 id="rawTitle">Config file</h2>
+      <textarea id="rawText" rows="26" spellcheck="false"></textarea>
+      <div class="actions">
+        <button class="btn" id="validateRaw">Validate</button>
+        <button class="btn primary" id="saveRaw">Save</button>
+        <button class="btn" id="reloadRaw">Reload</button>
+      </div>
+      <div class="result" id="rawResult"></div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const params = new URLSearchParams(location.hash.slice(1));
+let TOKEN = params.get("token") || sessionStorage.getItem("gm-token") || "";
+if (params.get("token")) { sessionStorage.setItem("gm-token", TOKEN); history.replaceState(null, "", location.pathname); }
+let STATE = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3500); }
+async function api(path, method = "GET", body) {
+  const res = await fetch(path, {method, headers: {"X-Admin-Token": TOKEN, "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)});
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {error: res.statusText}; }
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+async function busy(btn, fn) { btn.disabled = true; try { return await fn(); } catch (e) { toast(e.message); } finally { btn.disabled = false; } }
+function splitList(v) { return v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean); }
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+document.addEventListener("click", (e) => { const g = e.target.closest("[data-goto]"); if (g) { e.preventDefault(); showTab(g.dataset.goto); } });
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("main section").forEach((s) => s.classList.toggle("active", s.id === name));
+  if (name === "config") loadRaw();
+  if (name === "clients") loadClients();
+  if (name === "redaction") previewRedaction();
+}
+
+// ---------------------------------------------------------------- state
+async function loadState() {
+  STATE = await api("/api/state");
+  $("cfgpath").textContent = STATE.config_path + (STATE.exists ? "" : " (not created yet)");
+  $("ver").textContent = "v" + STATE.version;
+  $("cfgerror").classList.toggle("hidden", !STATE.error);
+  $("cfgerror").textContent = STATE.error ? "Config problem: " + STATE.error : "";
+  renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
+}
+
+function renderEnvs() {
+  const envs = STATE.instances;
+  $("noenvs").classList.toggle("hidden", envs.length > 0);
+  $("envcards").innerHTML = envs.map((e) => `
+    <div class="card">
+      <div class="name">${esc(e.name)} ${e.default ? '<span class="chip info">default</span>' : ""}</div>
+      <div class="muted">${esc(e.description || e.url)}</div>
+      <div style="margin-top:6px">${e.secret_set ? '<span class="chip ok">token set</span>' : `<span class="chip warn">${esc(e.secret_env)} not set</span>`}</div>
+      <div class="muted" id="card-${esc(e.name)}" style="margin-top:6px"></div>
+    </div>`).join("");
+  $("envrows").innerHTML = envs.map((e) => `
+    <tr>
+      <td><b>${esc(e.name)}</b> ${e.default ? '<span class="chip info">default</span>' : ""}<div class="muted">${esc(e.description)}</div></td>
+      <td>${esc(e.url)}</td><td>${esc(e.auth)}</td>
+      <td><code>${esc(e.secret_env)}</code> ${e.secret_set ? '<span class="chip ok">set</span>' : '<span class="chip warn">not set</span>'}</td>
+      <td style="white-space:nowrap"><button class="btn" data-edit="${esc(e.name)}">Edit</button> <button class="btn danger" data-del="${esc(e.name)}">Delete</button></td>
+    </tr>`).join("") || '<tr><td colspan="5" class="muted">No environment yet.</td></tr>';
+  for (const sel of [$("d_env"), $("p_env")]) {
+    const keep = sel.value;
+    sel.innerHTML = envs.map((e) => `<option value="${esc(e.name)}"${e.default ? " selected" : ""}>${esc(e.name)}</option>`).join("");
+    if (envs.some((e) => e.name === keep)) sel.value = keep;
+  }
+}
+
+// ---------------------------------------------------------------- environments
+let editing = null;
+$("f_auth").addEventListener("change", syncAuth);
+function syncAuth() { const basic = $("f_auth").value === "basic"; $("tokenRow").classList.toggle("hidden", basic); $("basicRow").classList.toggle("hidden", !basic); }
+function envForm(e) {
+  editing = e ? e.name : null;
+  const f = e ? e.fields : {};
+  $("envformTitle").textContent = e ? `Edit ${e.name}` : "Add environment";
+  $("f_name").value = e ? e.name : "";
+  $("f_url").value = f.url || "";
+  $("f_description").value = f.description || "";
+  $("f_auth").value = e ? e.auth : "token";
+  $("f_token_env").value = f.token_env || "";
+  $("f_username").value = f.username || "";
+  $("f_password_env").value = f.password_env || "";
+  $("f_verify_tls").checked = f.verify_tls !== false;
+  $("f_ca_bundle").value = f.ca_bundle || "";
+  $("f_proxy").value = f.proxy || "";
+  $("f_timeout").value = f.timeout || "";
+  $("f_timezone").value = f.timezone || "";
+  $("f_default").checked = e ? e.default : STATE.instances.length === 0;
+  $("f_testtoken").value = "";
+  $("envResult").innerHTML = "";
+  syncAuth();
+}
+$("f_name").addEventListener("input", () => {
+  if (editing) return;
+  const n = $("f_name").value.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  $("f_token_env").placeholder = `GRAYLOG_${n || "STAGING"}_TOKEN`;
+  $("f_password_env").placeholder = `GRAYLOG_${n || "STAGING"}_PASSWORD`;
+});
+function formFields() {
+  const basic = $("f_auth").value === "basic";
+  const name = $("f_name").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const fields = {
+    url: $("f_url").value.trim(), description: $("f_description").value.trim(), auth: $("f_auth").value,
+    ca_bundle: $("f_ca_bundle").value.trim(), proxy: $("f_proxy").value.trim(), timezone: $("f_timezone").value.trim(),
+  };
+  if (basic) { fields.username = $("f_username").value.trim(); fields.password_env = $("f_password_env").value.trim() || `GRAYLOG_${name}_PASSWORD`; }
+  else { fields.token_env = $("f_token_env").value.trim() || `GRAYLOG_${name}_TOKEN`; }
+  if (!$("f_verify_tls").checked) fields.verify_tls = false;
+  if ($("f_timeout").value) fields.timeout = Number($("f_timeout").value);
+  return fields;
+}
+function showTest(target, r) {
+  target.innerHTML = r.ok
+    ? `<span class="status-ok">✓ Graylog ${esc(r.version)}</span> · ${r.streams} streams · ${Number(r.messages_24h).toLocaleString()} messages in 24h · messages via <code>${esc(r.message_api)}</code>, aggregations via <code>${esc(r.aggregation_api)}</code>`
+    : `<span class="status-fail">✗ ${esc(r.error)}</span>${r.fix ? `<div class="muted">fix: ${esc(r.fix)}</div>` : ""}`;
+}
+$("testEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const r = await api("/api/test", "POST", {name: $("f_name").value.trim() || "test", fields: formFields(), token: $("f_testtoken").value || null});
+  showTest($("envResult"), r);
+}));
+$("saveEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const name = $("f_name").value.trim();
+  if (!name) throw new Error("Name is required");
+  await api("/api/instances", "POST", {name, original_name: editing, fields: formFields(), make_default: $("f_default").checked});
+  toast(`Saved ${name}`); editing = name; await loadState();
+}));
+$("cancelEnv").addEventListener("click", () => envForm(null));
+$("newEnv").addEventListener("click", () => { envForm(null); $("f_name").focus(); });
+$("envrows").addEventListener("click", async (ev) => {
+  const edit = ev.target.closest("[data-edit]"); const del = ev.target.closest("[data-del]");
+  if (edit) envForm(STATE.instances.find((e) => e.name === edit.dataset.edit));
+  if (del && confirm(`Delete environment ${del.dataset.del}?`)) {
+    try { await api(`/api/instances/${encodeURIComponent(del.dataset.del)}`, "DELETE"); toast("Deleted"); await loadState(); } catch (e) { toast(e.message); }
+  }
+});
+
+// ---------------------------------------------------------------- doctor
+$("runDoctor").addEventListener("click", (ev) => busy(ev.target, async () => {
+  $("doctorOut").innerHTML = '<p class="muted">Running…</p>';
+  const {checks} = await api("/api/doctor");
+  const icon = {ok: "✓", warn: "!", fail: "✗", info: "·"};
+  $("doctorOut").innerHTML = `<table><thead><tr><th></th><th>Environment</th><th>Check</th><th>Result</th></tr></thead><tbody>${
+    checks.map((c) => `<tr><td class="status-${c.status}"><b>${icon[c.status]}</b></td><td>${esc(c.instance || "")}</td><td>${esc(c.name)}</td>
+      <td>${esc(c.detail)}${c.fix ? `<div class="muted">fix: ${esc(c.fix)}</div>` : ""}</td></tr>`).join("")}</tbody></table>`;
+  for (const e of STATE.instances) {
+    const mine = checks.filter((c) => c.instance === e.name);
+    const worst = mine.some((c) => c.status === "fail") ? "fail" : mine.some((c) => c.status === "warn") ? "warn" : "ok";
+    const conn = mine.find((c) => c.name === "connection" || c.name === "credentials");
+    const el = document.getElementById(`card-${e.name}`);
+    if (el) el.innerHTML = `<span class="chip ${worst}">${worst}</span> ${esc(conn ? conn.detail : "")}`;
+  }
+}));
+
+// ---------------------------------------------------------------- field mapping
+function renderFields() {
+  const inv = STATE.data.investigation || {};
+  const st = STATE.data.stacktrace || {};
+  $("currentMapping").textContent = JSON.stringify({investigation: inv, stacktrace: st}, null, 2);
+}
+let lastDetect = null;
+$("runDetect").addEventListener("click", (ev) => busy(ev.target, async () => {
+  $("detectOut").innerHTML = '<p class="muted">Detecting…</p>';
+  const r = await api("/api/detect", "POST", {instance: $("d_env").value, range: $("d_range").value, token: $("d_token").value || null});
+  lastDetect = r;
+  if (!r.suggested || !Object.keys(r.suggested).length) { $("detectOut").innerHTML = `<p class="muted">${esc(r.hint || "Nothing to suggest.")}</p>`; return; }
+  const rows = Object.entries(r.suggested).map(([k, v]) => `<tr><td><input type="checkbox" data-key="${esc(k)}" checked></td><td><code>${esc(k)}</code></td><td><code>${esc(JSON.stringify(v))}</code></td></tr>`);
+  if (r.app_packages && r.app_packages.length) rows.push(`<tr><td><input type="checkbox" data-key="__app_packages" checked></td><td><code>stacktrace.app_packages</code></td><td><code>${esc(JSON.stringify(r.app_packages))}</code></td></tr>`);
+  const evidence = Object.entries(r.evidence || {}).flatMap(([kind, items]) => items.slice(0, 3).map((i) =>
+    `<tr><td>${esc(kind)}</td><td><code>${esc(i.field)}</code></td><td>${i.coverage_pct}%</td><td class="muted">${esc((i.samples || []).join(", "))}</td></tr>`));
+  $("detectOut").innerHTML = `
+    <p>${Number(r.total_messages).toLocaleString()} messages analysed in <b>${esc(r.instance)}</b>${r.error_query_reason ? ` · ${esc(r.error_query_reason)}` : ""}.</p>
+    <table><thead><tr><th></th><th>Setting</th><th>Suggested value</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+    <div class="actions"><button class="btn primary" id="applyDetect">Apply selected to all environments</button></div>
+    <h3>Evidence</h3>
+    <table><thead><tr><th>Kind</th><th>Field</th><th>Coverage</th><th>Sample values (redacted)</th></tr></thead><tbody>${evidence.join("")}</tbody></table>`;
+  $("applyDetect").addEventListener("click", (e2) => busy(e2.target, async () => {
+    const keys = [...document.querySelectorAll("#detectOut input[data-key]:checked")].map((i) => i.dataset.key);
+    const suggested = Object.fromEntries(Object.entries(lastDetect.suggested).filter(([k]) => keys.includes(k)));
+    await api("/api/detect/apply", "POST", {suggested, app_packages: keys.includes("__app_packages") ? lastDetect.app_packages : []});
+    toast("Field mapping saved"); await loadState();
+  }));
+}));
+
+// ---------------------------------------------------------------- redaction
+function renderRedaction() {
+  const r = STATE.data.redaction || {};
+  $("packs").innerHTML = STATE.packs.map((p) => `<label style="display:inline-block;margin-right:14px"><span><input type="checkbox" data-pack="${esc(p)}"${(r.packs || []).includes(p) ? " checked" : ""}>${esc(p)}</span></label>`).join("");
+  $("r_vn_cmnd").checked = !!r.vn_cmnd;
+  $("r_allow").value = (r.allow || []).join("\n");
+  $("r_sensitive").value = (r.sensitive_fields || []).join(", ");
+  $("r_exclude").value = (r.exclude_fields || []).join(", ");
+  $("patterns").innerHTML = "";
+  (r.patterns || []).forEach(addPatternRow);
+}
+function addPatternRow(p = {}) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td><input class="pn" value="${esc(p.name || "")}"></td><td><input class="pp" value="${esc(p.pattern || "")}" placeholder="ORD-[0-9]{8}"></td><td><input class="pr" value="${esc(p.replacement || "")}" placeholder="[ORDER]"></td><td><button class="btn danger">×</button></td>`;
+  tr.querySelector("button").addEventListener("click", () => { tr.remove(); previewRedaction(); });
+  tr.querySelectorAll("input").forEach((i) => i.addEventListener("input", schedulePreview));
+  $("patterns").appendChild(tr);
+}
+function redactionSettings() {
+  const out = {
+    packs: [...document.querySelectorAll("[data-pack]:checked")].map((i) => i.dataset.pack),
+    vn_cmnd: $("r_vn_cmnd").checked,
+    allow: $("r_allow").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    sensitive_fields: splitList($("r_sensitive").value),
+    exclude_fields: splitList($("r_exclude").value),
+    patterns: [...$("patterns").querySelectorAll("tr")].map((tr) => ({name: tr.querySelector(".pn").value.trim(), pattern: tr.querySelector(".pp").value, replacement: tr.querySelector(".pr").value})).filter((p) => p.pattern),
+  };
+  if (!out.vn_cmnd) delete out.vn_cmnd;
+  for (const p of out.patterns) { if (!p.name) delete p.name; if (!p.replacement) delete p.replacement; }
+  return out;
+}
+let previewTimer = null;
+function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(previewRedaction, 250); }
+async function previewRedaction() {
+  try {
+    const r = await api("/api/redact", "POST", {text: $("r_input").value, redaction: redactionSettings()});
+    $("r_output").textContent = r.masked;
+    $("r_hits").textContent = r.hits.length ? "Rules applied: " + r.hits.join(", ") : "Nothing masked.";
+  } catch (e) { $("r_hits").textContent = e.message; }
+}
+["r_input", "r_allow", "r_sensitive", "r_exclude"].forEach((id) => $(id).addEventListener("input", schedulePreview));
+$("packs").addEventListener("change", schedulePreview);
+$("r_vn_cmnd").addEventListener("change", schedulePreview);
+$("addPattern").addEventListener("click", () => addPatternRow());
+$("saveRedaction").addEventListener("click", (ev) => busy(ev.target, async () => {
+  await api("/api/settings", "POST", {redaction: redactionSettings()}); toast("Redaction rules saved"); await loadState();
+}));
+
+// ---------------------------------------------------------------- playground
+const TEMPLATES = {
+  root_cause: {range: "1h"}, detect_changes: {range: "6h"}, service_map: {range: "1h"},
+  search_logs: {query: "level:<=3", range: "15m", limit: 20}, count_logs: {query: "*", range: "1h"},
+  error_summary: {range: "1h", group_by: "exception"}, log_histogram: {query: "level:<=3", range: "6h"},
+  top_values: {field: "source", range: "1h"}, compare_periods: {window: "1h"},
+  trace_request: {trace_id: "", range: "24h"}, context_around: {ref: "index/id", seconds: 30},
+  get_message: {ref: "index/id"}, list_streams: {}, list_fields: {contains: ""},
+};
+function renderPlayground() {
+  const sel = $("p_tool"); const keep = sel.value || "root_cause";
+  sel.innerHTML = STATE.tools.map((t) => `<option${t === keep ? " selected" : ""}>${esc(t)}</option>`).join("");
+  if (!$("p_args").value) $("p_args").value = JSON.stringify(TEMPLATES[sel.value] || {}, null, 2);
+}
+$("p_tool").addEventListener("change", () => { $("p_args").value = JSON.stringify(TEMPLATES[$("p_tool").value] || {}, null, 2); });
+$("runTool").addEventListener("click", (ev) => busy(ev.target, async () => {
+  let args;
+  try { args = JSON.parse($("p_args").value || "{}"); } catch (e) { throw new Error("Arguments are not valid JSON"); }
+  $("p_meta").textContent = "Running…";
+  try {
+    const r = await api("/api/run", "POST", {tool: $("p_tool").value, instance: $("p_env").value, args});
+    $("p_meta").textContent = `${r.chars.toLocaleString()} characters (~${r.approx_tokens.toLocaleString()} tokens) · ${r.ms} ms`;
+    $("p_out").textContent = JSON.stringify(r.result, null, 2);
+    $("p_out").classList.remove("hidden");
+  } catch (e) { $("p_meta").textContent = e.message; $("p_out").classList.add("hidden"); }
+}));
+
+// ---------------------------------------------------------------- clients
+async function loadClients() {
+  const data = await api(`/api/clients?source=${encodeURIComponent($("c_source").value)}`);
+  $("ccCommand").textContent = data["claude-code-command"];
+  $("clientCards").innerHTML = STATE.clients.map((c) => c.scopes.map((scope) => `
+    <div class="panel" style="margin:12px 0 0">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><b>${esc(c.title)}</b> <span class="chip">${esc(scope)}</span><div class="muted">${esc(data[c.key][scope].path)}</div></div>
+        <div class="actions" style="margin:0">
+          ${c.key === "claude-desktop" ? `<label><span><input type="checkbox" data-secrets="${esc(c.key)}">copy current token values</span></label>` : ""}
+          <button class="btn" data-copy="${esc(c.key)}|${esc(scope)}">Copy</button>
+          <button class="btn primary" data-install="${esc(c.key)}|${esc(scope)}">Install</button>
+        </div>
+      </div>
+      ${c.note ? `<p class="muted">${esc(c.note)}</p>` : ""}
+      <pre>${esc(data[c.key][scope].snippet)}</pre>
+    </div>`).join("")).join("");
+  $("clientCards").onclick = async (ev) => {
+    const copy = ev.target.closest("[data-copy]"); const inst = ev.target.closest("[data-install]");
+    if (copy) { const [k, s] = copy.dataset.copy.split("|"); await navigator.clipboard.writeText(data[k][s].snippet); toast("Copied"); }
+    if (inst) {
+      const [k, s] = inst.dataset.install.split("|");
+      const secretsBox = document.querySelector(`[data-secrets="${k}"]`);
+      await busy(inst, async () => {
+        const r = await api("/api/clients/install", "POST", {client: k, scope: s, source: $("c_source").value, with_secrets: !!(secretsBox && secretsBox.checked)});
+        toast(`${r.replaced ? "Updated" : "Added"} in ${r.path}`);
+      });
+    }
+  };
+}
+$("c_source").addEventListener("change", loadClients);
+
+// ---------------------------------------------------------------- raw config
+async function loadRaw() {
+  const r = await api("/api/config");
+  $("rawTitle").textContent = "Config file · " + r.path;
+  $("rawText").value = r.text || "# No config file yet. Add an environment, or paste a config here and save.\n";
+  $("rawResult").innerHTML = "";
+}
+$("validateRaw").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const r = await api("/api/config/validate", "POST", {text: $("rawText").value});
+  $("rawResult").innerHTML = r.ok ? `<span class="status-ok">✓ valid · environments: ${esc(r.instances.join(", "))}</span>` : `<span class="status-fail">✗ ${esc(r.error)}</span>`;
+}));
+$("saveRaw").addEventListener("click", (ev) => busy(ev.target, async () => {
+  const r = await api("/api/config", "POST", {text: $("rawText").value});
+  $("rawResult").innerHTML = `<span class="status-ok">✓ saved${r.backup ? ` (previous version: ${esc(r.backup)})` : ""}</span>`;
+  await loadState();
+}));
+$("reloadRaw").addEventListener("click", loadRaw);
+
+// ---------------------------------------------------------------- start
+(async () => {
+  if (!TOKEN) { $("noauth").classList.remove("hidden"); return; }
+  try { await loadState(); envForm(null); } catch (e) { $("noauth").classList.remove("hidden"); $("noauth").textContent = e.message; }
+})();
+</script>
+</body>
+</html>

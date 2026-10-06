@@ -240,21 +240,33 @@ class Redactor:
     def _allowed(self, text: str) -> bool:
         return any(p.fullmatch(text) for p in self._cfg.allow)
 
+    def _apply(self, rule: Rule, value: str) -> str:
+        def sub(m: re.Match[str]) -> str:
+            matched = m.group(0)
+            if rule.validate is not None and not rule.validate(matched):
+                return matched
+            if self._allowed(matched):
+                return matched
+            return rule.replace(m)
+
+        return rule.pattern.sub(sub, value)
+
     def text(self, value: str) -> str:
         if not value:
             return value
         for rule in self.rules:
-
-            def sub(m: re.Match[str], rule: Rule = rule) -> str:
-                matched = m.group(0)
-                if rule.validate is not None and not rule.validate(matched):
-                    return matched
-                if self._allowed(matched):
-                    return matched
-                return rule.replace(m)
-
-            value = rule.pattern.sub(sub, value)
+            value = self._apply(rule, value)
         return value
+
+    def explain(self, value: str) -> tuple[str, list[str]]:
+        """Masked text and the names of the rules that changed it."""
+        hits = []
+        for rule in self.rules:
+            changed = self._apply(rule, value)
+            if changed != value:
+                hits.append(rule.name)
+                value = changed
+        return value, hits
 
     def value(self, value: Any) -> Any:
         if isinstance(value, str):
