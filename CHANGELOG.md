@@ -23,6 +23,11 @@ All notable changes to this project are documented here. The format follows
 - `graylog-mcp ui`: local admin web UI (environments, field mapping, redaction playground, tool playground,
   client installation, config editor), loopback only with a per-run access token.
 - CLI subcommands; `graylog-mcp` alone still runs the server.
+- Per-user secret store: `graylog-mcp login` / `logout`, the init wizard and the admin UI save tokens and
+  passwords in `~/.config/graylog-mcp/secrets.toml` (owner-only, outside the repository); the server uses
+  environment variables first, then this file. Client configs use `${VAR:-}` so unset variables fall back to it.
+- `*_env` values must be variable names; a secret typed into such a field is refused without being echoed,
+  and the admin UI scrubs it from what it shows.
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.

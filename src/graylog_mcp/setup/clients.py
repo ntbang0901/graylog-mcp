@@ -1,9 +1,10 @@
 """Register the server in MCP clients without hand-editing JSON.
 
 Secrets are never written by default: project-level configs reference the
-developer's environment variables (``${VAR}`` / ``${env:VAR}``), so they can be
-committed. Claude Desktop cannot expand variables, so it gets placeholders
-unless ``with_secrets`` copies the current values into the user's own file.
+developer's environment variables (``${VAR:-}`` / ``${env:VAR}``), so they can be
+committed, and the server falls back to the secrets saved by ``graylog-mcp login``.
+Claude Desktop cannot expand variables: it relies on ``login`` unless
+``with_secrets`` copies the current values into the user's own file.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from graylog_mcp import secrets
 
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 PYPI_PACKAGE = "graylog-mcp"
@@ -46,7 +49,7 @@ CLIENTS: dict[str, Client] = {
         ("user",),
         "mcpServers",
         "none",
-        "Claude Desktop does not expand environment variables; restart the app after installing.",
+        "Run 'graylog-mcp login' once so the server finds your tokens, then restart Claude Desktop.",
     ),
     "cursor": Client("cursor", "Cursor", ("project", "user"), "mcpServers", "env"),
     "vscode": Client("vscode", "VS Code", ("project",), "servers", "env", "Uses .vscode/mcp.json (VS Code 1.99+)."),
@@ -96,13 +99,12 @@ def server_entry(
     env: dict[str, str] = {}
     for name in secret_envs:
         if spec.env_style == "dollar":
-            env[name] = "${" + name + "}"
+            env[name] = "${" + name + ":-}"  # unset is fine: the server then uses the secret saved by `login`
         elif spec.env_style == "env":
             env[name] = "${env:" + name + "}"
-        elif with_secrets and os.environ.get(name):
-            env[name] = os.environ[name]
-        else:
-            env[name] = f"<set {name}>"
+        elif with_secrets and secrets.get(name):
+            env[name] = secrets.get(name) or ""
+        # otherwise nothing: a placeholder would be used as the secret; the server reads `login`'s saved secrets
     # Clients that do not start the server inside the repository need the config path.
     if config_file is not None:
         if client in ("cursor", "vscode") and scope == "project":
@@ -115,10 +117,11 @@ def server_entry(
     return entry
 
 
-def claude_code_command(secret_envs: list[str], source: str = "git", scope: str = "user") -> str:
+def claude_code_command(secret_envs: list[str] | None = None, source: str = "git", scope: str = "user") -> str:
+    """`claude mcp add` for all projects. No --env: a shell would expand "$VAR" and write the secret itself
+    into the user's Claude config. The server reads the secrets saved by `graylog-mcp login` instead."""
     cmd, args = command(source)
-    envs = " ".join(f'--env {n}="${n}"' for n in secret_envs)
-    return f"claude mcp add {SERVER_NAME} --scope {scope} {envs} -- {cmd} {' '.join(args)}".replace("  ", " ")
+    return f"claude mcp add {SERVER_NAME} --scope {scope} -- {cmd} {' '.join(args)}".strip()
 
 
 def snippet(client: str, entry: dict[str, Any]) -> str:

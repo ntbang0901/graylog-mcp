@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import ipaddress
-import os
 import secrets
 import socket
 import time
@@ -27,8 +26,9 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from graylog_mcp import __version__, rca, tools
+from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import PROJECT_CONFIG_NAMES, Config, ConfigError, find_project_config
+from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, find_project_config
 from graylog_mcp.config import _parse_redaction as parse_redaction
 from graylog_mcp.redact import PACKS, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
@@ -83,7 +83,7 @@ class AdminState:
         """A tools.App for the current file; rebuilt when the file or the secrets change."""
         data = self.raw()
         stat = self.path.stat() if self.path.exists() else None
-        secret_state = tuple(bool(os.environ.get(n)) for n in configfile.secret_envs(data, self.path.parent))
+        secret_state = tuple(secret_store.source(n) for n in configfile.secret_envs(data, self.path.parent))
         key = (stat.st_mtime_ns if stat else 0, stat.st_size if stat else 0, secret_state)
         async with self._lock:
             if self._app is None or key != self._app_key:
@@ -123,10 +123,51 @@ def _instances_view(data: dict[str, Any], config: Config | None) -> list[dict[st
                 "description": inst.description,
                 "auth": inst.auth,
                 "secret_env": inst.secret_env,
-                "secret_set": bool(inst.secret_env and os.environ.get(inst.secret_env)),
+                "secret_set": bool(inst.secret_env and secret_store.get(inst.secret_env)),
+                "secret_source": secret_store.source(inst.secret_env) if inst.secret_env else None,
                 "default": inst.name == config.default_instance,
                 "local": local is not None,
                 "fields": local or {"url": inst.url, "description": inst.description},
+            }
+        )
+    return out
+
+
+def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Best-effort list from the file itself when it does not validate, so it can be fixed in the UI."""
+    entries: list[tuple[str, str | None, str | None, dict[str, Any]]] = []
+    for name, inst in (data.get("instances") or {}).items():
+        if isinstance(inst, dict):
+            entries.append((name, inst.get("group"), inst.get("environment"), inst))
+    for group, gdata in (data.get("groups") or {}).items():
+        for env, inst in ((gdata or {}).get("environments") or {}).items() if isinstance(gdata, dict) else []:
+            if isinstance(inst, dict):
+                entries.append((f"{group}/{env}", group, env, inst))
+    out = []
+    for name, group, env, inst in entries:
+        auth = inst.get("auth") or ("basic" if "password_env" in inst else "token")
+        secret = inst.get("password_env") if auth == "basic" else inst.get("token_env", "GRAYLOG_TOKEN")
+        valid = isinstance(secret, str) and bool(ENV_NAME.match(secret))
+        fields = dict(inst)
+        if not valid:  # likely a secret typed into the variable-name field: never send it back
+            for key in ("token_env", "password_env", "username_env"):
+                if key in fields and not (isinstance(fields[key], str) and ENV_NAME.match(fields[key])):
+                    fields[key] = ""
+        out.append(
+            {
+                "name": name,
+                "group": group,
+                "environment": env or (name if not group else None),
+                "url": inst.get("url", ""),
+                "description": inst.get("description", ""),
+                "auth": auth,
+                "secret_env": secret if valid else "(invalid: re-enter the variable name)",
+                "secret_set": bool(valid and secret_store.get(str(secret))),
+                "secret_source": secret_store.source(str(secret)) if valid else None,
+                "default": False,
+                "local": True,
+                "invalid": True,
+                "fields": fields,
             }
         )
     return out
@@ -181,12 +222,13 @@ def build_app(state: AdminState) -> Starlette:
                 "config_path": str(state.path),
                 "exists": state.path.exists(),
                 "error": error,
-                "data": data,
-                "instances": _instances_view(data, config),
+                "data": configfile.scrub(data),
+                "instances": _instances_view(data, config) if config or not data else _raw_instances_view(data),
                 "groups": _groups_view(config),
                 "environments": config.environments if config else {},
                 "default_group": config.default_group if config else None,
-                "secret_envs": [{"name": n, "set": bool(os.environ.get(n))} for n in secret_names],
+                "secret_envs": [{"name": n, "source": secret_store.source(n)} for n in secret_names],
+                "secrets_file": str(secret_store.path()),
                 "clients": client_list,
                 "packs": sorted(PACKS),
                 "tools": sorted(TOOLS),
@@ -261,6 +303,16 @@ def build_app(state: AdminState) -> Starlette:
         except ConfigError as exc:
             return _err(str(exc))
         return JSONResponse({"ok": True})
+
+    async def save_secret(request: Request) -> Response:
+        """Save a token/password for this user, outside the repository. Never echoed back."""
+        body = await _body(request)
+        name, value = str(body.get("name") or ""), str(body.get("value") or "")
+        try:
+            where = secret_store.save(name, value)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, "path": str(where)})
 
     async def save_group(request: Request) -> Response:
         body = await _body(request)
@@ -423,6 +475,7 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/instances/{name:path}", delete_instance, methods=["DELETE"]),
         Route("/api/settings", save_settings, methods=["POST"]),
         Route("/api/groups", save_group, methods=["POST"]),
+        Route("/api/secrets", save_secret, methods=["POST"]),
         Route("/api/detect", run_detect, methods=["POST"]),
         Route("/api/detect/apply", apply_detect, methods=["POST"]),
         Route("/api/redact", redact_preview, methods=["POST"]),

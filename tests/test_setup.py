@@ -69,7 +69,7 @@ def test_install_clients(tmp_path, monkeypatch):
     data = json.loads((project / ".mcp.json").read_text())
     assert data["mcpServers"]["other"] == {"command": "x"}  # kept
     entry = data["mcpServers"]["graylog"]
-    assert entry["env"] == {"GRAYLOG_PROD_TOKEN": "${GRAYLOG_PROD_TOKEN}"}
+    assert entry["env"] == {"GRAYLOG_PROD_TOKEN": "${GRAYLOG_PROD_TOKEN:-}"}
     assert entry["args"][-1] == "graylog-mcp" and res.backup is not None
 
     clients.install("cursor", "project", project, cfg, ["T"])
@@ -84,7 +84,7 @@ def test_install_clients(tmp_path, monkeypatch):
     path = clients.config_path("claude-desktop", "user", project)
     clients.install("claude-desktop", "user", project, cfg, ["T"])
     desktop = json.loads(path.read_text())["mcpServers"]["graylog"]["env"]
-    assert desktop["T"] == "<set T>" and desktop["GRAYLOG_MCP_CONFIG"] == str(cfg.resolve())
+    assert "T" not in desktop and desktop["GRAYLOG_MCP_CONFIG"] == str(cfg.resolve())
     clients.install("claude-desktop", "user", project, cfg, ["T"], with_secrets=True)
     assert json.loads(path.read_text())["mcpServers"]["graylog"]["env"]["T"] == "real-token"
 
@@ -126,7 +126,7 @@ async def test_wizard_non_interactive(tmp_path, monkeypatch, fake_transport):
     mcp = json.loads((tmp_path / ".mcp.json").read_text())
     assert set(mcp["mcpServers"]["graylog"]["env"]) == {"GRAYLOG_STAGING_TOKEN", "GRAYLOG_PROD_TOKEN"}
     text = "\n".join(lines)
-    assert "✓ Graylog 6.1.2" in text and "export GRAYLOG_PROD_TOKEN=..." in text
+    assert "✓ Graylog 6.1.2" in text and "graylog-mcp login" in text
 
 
 async def test_wizard_interactive_with_pasted_token(tmp_path, monkeypatch, fake_transport):
@@ -170,7 +170,7 @@ async def test_wizard_with_groups(tmp_path, monkeypatch, fake_transport):
     assert data["default_group"] == "payment" and data["default_environment"] == "prod"
     cfg = configfile.validate(data, base_dir=tmp_path)
     assert cfg.instance("prod").name == "payment/prod" and cfg.instance("erp").name == "erp/prod"
-    assert any("not tested: GRAYLOG_PAYMENT_PROD_TOKEN" in line for line in lines)
+    assert any("not tested: no token yet (later: graylog-mcp login payment/prod)" in line for line in lines)
 
 
 async def test_admin_groups(admin):
@@ -232,7 +232,7 @@ def test_cli_install_and_help(tmp_path, capsys):
         '[instances.a]\nurl = "https://a.test"\ntoken_env = "A_T"\n', encoding="utf-8"
     )
     assert main(["install", "claude-code", "--project-dir", str(tmp_path)]) == 0
-    assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["graylog"]["env"] == {"A_T": "${A_T}"}
+    assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["graylog"]["env"] == {"A_T": "${A_T:-}"}
     assert main(["install", "cursor", "--project-dir", str(tmp_path), "--dry-run"]) == 0
     assert "${env:A_T}" in capsys.readouterr().out
     assert main(["--help"]) == 0
@@ -317,7 +317,7 @@ async def test_admin_flow(admin):
     assert (await client.post("/api/config", json={"text": raw + "\n# edited\n"})).json()["backup"]
 
     snippets = (await client.get("/api/clients")).json()
-    assert "${GRAYLOG_PROD_TOKEN}" in snippets["claude-code"]["project"]["snippet"]
+    assert "${GRAYLOG_PROD_TOKEN:-}" in snippets["claude-code"]["project"]["snippet"]
     inst = (await client.post("/api/clients/install", json={"client": "claude-code"})).json()
     assert inst["ok"] and (project / ".mcp.json").exists()
 
@@ -327,11 +327,7 @@ async def test_admin_flow(admin):
 
 def test_client_helpers(tmp_path):
     cmd = clients.claude_code_command(["A", "B"], "pypi")
-    assert (
-        cmd.startswith("claude mcp add graylog --scope user")
-        and '--env A="$A"' in cmd
-        and cmd.endswith("uvx graylog-mcp")
-    )
+    assert cmd == "claude mcp add graylog --scope user -- uvx graylog-mcp"  # no --env: never copy secrets
     assert clients.command("local") == ("graylog-mcp", [])
     snippet = json.loads(clients.snippet("vscode", {"type": "stdio", "command": "x"}))
     assert snippet == {"servers": {"graylog": {"type": "stdio", "command": "x"}}}
@@ -372,3 +368,78 @@ def test_local_timezone_and_packs(monkeypatch):
     assert local_timezone() == "Europe/Berlin"
     assert packs_for_timezone("Europe/London") == ["uk", "eu"] and packs_for_timezone("America/New_York") == ["us"]
     assert packs_for_timezone("Asia/Kolkata") == ["in"] and packs_for_timezone("Asia/Tokyo") == []
+
+
+def test_secret_store(monkeypatch, tmp_path):
+    import os
+    import stat
+
+    from graylog_mcp import secrets
+    from graylog_mcp.config import parse_config
+
+    monkeypatch.delenv("PAY_PW", raising=False)
+    path = secrets.save("PAY_PW", 'p"a\\ss wörd')
+    assert path == secrets.path() and secrets.get("PAY_PW") == 'p"a\\ss wörd'
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert secrets.source("PAY_PW") == "saved" and secrets.saved_names() == ["PAY_PW"]
+    monkeypatch.setenv("PAY_PW", "from-env")
+    assert secrets.get("PAY_PW") == "from-env" and secrets.source("PAY_PW") == "env"
+    monkeypatch.setenv("PAY_PW", "")  # an empty variable (e.g. "${VAR:-}") falls back to the saved value
+    cfg = parse_config(
+        {"instances": {"p": {"url": "https://p", "auth": "basic", "username": "u", "password_env": "PAY_PW"}}}
+    )
+    assert cfg.instance("p").password == 'p"a\\ss wörd' and cfg.instance("p").secret_env == "PAY_PW"
+    with pytest.raises(ConfigError, match="NAME"):
+        secrets.save("not a name", "x")
+    assert secrets.delete("PAY_PW") and not secrets.delete("PAY_PW")
+
+
+def test_login_cli(tmp_path, monkeypatch, capsys, fake_transport):
+    from graylog_mcp import secrets
+    from graylog_mcp.__main__ import main
+
+    (tmp_path / ".graylog-mcp.toml").write_text(
+        '[groups.f88.environments.dev]\nurl = "https://f88-dev.test"\nauth = "basic"\nusername = "admin"\n'
+        'password_env = "GRAYLOG_F88_DEV_PASSWORD"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("cajvym-jibva0-maMcen\n"))
+    assert main(["login"]) == 0
+    out = capsys.readouterr().out
+    assert "✓ Graylog 6.1.2" in out and "saved as GRAYLOG_F88_DEV_PASSWORD" in out and "cajvym" not in out
+    assert secrets.get("GRAYLOG_F88_DEV_PASSWORD") == "cajvym-jibva0-maMcen"
+    assert "cajvym" not in (tmp_path / ".graylog-mcp.toml").read_text()
+    assert main(["doctor"]) == 0  # the saved password is used
+    capsys.readouterr()
+    assert main(["logout", "f88/dev"]) == 0
+    assert "✓ forgot GRAYLOG_F88_DEV_PASSWORD" in capsys.readouterr().out
+    assert secrets.get("GRAYLOG_F88_DEV_PASSWORD") is None
+
+
+async def test_admin_saves_secret_and_shows_invalid_config(admin):
+    client, project = admin
+    # a password typed into the variable-name field: the UI still lists the instance, without the value
+    (project / ".graylog-mcp.toml").write_text(
+        '[instances.F88-dev]\nurl = "https://f88.test"\nauth = "basic"\nusername = "admin"\n'
+        'password_env = "cajvym-jibva0-maMcen"\n',
+        encoding="utf-8",
+    )
+    state = (await client.get("/api/state")).json()
+    assert "NAME of an environment variable" in state["error"] and "cajvym" not in json.dumps(state)
+    assert state["instances"][0]["invalid"] and state["instances"][0]["fields"]["password_env"] == ""
+    fields = {
+        "url": "https://f88.test",
+        "auth": "basic",
+        "username": "admin",
+        "password_env": "GRAYLOG_F88_DEV_PASSWORD",
+    }
+    assert (await client.post("/api/instances", json={"name": "F88-dev", "fields": fields})).json()["ok"]
+    saved = await client.post("/api/secrets", json={"name": "GRAYLOG_F88_DEV_PASSWORD", "value": "s3cret"})
+    assert saved.json()["ok"] and "s3cret" not in saved.text
+    state = (await client.get("/api/state")).json()
+    assert state["error"] is None and state["instances"][0]["secret_source"] == "saved"
+    assert "cajvym" not in (project / ".graylog-mcp.toml").read_text()
+    bad = await client.post("/api/secrets", json={"name": "s3cret value", "value": "x"})
+    assert bad.status_code == 400

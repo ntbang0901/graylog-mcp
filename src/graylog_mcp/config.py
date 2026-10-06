@@ -326,12 +326,30 @@ def _positive_int(where: str, value: Any) -> int:
     return value
 
 
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def check_env_name(name: Any, where: str) -> str:
+    """A *_env setting must name a variable. Anything else is most likely the secret itself, typed into the
+    wrong field: refuse it without echoing it."""
+    if not isinstance(name, str) or not ENV_NAME.match(name):
+        raise ConfigError(
+            f"{where} must be the NAME of an environment variable (letters, digits and '_', e.g. "
+            "GRAYLOG_PROD_TOKEN), not the token or password itself. If you typed the secret here, remove it from "
+            "the config file and change it in Graylog, since it may have been saved or shared"
+        )
+    return name
+
+
 def _env(name: Any, where: str) -> str:
-    if not isinstance(name, str) or not name:
-        raise ConfigError(f"{where}: expected the name of an environment variable")
-    value = os.environ.get(name)
+    from graylog_mcp import secrets  # local import: secrets uses check_env_name
+
+    check_env_name(name, where)
+    value = secrets.get(name)
     if not value:
-        raise MissingSecret(f"{where}: environment variable {name} is not set or empty")
+        raise MissingSecret(
+            f"{where}: {name} is not set; run 'graylog-mcp login' to save it on this machine, or export it"
+        )
     return value
 
 
@@ -438,6 +456,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         raise ConfigError(f"{where}.auth: expected 'token' or 'basic'")
     token = username = password = None
     unavailable = None
+    for key in ("token_env", "password_env", "username_env"):
+        if key in data:
+            check_env_name(data[key], f"{where}.{key}")
     secret_env = data.get("token_env", "GRAYLOG_TOKEN") if auth == "token" else data.get("password_env")
     # A missing secret only disables this instance: a developer without a prod token can still
     # use dev and staging. Structural mistakes stay fatal.

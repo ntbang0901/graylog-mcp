@@ -168,3 +168,24 @@ def test_all_instances_without_secrets_is_fatal(monkeypatch):
                 }
             }
         )
+
+
+@pytest.mark.parametrize("key", ["token_env", "password_env", "username_env"])
+def test_secret_typed_into_env_field_is_refused_without_echo(monkeypatch, key):
+    secret = "cajvym-jibva0-maMcen"
+    inst = {"url": "https://x.test", "auth": "basic", "username": "u", "password_env": "P"}
+    if key == "token_env":
+        inst = {"url": "https://x.test"}
+    inst[key] = secret
+    with pytest.raises(ConfigError) as exc:
+        parse_config({"instances": {"F88-dev": inst}}, require_usable=False)
+    assert "NAME of an environment variable" in str(exc.value) and secret not in str(exc.value)
+
+
+def test_configfile_refuses_secret_in_env_field():
+    from graylog_mcp.setup import configfile
+
+    with pytest.raises(ConfigError, match="NAME of an environment variable") as exc:
+        configfile.upsert_instance({}, "F88-dev", {"url": "https://x", "auth": "basic", "username": "u",
+                                                   "password_env": "cajvym-jibva0-maMcen"})  # fmt: skip
+    assert "cajvym" not in str(exc.value)

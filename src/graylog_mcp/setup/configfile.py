@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp.config import Config, ConfigError, parse_config, resolve_includes
+from graylog_mcp.config import ENV_NAME, Config, ConfigError, parse_config, resolve_includes
 from graylog_mcp.setup import tomlwrite
 
 HEADER = (
@@ -80,6 +80,11 @@ def upsert_instance(data: dict[str, Any], name: str, fields: dict[str, Any]) -> 
     for secret in ("token", "password"):
         if secret in clean:
             raise ConfigError(f"'{secret}' cannot be stored in the config file; use {secret}_env")
+    from graylog_mcp.config import check_env_name
+
+    for key in ("token_env", "password_env", "username_env"):
+        if key in clean:
+            check_env_name(clean[key], f"{name}.{key}")
     if clean.get("auth", "token") == "token":
         clean.pop("auth", None)  # the default
         for key in ("username", "username_env", "password_env"):
@@ -198,9 +203,21 @@ def secret_envs(data: dict[str, Any], base_dir: Path | None = None) -> list[str]
         for key in keys:
             if key == "token_env" and key not in inst:
                 names.append("GRAYLOG_TOKEN")
-            elif isinstance(inst.get(key), str):
-                names.append(inst[key])
+            elif isinstance(inst.get(key), str) and ENV_NAME.match(inst[key]):
+                names.append(inst[key])  # a value that is not a name is a mistyped secret: never pass it on
     return list(dict.fromkeys(names))
+
+
+def scrub(data: Any) -> Any:
+    """A copy without values that look like secrets typed into *_env fields."""
+    if isinstance(data, dict):
+        return {
+            k: ("" if k.endswith("_env") and isinstance(v, str) and not ENV_NAME.match(v) else scrub(v))
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [scrub(v) for v in data]
+    return data
 
 
 def default_token_env(name: str) -> str:

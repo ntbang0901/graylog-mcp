@@ -125,11 +125,11 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
         <label>Auth <select id="f_auth"><option value="token">Access token</option><option value="basic">Username + password</option></select></label>
       </div>
       <div class="row" style="margin-top:10px" id="tokenRow">
-        <label>Token environment variable <input id="f_token_env" placeholder="GRAYLOG_STAGING_TOKEN"></label>
+        <label>Name of the environment variable holding the token <span class="muted">(not the token itself)</span> <input id="f_token_env" placeholder="GRAYLOG_STAGING_TOKEN" autocomplete="off" spellcheck="false"></label>
       </div>
       <div class="row hidden" style="margin-top:10px" id="basicRow">
         <label>Username <input id="f_username"></label>
-        <label>Password environment variable <input id="f_password_env" placeholder="GRAYLOG_STAGING_PASSWORD"></label>
+        <label>Name of the environment variable holding the password <span class="muted">(not the password itself)</span> <input id="f_password_env" placeholder="GRAYLOG_STAGING_PASSWORD" autocomplete="off" spellcheck="false"></label>
       </div>
       <details style="margin-top:10px"><summary class="muted">TLS, proxy, timeout, timezone</summary>
         <div class="row" style="margin-top:10px">
@@ -141,9 +141,11 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
         </div>
       </details>
       <div class="row" style="margin-top:12px">
-        <label style="flex:2 1 320px">Token to test now <span class="muted">(kept in memory only, never saved)</span> <input id="f_testtoken" type="password" autocomplete="off" placeholder="optional if the variable is set"></label>
+        <label style="flex:2 1 320px"><span id="testSecretLabel">Token</span> to test now <span class="muted">(kept in memory only, never saved)</span> <input id="f_testtoken" type="password" autocomplete="off" placeholder="optional if the variable is set"></label>
+        <label><span><input type="checkbox" id="f_savesecret" checked>Save it on this machine (outside the repo)</span></label>
         <label><span><input type="checkbox" id="f_default">Default environment</span></label>
       </div>
+      <p class="muted" id="secretsHint"></p>
       <div class="actions">
         <button class="btn" id="testEnv">Test connection</button>
         <button class="btn primary" id="saveEnv">Save</button>
@@ -284,10 +286,16 @@ async function loadState() {
   $("ver").textContent = "v" + STATE.version;
   $("cfgerror").classList.toggle("hidden", !STATE.error);
   $("cfgerror").textContent = STATE.error ? "Config problem: " + STATE.error : "";
+  $("secretsHint").textContent = `Saved secrets live in ${STATE.secrets_file} (only you can read it), never in the repository.`;
   renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
 }
 
 function groupDesc(g) { const d = (STATE.groups.find((x) => x.name === g) || {}).description || ""; return d.toLowerCase() === g.toLowerCase() ? "" : d; }
+function secretChip(e) {
+  if (e.secret_source === "env") return '<span class="chip ok">set (environment)</span>';
+  if (e.secret_source === "saved") return '<span class="chip ok">saved on this machine</span>';
+  return '<span class="chip warn">missing</span>';
+}
 function label(e) { return e.group ? `${e.group}/${e.environment}` : e.name; }
 function renderEnvs() {
   const envs = STATE.instances;
@@ -300,7 +308,7 @@ function renderEnvs() {
     <div class="card">
       <div class="name">${esc(e.environment || e.name)} ${e.default ? '<span class="chip info">default</span>' : ""} ${e.local ? "" : '<span class="chip">included</span>'}</div>
       <div class="muted">${esc(e.description || e.url)}</div>
-      <div style="margin-top:6px">${e.secret_set ? '<span class="chip ok">token set</span>' : `<span class="chip warn">${esc(e.secret_env)} not set</span>`}</div>
+      <div style="margin-top:6px">${secretChip(e)}</div>
       <div class="muted" id="card-${esc(e.name)}" style="margin-top:6px"></div>
     </div>`).join("")}`).join("");
   $("envrows").innerHTML = envs.map((e) => `
@@ -308,7 +316,7 @@ function renderEnvs() {
       <td>${esc(e.group || "")}</td>
       <td><b>${esc(e.environment || e.name)}</b> ${e.default ? '<span class="chip info">default</span>' : ""}<div class="muted">${esc(e.description)}</div></td>
       <td>${esc(e.url)}</td>
-      <td><code>${esc(e.secret_env)}</code> ${e.secret_set ? '<span class="chip ok">set</span>' : '<span class="chip warn">not set</span>'}</td>
+      <td><code>${esc(e.secret_env)}</code> ${secretChip(e)}${e.invalid ? ' <span class="chip fail">fix</span>' : ""}</td>
       <td style="white-space:nowrap">${e.local
         ? `<button class="btn" data-edit="${esc(e.name)}">Edit</button> <button class="btn danger" data-del="${esc(e.name)}">Delete</button>`
         : '<span class="muted">from an included file</span>'}</td>
@@ -345,7 +353,19 @@ $("grouprows").addEventListener("click", (ev) => {
 // ---------------------------------------------------------------- environments
 let editing = null;
 $("f_auth").addEventListener("change", syncAuth);
-function syncAuth() { const basic = $("f_auth").value === "basic"; $("tokenRow").classList.toggle("hidden", basic); $("basicRow").classList.toggle("hidden", !basic); }
+function syncAuth() {
+  const basic = $("f_auth").value === "basic";
+  $("tokenRow").classList.toggle("hidden", basic); $("basicRow").classList.toggle("hidden", !basic);
+  $("testSecretLabel").textContent = basic ? "Password" : "Token";
+}
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+for (const id of ["f_token_env", "f_password_env"]) {
+  $(id).addEventListener("input", () => {
+    const bad = $(id).value && !ENV_NAME.test($(id).value);
+    $(id).style.borderColor = bad ? "var(--fail)" : "";
+    $(id).title = bad ? "Enter a variable NAME like GRAYLOG_PROD_PASSWORD; put the secret itself in the test field below" : "";
+  });
+}
 function envForm(e) {
   editing = e ? e.name : null;
   const f = e ? e.fields : {};
@@ -402,8 +422,18 @@ $("testEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
 $("saveEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
   const name = fullName();
   if (!$("f_name").value.trim()) throw new Error("Environment name is required");
-  await api("/api/instances", "POST", {name, original_name: editing, fields: formFields(), make_default: $("f_default").checked});
-  toast(`Saved ${name}`); editing = name; await loadState();
+  const fields = formFields();
+  await api("/api/instances", "POST", {name, original_name: editing, fields, make_default: $("f_default").checked});
+  const secret = $("f_testtoken").value;
+  if (secret && $("f_savesecret").checked) {
+    const varName = fields.auth === "basic" ? fields.password_env : fields.token_env;
+    const r = await api("/api/secrets", "POST", {name: varName, value: secret});
+    $("f_testtoken").value = "";
+    toast(`Saved ${name}; ${fields.auth === "basic" ? "password" : "token"} stored in ${r.path}`);
+  } else {
+    toast(`Saved ${name}`);
+  }
+  editing = name; await loadState();
 }));
 $("cancelEnv").addEventListener("click", () => envForm(null));
 $("newEnv").addEventListener("click", () => { envForm(null); $("f_name").focus(); });
