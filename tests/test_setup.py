@@ -131,7 +131,7 @@ async def test_wizard_non_interactive(tmp_path, monkeypatch, fake_transport):
 
 async def test_wizard_interactive_with_pasted_token(tmp_path, monkeypatch, fake_transport):
     monkeypatch.delenv("GRAYLOG_DEV_TOKEN", raising=False)
-    answers = iter(["", "dev", "https://dev.test", "Dev", "token", "", "dev", "UTC", "", "y", "none"])
+    answers = iter(["", "dev", "https://dev.test", "Dev", "token", "dev", "UTC", "", "y", "none"])
     lines: list[str] = []
     p = wizard.Prompter(ask_fn=lambda _q: next(answers), secret_fn=lambda _q: "pasted", out=lines.append)
     assert await wizard.run_init(wizard.InitOptions(project_dir=tmp_path), p) == 0
@@ -152,7 +152,7 @@ async def test_wizard_with_groups(tmp_path, monkeypatch, fake_transport):
             "sandbox,prod",  # payment has different environments
             "https://gl-pay-sbx.test",
             "https://gl-pay.test",
-            *[""] * 12,  # 4 environments x (description, auth, token variable): defaults
+            *[""] * 8,  # 4 environments x (description, auth): defaults
             "payment",  # default group
             "prod",  # default environment
             "Asia/Ho_Chi_Minh",

@@ -124,14 +124,12 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
         <label style="flex:2 1 320px">Description <input id="f_description" placeholder="Staging, deployed on every merge"></label>
         <label>Auth <select id="f_auth"><option value="token">Access token</option><option value="basic">Username + password</option></select></label>
       </div>
-      <div class="row" style="margin-top:10px" id="tokenRow">
-        <label>Name of the environment variable holding the token <span class="muted">(not the token itself)</span> <input id="f_token_env" placeholder="GRAYLOG_STAGING_TOKEN" autocomplete="off" spellcheck="false"></label>
+      <div class="row" style="margin-top:10px">
+        <label class="hidden" id="usernameField">Username <input id="f_username" autocomplete="off"></label>
+        <label style="flex:2 1 320px"><span id="secretLabel">Token</span> <span class="muted" id="secretHint">(stored only on this machine, never in the repository)</span>
+          <input id="f_secret" type="password" autocomplete="new-password"></label>
       </div>
-      <div class="row hidden" style="margin-top:10px" id="basicRow">
-        <label>Username <input id="f_username"></label>
-        <label>Name of the environment variable holding the password <span class="muted">(not the password itself)</span> <input id="f_password_env" placeholder="GRAYLOG_STAGING_PASSWORD" autocomplete="off" spellcheck="false"></label>
-      </div>
-      <details style="margin-top:10px"><summary class="muted">TLS, proxy, timeout, timezone</summary>
+      <details style="margin-top:10px"><summary class="muted">Advanced: TLS, proxy, timeout, timezone, environment variable</summary>
         <div class="row" style="margin-top:10px">
           <label><span><input type="checkbox" id="f_verify_tls" checked>Verify TLS certificate</span></label>
           <label>CA bundle path <input id="f_ca_bundle" placeholder="/etc/ssl/internal-ca.pem"></label>
@@ -139,10 +137,12 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size:
           <label>Timeout (s) <input id="f_timeout" type="number" min="1" placeholder="30"></label>
           <label>Timezone override <input id="f_timezone" placeholder="Asia/Ho_Chi_Minh"></label>
         </div>
+        <div class="row" style="margin-top:10px">
+          <label style="flex:2 1 320px">Environment variable that can also provide the <span id="varKind">token</span> <span class="muted">(for CI or shared machines; set automatically)</span>
+            <input id="f_secret_env" autocomplete="off" spellcheck="false"></label>
+        </div>
       </details>
       <div class="row" style="margin-top:12px">
-        <label style="flex:2 1 320px"><span id="testSecretLabel">Token</span> to test now <span class="muted">(kept in memory only, never saved)</span> <input id="f_testtoken" type="password" autocomplete="off" placeholder="optional if the variable is set"></label>
-        <label><span><input type="checkbox" id="f_savesecret" checked>Save it on this machine (outside the repo)</span></label>
         <label><span><input type="checkbox" id="f_default">Default environment</span></label>
       </div>
       <p class="muted" id="secretsHint"></p>
@@ -286,7 +286,7 @@ async function loadState() {
   $("ver").textContent = "v" + STATE.version;
   $("cfgerror").classList.toggle("hidden", !STATE.error);
   $("cfgerror").textContent = STATE.error ? "Config problem: " + STATE.error : "";
-  $("secretsHint").textContent = `Saved secrets live in ${STATE.secrets_file} (only you can read it), never in the repository.`;
+  $("secretsHint").textContent = `Tokens and passwords are kept in ${STATE.secrets_file} (only you can read it), never in the repository.`;
   renderEnvs(); renderFields(); renderRedaction(); renderPlayground();
 }
 
@@ -352,22 +352,37 @@ $("grouprows").addEventListener("click", (ev) => {
 
 // ---------------------------------------------------------------- environments
 let editing = null;
-$("f_auth").addEventListener("change", syncAuth);
-function syncAuth() {
-  const basic = $("f_auth").value === "basic";
-  $("tokenRow").classList.toggle("hidden", basic); $("basicRow").classList.toggle("hidden", !basic);
-  $("testSecretLabel").textContent = basic ? "Password" : "Token";
-}
+let editingEntry = null;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-for (const id of ["f_token_env", "f_password_env"]) {
-  $(id).addEventListener("input", () => {
-    const bad = $(id).value && !ENV_NAME.test($(id).value);
-    $(id).style.borderColor = bad ? "var(--fail)" : "";
-    $(id).title = bad ? "Enter a variable NAME like GRAYLOG_PROD_PASSWORD; put the secret itself in the test field below" : "";
-  });
+const isBasic = () => $("f_auth").value === "basic";
+function fullName() { const g = $("f_group").value.trim(); const n = $("f_name").value.trim(); return g ? `${g}/${n}` : n; }
+function autoVar() {
+  const n = (fullName() || "STAGING").toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  return `GRAYLOG_${n}_${isBasic() ? "PASSWORD" : "TOKEN"}`;
 }
+function secretVar() { return $("f_secret_env").value.trim() || autoVar(); }
+function syncAuth() {
+  const kind = isBasic() ? "password" : "token";
+  $("usernameField").classList.toggle("hidden", !isBasic());
+  $("secretLabel").textContent = kind[0].toUpperCase() + kind.slice(1);
+  $("varKind").textContent = kind;
+  $("f_secret_env").placeholder = autoVar();
+  const src = editingEntry && editingEntry.secret_source;
+  $("f_secret").placeholder = src === "saved" ? `•••••••• ${kind} saved; leave empty to keep it`
+    : src === "env" ? `taken from $${editingEntry.secret_env}; type to save one here instead`
+    : `paste the ${kind}`;
+}
+$("f_auth").addEventListener("change", syncAuth);
+$("f_name").addEventListener("input", syncAuth);
+$("f_group").addEventListener("input", syncAuth);
+$("f_secret_env").addEventListener("input", () => {
+  const v = $("f_secret_env").value, bad = v && !ENV_NAME.test(v);
+  $("f_secret_env").style.borderColor = bad ? "var(--fail)" : "";
+  $("f_secret_env").title = bad ? "A variable NAME such as GRAYLOG_PROD_TOKEN; type the secret itself in the field above" : "";
+});
 function envForm(e) {
   editing = e ? e.name : null;
+  editingEntry = e || null;
   const f = e ? e.fields : {};
   $("envformTitle").textContent = e ? `Edit ${label(e)}` : "Add environment";
   $("f_group").value = e ? (e.group || "") : "";
@@ -375,37 +390,26 @@ function envForm(e) {
   $("f_url").value = f.url || "";
   $("f_description").value = f.description || "";
   $("f_auth").value = e ? e.auth : "token";
-  $("f_token_env").value = f.token_env || "";
   $("f_username").value = f.username || "";
-  $("f_password_env").value = f.password_env || "";
+  $("f_secret_env").value = (e && e.auth === "basic" ? f.password_env : f.token_env) || "";
+  $("f_secret_env").style.borderColor = "";
+  $("f_secret").value = "";
   $("f_verify_tls").checked = f.verify_tls !== false;
   $("f_ca_bundle").value = f.ca_bundle || "";
   $("f_proxy").value = f.proxy || "";
   $("f_timeout").value = f.timeout || "";
   $("f_timezone").value = f.timezone || "";
   $("f_default").checked = e ? e.default : STATE.instances.length === 0;
-  $("f_testtoken").value = "";
   $("envResult").innerHTML = "";
   syncAuth();
 }
-function fullName() { const g = $("f_group").value.trim(); const n = $("f_name").value.trim(); return g ? `${g}/${n}` : n; }
-const updatePlaceholders = () => {
-  if (editing) return;
-  const n = fullName().toUpperCase().replace(/[^A-Z0-9]/g, "_");
-  $("f_token_env").placeholder = `GRAYLOG_${n || "STAGING"}_TOKEN`;
-  $("f_password_env").placeholder = `GRAYLOG_${n || "STAGING"}_PASSWORD`;
-};
-$("f_name").addEventListener("input", updatePlaceholders);
-$("f_group").addEventListener("input", updatePlaceholders);
 function formFields() {
-  const basic = $("f_auth").value === "basic";
-  const name = fullName().toUpperCase().replace(/[^A-Z0-9]/g, "_");
   const fields = {
     url: $("f_url").value.trim(), description: $("f_description").value.trim(), auth: $("f_auth").value,
     ca_bundle: $("f_ca_bundle").value.trim(), proxy: $("f_proxy").value.trim(), timezone: $("f_timezone").value.trim(),
   };
-  if (basic) { fields.username = $("f_username").value.trim(); fields.password_env = $("f_password_env").value.trim() || `GRAYLOG_${name}_PASSWORD`; }
-  else { fields.token_env = $("f_token_env").value.trim() || `GRAYLOG_${name}_TOKEN`; }
+  if (isBasic()) { fields.username = $("f_username").value.trim(); fields.password_env = secretVar(); }
+  else { fields.token_env = secretVar(); }
   if (!$("f_verify_tls").checked) fields.verify_tls = false;
   if ($("f_timeout").value) fields.timeout = Number($("f_timeout").value);
   return fields;
@@ -416,24 +420,23 @@ function showTest(target, r) {
     : `<span class="status-fail">✗ ${esc(r.error)}</span>${r.fix ? `<div class="muted">fix: ${esc(r.fix)}</div>` : ""}`;
 }
 $("testEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
-  const r = await api("/api/test", "POST", {name: fullName().replace("/", "-") || "test", fields: formFields(), token: $("f_testtoken").value || null});
+  const r = await api("/api/test", "POST", {name: fullName().replace("/", "-") || "test", fields: formFields(), token: $("f_secret").value || null});
   showTest($("envResult"), r);
 }));
 $("saveEnv").addEventListener("click", (ev) => busy(ev.target, async () => {
   const name = fullName();
   if (!$("f_name").value.trim()) throw new Error("Environment name is required");
+  if (!$("f_url").value.trim()) throw new Error("Graylog URL is required");
   const fields = formFields();
   await api("/api/instances", "POST", {name, original_name: editing, fields, make_default: $("f_default").checked});
-  const secret = $("f_testtoken").value;
-  if (secret && $("f_savesecret").checked) {
-    const varName = fields.auth === "basic" ? fields.password_env : fields.token_env;
-    const r = await api("/api/secrets", "POST", {name: varName, value: secret});
-    $("f_testtoken").value = "";
-    toast(`Saved ${name}; ${fields.auth === "basic" ? "password" : "token"} stored in ${r.path}`);
-  } else {
-    toast(`Saved ${name}`);
+  const secret = $("f_secret").value;
+  if (secret) {
+    await api("/api/secrets", "POST", {name: secretVar(), value: secret});
+    $("f_secret").value = "";
   }
+  toast(secret ? `Saved ${name} and its ${isBasic() ? "password" : "token"} (on this machine only)` : `Saved ${name}`);
   editing = name; await loadState();
+  envForm(STATE.instances.find((e) => e.name === name) || null);
 }));
 $("cancelEnv").addEventListener("click", () => envForm(null));
 $("newEnv").addEventListener("click", () => { envForm(null); $("f_name").focus(); });

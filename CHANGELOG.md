@@ -26,6 +26,8 @@ All notable changes to this project are documented here. The format follows
 - Per-user secret store: `graylog-mcp login` / `logout`, the init wizard and the admin UI save tokens and
   passwords in `~/.config/graylog-mcp/secrets.toml` (owner-only, outside the repository); the server uses
   environment variables first, then this file. Client configs use `${VAR:-}` so unset variables fall back to it.
+- Admin UI environment form: one Token/Password field, saved on this machine; the environment variable name is
+  set automatically (editable under Advanced for CI). `init` no longer asks for variable names.
 - `*_env` values must be variable names; a secret typed into such a field is refused without being echoed,
   and the admin UI scrubs it from what it shows.
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared

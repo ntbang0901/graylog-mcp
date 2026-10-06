@@ -170,17 +170,14 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
         description = p.ask("  Description", prev.get("description", name.replace("/", " ").title()))
         auth = p.ask("  Auth (token/basic)", prev.get("auth", "token"))
         fields: dict[str, Any] = {"url": url, "description": description, "auth": auth}
+        # the variable name is chosen automatically; the secret itself is asked for (and saved) by _test
         if auth == "basic":
             fields["username"] = p.ask("  Username", prev.get("username", ""))
-            fields["password_env"] = p.ask(
-                "  NAME of the environment variable that will hold the password (not the password)",
-                prev.get("password_env", configfile.default_token_env(name).replace("_TOKEN", "_PASSWORD")),
+            fields["password_env"] = prev.get(
+                "password_env", configfile.default_token_env(name).replace("_TOKEN", "_PASSWORD")
             )
         else:
-            fields["token_env"] = p.ask(
-                "  NAME of the environment variable that will hold the token (not the token)",
-                prev.get("token_env", configfile.default_token_env(name)),
-            )
+            fields["token_env"] = prev.get("token_env", configfile.default_token_env(name))
         for key in ("verify_tls", "ca_bundle", "proxy", "timeout", "timezone"):
             if key in prev:
                 fields[key] = prev[key]
