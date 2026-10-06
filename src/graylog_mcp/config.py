@@ -198,6 +198,9 @@ class Config:
     environments: dict[str, str] = field(default_factory=dict)  # declared environments -> description
     current_repo: str | None = None  # the repository the server runs in (normalized remote or folder name)
     repo_group: str | None = None  # the group listing that repository
+    scope: tuple[str, ...] | None = None  # groups this server loads; None = every group
+    scope_reason: str | None = None  # 'repository' (run inside a group's repository) or 'only_groups'
+    out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
 
     def instance(self, name: str | None) -> InstanceConfig:
         """Resolve 'payment/prod', 'payment prod', 'payment' (its default environment), 'prod' (in the
@@ -236,10 +239,30 @@ class Config:
             if matches:
                 options = ", ".join(sorted(i.name for i in matches))
                 raise ConfigError(f"environment {name!r} exists in several groups; name one: {options}")
+        self._check_scope(name.strip(), key, parts)
         known = ", ".join(sorted(self.instances))
         close = difflib.get_close_matches(key, list(by_lower), n=3, cutoff=0.5)
         hint = f" Did you mean: {', '.join(by_lower[c] for c in close)}?" if close else ""
         raise ConfigError(f"unknown instance {name!r}; configured instances: {known}.{hint}")
+
+    def _check_scope(self, name: str, key: str, parts: list[str]) -> None:
+        """A clear error when the name points to an instance this server leaves out on purpose."""
+        hidden_groups = {g.lower(): g for g in self.out_of_scope.values() if g}
+        hidden = next((g for n, g in self.out_of_scope.items() if n.lower() == key), None)
+        hidden = hidden or next((hidden_groups[p] for p in parts if p in hidden_groups), None)
+        if hidden is None:
+            return
+        scope = ", ".join(self.scope or ())
+        why = (
+            f"this server runs in repository {self.current_repo}, which belongs to group {self.repo_group}"
+            if self.scope_reason == "repository"
+            else f"only_groups limits it to {scope}"
+        )
+        raise ConfigError(
+            f"{name!r} is in group {hidden!r}, which this server does not load: {why}. To query other groups, set "
+            f'only_groups = ["{self.repo_group or scope}", "{hidden}"] (or "*") in the project config, or '
+            "GRAYLOG_MCP_GROUPS for the MCP server."
+        )
 
     def _pick(self, group: str, env: str) -> InstanceConfig | None:
         for inst in self.instances.values():
@@ -253,6 +276,7 @@ class Config:
 _TOP_KEYS = {
     "default_instance",
     "default_group",
+    "only_groups",
     "default_environment",
     "groups",
     "environments",
@@ -877,6 +901,8 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         st = dict(data.get("stacktrace", {}))
         st["app_packages"] = [p.strip() for p in os.environ["GRAYLOG_APP_PACKAGES"].split(",") if p.strip()]
         data["stacktrace"] = st
+    if os.environ.get("GRAYLOG_MCP_GROUPS"):
+        data["only_groups"] = [g.strip() for g in os.environ["GRAYLOG_MCP_GROUPS"].split(",") if g.strip()]
     if os.environ.get("GRAYLOG_MCP_HTTP_TOKEN"):
         http = dict(data.get("http", {}))
         http.setdefault("auth_token_env", "GRAYLOG_MCP_HTTP_TOKEN")
@@ -943,11 +969,30 @@ def load_config(
     return parse_config(data, source=source, require_usable=require_usable, repo_dir=repo_dir or Path.cwd())
 
 
+def _only_groups(value: Any, groups: dict[str, GroupInfo]) -> tuple[str, ...] | None:
+    """``only_groups``: a group, a list of groups, or "*" for every group (None)."""
+    names = [value] if isinstance(value, str) else value
+    if not isinstance(names, list) or not all(isinstance(n, str) and n.strip() for n in names) or not names:
+        raise ConfigError('only_groups: expected a group name, a list of group names or "*"')
+    if "*" in names:
+        return None
+    by_lower = {g.lower(): g for g in groups}
+    unknown = [n for n in names if n.strip().lower() not in by_lower]
+    if unknown:
+        raise ConfigError(f"only_groups: unknown group {unknown[0]!r} (groups: {', '.join(groups) or 'none'})")
+    return tuple(dict.fromkeys(by_lower[n.strip().lower()] for n in names))
+
+
 def parse_config(
-    data: dict[str, Any], source: str = "env", require_usable: bool = True, repo_dir: Path | None = None
+    data: dict[str, Any],
+    source: str = "env",
+    require_usable: bool = True,
+    repo_dir: Path | None = None,
+    scoped: bool = True,
 ) -> Config:
     """Validate configuration data. ``require_usable=False`` accepts a config whose secrets are not set
-    in this environment (used when editing a config file for others)."""
+    in this environment (used when editing a config file for others). ``scoped=False`` keeps every group
+    even when ``only_groups`` or the current repository would narrow them (used by the editors)."""
     data = _env_overrides(data)
     _check_keys("config", data, _TOP_KEYS)
     if "include" in data:
@@ -1002,9 +1047,6 @@ def parse_config(
         if inst.group and inst.group not in groups:
             groups[inst.group] = GroupInfo(inst.group)
 
-    usable = [i for i in instances.values() if i.unavailable is None]
-    if not usable and require_usable:
-        raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
     current_repo = repo_group = None
@@ -1020,6 +1062,31 @@ def parse_config(
     if default_group is not None and default_group not in groups:
         raise ConfigError(f"default_group {default_group!r} is not a configured group ({', '.join(groups) or 'none'})")
     default_instance = data.get("default_instance")
+
+    # Inside a group's repository, or with only_groups, the server loads only those groups: a repository of
+    # one system never reaches the logs of another by mistake.
+    scope = scope_reason = None
+    if "only_groups" in data:
+        scope = _only_groups(data["only_groups"], groups)
+        scope_reason = "only_groups" if scope else None
+    elif repo_group:
+        scope, scope_reason = (repo_group,), "repository"
+    out_of_scope: dict[str, str] = {}
+    if scope and scoped:
+        out_of_scope = {n: i.group or "" for n, i in instances.items() if i.group not in scope}
+        instances = {n: i for n, i in instances.items() if i.group in scope}
+        groups = {g: info for g, info in groups.items() if g in scope}
+        if default_group not in scope:
+            default_group = repo_group if repo_group in scope else scope[0]
+        if default_instance in out_of_scope:
+            default_instance = None
+        if not instances:
+            raise ConfigError(f"no instance in {', '.join(scope)}: add an environment to the group first")
+    elif not scoped:
+        scope = scope_reason = None
+    usable = [i for i in instances.values() if i.unavailable is None]
+    if not usable and require_usable:
+        raise ConfigError("; ".join(str(i.unavailable) for i in instances.values()))
     if not default_instance and default_group:
         env = groups[default_group].default_environment or default_environment
         members = [i for i in instances.values() if i.group == default_group]
@@ -1043,6 +1110,9 @@ def parse_config(
         environments={e: str(d.get("description", "")) for e, d in env_defaults.items()},
         current_repo=current_repo,
         repo_group=repo_group,
+        scope=scope,
+        scope_reason=scope_reason,
+        out_of_scope=out_of_scope,
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),

@@ -43,7 +43,7 @@ def merged(data: dict[str, Any], base_dir: Path | None) -> dict[str, Any]:
 
 def validate(data: dict[str, Any], source: str = "editor", base_dir: Path | None = None) -> Config:
     """Structural validation; secrets do not have to be set in this process."""
-    return parse_config(merged(data, base_dir), source=source, require_usable=False)
+    return parse_config(merged(data, base_dir), source=source, require_usable=False, scoped=False)
 
 
 def validate_text(text: str, base_dir: Path | None = None) -> Config:
@@ -402,7 +402,8 @@ def set_repos(data: dict[str, Any], group: str, repos: list[str]) -> dict[str, A
 
 
 def setup_repo(repo: Path, config_file: Path, group: str) -> Path:
-    """Make a repository use the shared config for its group: .graylog-mcp.toml with include + default_group."""
+    """Make a repository use the shared config for its group: .graylog-mcp.toml with include, default_group
+    and only_groups (the server there loads that group only, whatever the folder layout on each machine)."""
     import os
 
     target = repo / PROJECT_FILE
@@ -417,6 +418,11 @@ def setup_repo(repo: Path, config_file: Path, group: str) -> Path:
         includes.append(rel)
     data["include"] = includes[0] if len(includes) == 1 else includes
     data["default_group"] = group
+    only = data.get("only_groups")
+    only = [only] if isinstance(only, str) else list(only or [])
+    if "*" not in only and group not in only:
+        only.append(group)
+    data["only_groups"] = only[0] if len(only) == 1 else only
     validate(data, base_dir=repo)
     save(target, data)
     return target

@@ -911,6 +911,9 @@ async def list_instances(app: App) -> dict[str, Any]:
         out["environments"] = {e: d or None for e, d in cfg.environments.items()}
     if cfg.current_repo:
         out["current_repo"] = {"repo": cfg.current_repo, "group": cfg.repo_group}
+    if cfg.scope:
+        not_loaded = sorted({g for g in cfg.out_of_scope.values() if g})
+        out["scope"] = {"groups": list(cfg.scope), "because": cfg.scope_reason, "not_loaded": not_loaded}
     out["instances"] = [gl.status() for gl in app.instances.values()]
     out["redaction"] = app.redactor.active_rules
     return out
