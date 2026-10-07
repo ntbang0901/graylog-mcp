@@ -29,6 +29,12 @@ def _clean_env(monkeypatch, tmp_path_factory):
     ]:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", "/nonexistent-graylog-mcp-test")
+    # never touch the real Claude Code config, CLI, or graylog-mcp state of the machine running the tests
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude")))
+    monkeypatch.setenv("GRAYLOG_MCP_HOME", str(tmp_path_factory.mktemp("gmhome")))
+    from graylog_mcp.setup import clients
+
+    monkeypatch.setattr(clients, "claude_binary", lambda: None)
     monkeypatch.setenv("TEST_GRAYLOG_TOKEN", "secret-token")
 
 
