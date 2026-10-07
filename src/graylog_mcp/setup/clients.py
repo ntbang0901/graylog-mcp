@@ -151,6 +151,22 @@ def shared_entry(client: str, url: str = SHARED_URL) -> dict[str, Any]:
     return entry if client == "cursor" else {"type": "http", **entry}
 
 
+async def probe_shared(url: str = SHARED_URL, timeout: float = 0.5) -> dict[str, Any]:
+    """Whether 'graylog-mcp serve --shared' answers at ``url`` (its /healthz), and its version."""
+    import httpx
+
+    parts = urlsplit(url)
+    health = f"{parts.scheme}://{parts.netloc}/healthz"
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.get(health)
+        body = response.json() if response.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError):
+        body = {}
+    running = body.get("status") == "ok"
+    return {"url": url, "running": running, "version": body.get("version") if running else None}
+
+
 def claude_code_command(
     secret_envs: list[str] | None = None, source: str = "git", scope: str = "user", url: str = SHARED_URL
 ) -> str:
