@@ -76,12 +76,13 @@ def test_launchd_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(service.os, "getuid", lambda: 501, raising=False)
     rec = Recorder()
     auto = service.Autostart(rec, system="Darwin")
-    cmd = service.server_command(["/u/bin/graylog-mcp"], 8000, Path("/c/org.toml"))
+    config = Path("/c/org.toml")
+    cmd = service.server_command(["/u/bin/graylog-mcp"], 8000, config)
     path = auto.enable(cmd, start_now=True)
     assert path == tmp_path / "Library" / "LaunchAgents" / f"{service.LABEL}.plist" and auto.enabled
     plist = plistlib.loads(path.read_bytes())
     assert plist["ProgramArguments"] == ["/u/bin/graylog-mcp", "serve", "--shared", "--admin", "--port", "8000",
-                                         "--config", "/c/org.toml"]  # fmt: skip
+                                         "--config", str(config)]  # fmt: skip
     assert plist["RunAtLoad"] and "PATH" in plist["EnvironmentVariables"]
     assert rec.calls == [["launchctl", "bootout", f"gui/501/{service.LABEL}"],
                          ["launchctl", "bootstrap", "gui/501", str(path)]]  # fmt: skip
