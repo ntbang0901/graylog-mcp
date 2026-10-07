@@ -321,6 +321,7 @@ jdbc:postgresql://admin:s3cret@db:5432/orders</textarea>
           <div class="row">
             <div class="field" style="flex:0 1 380px"><span class="label">Start the server with</span><select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">the installed graylog-mcp command</option><option value="shared">connect to the shared server (graylog-mcp serve --shared)</option></select></div>
           </div>
+          <div class="hint small" id="c_shared" style="margin-top:8px"></div>
           <div class="hint small muted" style="margin-top:8px">Tokens are never written into these files; the server reads the ones saved on this machine.</div>
         </div>
         <div id="clientCards"></div>
@@ -925,8 +926,17 @@ $("runTool").addEventListener("click", (ev) => busy(ev.target, async () => {
 $("p_copy").addEventListener("click", async () => { await navigator.clipboard.writeText($("p_out").textContent); toast("Copied"); });
 
 // ------------------------------------------------------------------ clients
+let sourceChosen = false;  // until the user picks one, a running shared server is preselected
 async function loadClients() {
-  const data = await api(`/api/clients?source=${encodeURIComponent($("c_source").value)}`);
+  const fetchFor = (src) => api(`/api/clients?source=${encodeURIComponent(src)}`);
+  let data = await fetchFor($("c_source").value);
+  if (!sourceChosen && data.shared.running && $("c_source").value !== "shared") {
+    $("c_source").value = "shared"; data = await fetchFor("shared");
+  }
+  const sh = data.shared;
+  $("c_shared").innerHTML = sh.running
+    ? `<span class="badge ok">shared server running</span> <span class="mono">${esc(sh.url)}</span> (v${esc(sh.version || "?")}): one process for every session`
+    : `<span class="badge">no shared server</span> <span class="muted">uvx starts one process per session. For one process for all of them, run <span class="mono">graylog-mcp serve --shared</span> and pick "connect to the shared server".</span>`;
   $("ccCommand").textContent = data["claude-code-command"];
   $("clientCards").innerHTML = STATE.clients.map((c) => c.scopes.map((scope) => `
     <div class="card"><div class="card-head"><h2>${esc(c.title)}</h2><span class="badge">${esc(scope)}</span><span class="muted small mono" style="overflow:hidden;text-overflow:ellipsis">${esc(data[c.key][scope].path)}</span>
@@ -940,7 +950,7 @@ async function loadClients() {
       busy(inst, async () => { const r = await api("/api/clients/install", "POST", {client: k, scope: s, source: $("c_source").value, with_secrets: !!(box && box.checked)}); toast(`${r.replaced ? "Updated" : "Added"} in ${r.path}`); }); }
   };
 }
-$("c_source").addEventListener("change", loadClients);
+$("c_source").addEventListener("change", () => { sourceChosen = true; loadClients(); });
 $("ccCopy").addEventListener("click", async () => { await navigator.clipboard.writeText($("ccCommand").textContent); toast("Copied"); });
 
 // ------------------------------------------------------------------ raw config

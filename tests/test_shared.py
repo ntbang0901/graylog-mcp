@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from graylog_mcp import shared
+from graylog_mcp import __version__, shared
 from graylog_mcp.__main__ import build_http_app, main
 from graylog_mcp.config import ConfigError
 from graylog_mcp.setup import clients
@@ -126,11 +126,17 @@ def test_one_http_server_serves_two_repositories(tmp_path):
             )
 
         a, b = asyncio.run(both())
+        assert asyncio.run(clients.probe_shared(url)) == {"url": url, "running": True, "version": __version__}
         assert a["current_repo"]["group"] == "payment" and a["scope"]["groups"] == ["payment"]
         assert b["current_repo"]["group"] == "erp" and b["scope"]["groups"] == ["erp"]
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+async def test_probe_shared_when_nothing_listens():
+    url = f"http://127.0.0.1:{_free_port()}/mcp"
+    assert await clients.probe_shared(url) == {"url": url, "running": False, "version": None}
 
 
 def test_install_shared_entries(tmp_path, monkeypatch):

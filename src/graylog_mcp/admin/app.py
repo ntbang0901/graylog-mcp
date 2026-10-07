@@ -614,6 +614,7 @@ def build_app(state: AdminState) -> Starlette:
                 for scope in spec.scopes
             }
         out["claude-code-command"] = clients.claude_code_command(names, source)  # type: ignore[assignment]
+        out["shared"] = await clients.probe_shared()
         return JSONResponse(out)
 
     async def install_client(request: Request) -> Response:

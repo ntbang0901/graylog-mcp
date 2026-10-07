@@ -318,6 +318,11 @@ async def test_admin_flow(admin):
 
     snippets = (await client.get("/api/clients")).json()
     assert "${GRAYLOG_PROD_TOKEN:-}" in snippets["claude-code"]["project"]["snippet"]
+    assert set(snippets["shared"]) == {"url", "running", "version"}
+    shared = (await client.get("/api/clients?source=shared")).json()
+    assert '"type": "http"' in shared["claude-code"]["project"]["snippet"]
+    assert shared["claude-desktop"]["user"]["snippet"].startswith("// Claude Desktop runs one server")
+    assert shared["claude-code-command"].startswith("claude mcp add --transport http")
     inst = (await client.post("/api/clients/install", json={"client": "claude-code"})).json()
     assert inst["ok"] and (project / ".mcp.json").exists()
 
