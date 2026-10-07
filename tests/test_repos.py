@@ -11,7 +11,7 @@ import pytest
 
 from graylog_mcp import tools
 from graylog_mcp.config import ConfigError, detect_repo, load_config, normalize_repo, parse_config
-from graylog_mcp.setup import connect
+from graylog_mcp.setup import clients, connect
 from graylog_mcp.tools import App
 from tests.fake_graylog import FakeGraylog
 
@@ -162,8 +162,16 @@ def admin(tmp_path, monkeypatch):
     return client, tmp_path, platform
 
 
-async def test_admin_repos(admin):
+def _shared_server(monkeypatch, running: bool) -> None:
+    async def probe(url=clients.SHARED_URL, timeout=0.5):
+        return {"url": url, "running": running, "version": "0.1.0" if running else None}
+
+    monkeypatch.setattr(clients, "probe_shared", probe)
+
+
+async def test_admin_repos(admin, monkeypatch):
     client, root, _ = admin
+    _shared_server(monkeypatch, running=False)
     repo = make_repo(root, "payment-api", "git@github.com:f88/payment-api.git")
     res = await client.post(
         "/api/repos", json={"group": "payment", "repo": str(repo), "project_config": True, "claude_code": True}
@@ -181,7 +189,8 @@ async def test_admin_repos(admin):
     state = (await client.get("/api/state")).json()
     groups = {g["name"]: g for g in state["groups"]}
     pay_repo = groups["payment"]["repos"][0]
-    assert pay_repo["kind"] == "path" and pay_repo["exists"] and pay_repo["project_config"] and pay_repo["claude_code"]
+    assert pay_repo["kind"] == "path" and pay_repo["exists"] and pay_repo["project_config"]
+    assert pay_repo["claude_code"] == "stdio" and state["shared"]["running"] is False
     assert groups["erp"]["repos"] == [{"entry": "git@github.com:f88/erp.git", "kind": "url"}]
 
     missing = await client.post("/api/repos", json={"group": "payment", "repo": str(root / "nope")})
@@ -194,6 +203,30 @@ async def test_admin_repos(admin):
     groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
     assert groups["payment"]["repos"] == []
     assert (repo / ".graylog-mcp.toml").exists()  # removing never deletes files in the repository
+
+
+async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch):
+    client, root, _ = admin
+    _shared_server(monkeypatch, running=False)
+    old = make_repo(root, "erp-web")
+    await client.post(
+        "/api/repos", json={"group": "erp", "repo": str(old), "project_config": True, "claude_code": True}
+    )
+    _shared_server(monkeypatch, running=True)
+    state = (await client.get("/api/state")).json()
+    assert state["shared"]["running"] and state["groups"][1]["repos"][0]["claude_code"] == "stdio"
+    # "Use shared server" on a repository set up with uvx
+    switched = (await client.post("/api/repos/setup", json={"group": "erp", "repo": str(old)})).json()
+    assert switched["source"] == "shared"
+    assert json.loads((old / ".mcp.json").read_text())["mcpServers"]["graylog"]["type"] == "http"
+    # a new repository gets the HTTP entry right away
+    new = make_repo(root, "payment-api")
+    added = await client.post(
+        "/api/repos", json={"group": "payment", "repo": str(new), "project_config": True, "claude_code": True}
+    )
+    assert added.json()["source"] == "shared"
+    groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
+    assert [r["claude_code"] for g in groups.values() for r in g["repos"]] == ["shared", "shared"]
 
 
 def test_repo_cli(tmp_path, monkeypatch, capsys):
