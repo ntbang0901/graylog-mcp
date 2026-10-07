@@ -27,16 +27,28 @@ error query) lives in configuration, not in code.
 
 ## Quick start
 
-The fastest way, inside your application repository:
+One command (needs [uv](https://docs.astral.sh/uv/)), run in the folder holding your `.graylog-mcp.toml` or
+anywhere for a fresh start:
 
 ```bash
-uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp init   # guided setup
-uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp ui     # or the admin web UI
+uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp start
 ```
 
-`init` asks for each environment, tests the connection (you can paste a token for the test; it is never
-saved), detects your field names from the logs, writes `.graylog-mcp.toml` and registers the server in your
-MCP client. See [Setup helpers](#setup-helpers-and-admin-ui).
+It installs graylog-mcp, runs it in the background as **one process for every Claude session**, starts it
+again when you log in, connects Claude Code in every project and opens the admin page. The page's **Setup**
+checklist shows what is left (usually: add your Graylog URL and a token) with a button for each step.
+
+Afterwards:
+
+| | |
+|---|---|
+| `graylog-mcp ui` | open the admin page again |
+| `graylog-mcp status` | is it running, which version, is Claude Code connected |
+| `graylog-mcp update` | install the latest version and restart (or "Check for updates" on the page) |
+| `graylog-mcp stop` | stop it and no longer start it at login |
+
+Prefer the terminal? `graylog-mcp init` is a guided setup that writes `.graylog-mcp.toml` and registers the
+server per repository (one process per session). See [Setup helpers](#setup-helpers-and-admin-ui).
 
 Or by hand:
 
@@ -551,46 +563,35 @@ effect; leaving it empty inherits it.
 ## One process for every session
 
 With stdio, the client starts a server process for every session: ten Claude Code sessions are ten
-Python processes, each with its own connections and version detection. `--shared` runs one server for all
-of them, and still answers each session with the configuration of the repository it works in (its
-`.graylog-mcp.toml`, group, focus), as if it had been started there:
+Python processes, each with its own connections and version detection. `graylog-mcp start` runs one server
+for all of them instead, and still answers each session with the configuration of the repository it works
+in (its `.graylog-mcp.toml`, group, focus), as if it had been started there.
 
-```bash
-graylog-mcp login                     # once: tokens saved on this machine, read by the shared server
-graylog-mcp serve --shared            # keep it running (127.0.0.1:8000); see below to start it at login
-graylog-mcp install claude-code --shared   # in each repository: .mcp.json connects to it instead of uvx
-```
+What `start` does, so you know what is on your machine:
 
-The entry it writes sends the repository folder in a header, which the client fills in:
+- **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
+  `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
+- **The server**: `graylog-mcp serve --shared --admin --port 8000 --config <file>` on 127.0.0.1, started at
+  login by a LaunchAgent (macOS), a systemd user unit (Linux) or the Startup folder (Windows); elsewhere it
+  runs until you log out. Log: `~/Library/Logs/graylog-mcp.log` or `~/.config/graylog-mcp/server.log`.
+- **The admin page** at `http://127.0.0.1:8000/admin/`, with the access token kept in
+  `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
+- **Claude Code**, registered once for every project (user scope):
+  `claude mcp add --transport http graylog --scope user http://127.0.0.1:8000/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
+  Claude Code fills in the folder it runs in; the server walks up to the repository. A project whose committed
+  `.mcp.json` still starts graylog-mcp itself gets a private override (local scope) instead: the file stays as
+  it is for your teammates.
 
-```json
-{ "mcpServers": { "graylog": {
-  "type": "http", "url": "http://127.0.0.1:8000/mcp", "headers": { "X-Graylog-MCP-Repo": "${PWD:-}" } } } }
-```
+How the server picks the configuration of a session:
 
-Cursor and VS Code send `${workspaceFolder}`; other clients can add `?repo=<folder>` to the URL. `repo add
---shared` and `init --source shared` write the same entry; for every project at once:
-`claude mcp add --transport http graylog --scope user http://127.0.0.1:8000/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
-
+- The repository's own `.graylog-mcp.toml`; without one, the `--config` file (`start` uses the one found
+  where you ran it, else `~/.config/graylog-mcp/config.toml`), with the group matched from its `repos`.
+- Edits (admin page, `login`, `repo focus`) apply within seconds, without a restart.
 - One Graylog client per instance, shared by every repository using it: one connection pool, one version
   detection, one stream and field cache.
-- A repository's config is read again every few seconds when used; edits apply without a restart.
-- `--config FILE` (or `GRAYLOG_MCP_CONFIG`) uses that file for every repository; the group and focus still
-  follow the repository. Without a header, a session gets the config of the folder the server runs in.
-- Tokens come from the server's environment or `graylog-mcp login`, not from the client.
-- Claude Desktop already runs one server for all its chats and keeps stdio.
-
-To start it at login on Linux (systemd user unit; on macOS a LaunchAgent running the same command):
-
-```ini
-# ~/.config/systemd/user/graylog-mcp.service, then: systemctl --user enable --now graylog-mcp
-[Service]
-ExecStart=%h/.local/bin/uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp serve --shared
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
+- Tokens come from the server's environment or `graylog-mcp login` (the admin page saves them there too).
+- Other clients: Cursor and VS Code send `${workspaceFolder}` (`graylog-mcp install cursor --shared`), any
+  client can add `?repo=<folder>` to the URL. Claude Desktop already runs one server for all its chats.
 
 ## Shared HTTP server and Docker
 

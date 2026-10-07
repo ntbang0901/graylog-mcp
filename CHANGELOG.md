@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
+  background with the admin page at `/admin`, start it at login (launchd, systemd, Startup folder), register
+  Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
+  the page. `stop`, `status`, `update` (reinstall from the same source and restart); `ui` opens the running
+  server's page. The admin page starts with a Setup checklist with one button per step, and versions show
+  their git commit.
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
   config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.
