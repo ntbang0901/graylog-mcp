@@ -20,7 +20,7 @@ from typing import Any
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError
+from graylog_mcp.config import Config, ConfigError, InstanceConfig
 from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
 from graylog_mcp.shaping import Budget, Shaper, dedup, dumps, group_key, is_error_level, is_internal, truncate
@@ -98,10 +98,14 @@ class App:
     focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
 
     @classmethod
-    def create(cls, config: Config, transport: Any = None) -> App:
+    def create(
+        cls, config: Config, transport: Any = None, graylog: Callable[[InstanceConfig], Graylog] | None = None
+    ) -> App:
+        """``graylog`` supplies the client of each instance (the shared server reuses them across repositories)."""
+        make = graylog or (lambda cfg: Graylog(cfg, transport))
         return cls(
             config=config,
-            instances={name: Graylog(cfg, transport) for name, cfg in config.instances.items()},
+            instances={name: make(cfg) for name, cfg in config.instances.items()},
             redactor=Redactor(config.redaction),
         )
 

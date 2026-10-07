@@ -319,7 +319,7 @@ jdbc:postgresql://admin:s3cret@db:5432/orders</textarea>
       <section class="page" id="clients" data-title="MCP clients" data-sub="Register the server in Claude Code, Claude Desktop, Cursor or VS Code">
         <div class="card">
           <div class="row">
-            <div class="field" style="flex:0 1 380px"><span class="label">Start the server with</span><select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">the installed graylog-mcp command</option></select></div>
+            <div class="field" style="flex:0 1 380px"><span class="label">Start the server with</span><select id="c_source"><option value="git">uvx from GitHub (no release needed)</option><option value="pypi">uvx from PyPI</option><option value="local">the installed graylog-mcp command</option><option value="shared">connect to the shared server (graylog-mcp serve --shared)</option></select></div>
           </div>
           <div class="hint small muted" style="margin-top:8px">Tokens are never written into these files; the server reads the ones saved on this machine.</div>
         </div>

@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
+  session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
+  config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.
+  `install --shared` (`--source shared`), `repo add --shared` and the admin UI write the matching HTTP entries.
 - `scan`: runs scan rules concurrently with exact counts against a baseline and returns only what fired, most
   severe first, with the query, top groups (new values flagged) and one sample per finding. Eight built-in rules
   (crash, resource_exhaustion, error_spike, new_error_types, http_5xx, connectivity, database, auth_failures);

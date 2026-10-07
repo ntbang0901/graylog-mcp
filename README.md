@@ -548,6 +548,50 @@ The admin UI's **Settings** page edits field names, queries and connection optio
 one environment (for every group), one group, or a single instance. Each field shows the value currently in
 effect; leaving it empty inherits it.
 
+## One process for every session
+
+With stdio, the client starts a server process for every session: ten Claude Code sessions are ten
+Python processes, each with its own connections and version detection. `--shared` runs one server for all
+of them, and still answers each session with the configuration of the repository it works in (its
+`.graylog-mcp.toml`, group, focus), as if it had been started there:
+
+```bash
+graylog-mcp login                     # once: tokens saved on this machine, read by the shared server
+graylog-mcp serve --shared            # keep it running (127.0.0.1:8000); see below to start it at login
+graylog-mcp install claude-code --shared   # in each repository: .mcp.json connects to it instead of uvx
+```
+
+The entry it writes sends the repository folder in a header, which the client fills in:
+
+```json
+{ "mcpServers": { "graylog": {
+  "type": "http", "url": "http://127.0.0.1:8000/mcp", "headers": { "X-Graylog-MCP-Repo": "${PWD:-}" } } } }
+```
+
+Cursor and VS Code send `${workspaceFolder}`; other clients can add `?repo=<folder>` to the URL. `repo add
+--shared` and `init --source shared` write the same entry; for every project at once:
+`claude mcp add --transport http graylog --scope user http://127.0.0.1:8000/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
+
+- One Graylog client per instance, shared by every repository using it: one connection pool, one version
+  detection, one stream and field cache.
+- A repository's config is read again every few seconds when used; edits apply without a restart.
+- `--config FILE` (or `GRAYLOG_MCP_CONFIG`) uses that file for every repository; the group and focus still
+  follow the repository. Without a header, a session gets the config of the folder the server runs in.
+- Tokens come from the server's environment or `graylog-mcp login`, not from the client.
+- Claude Desktop already runs one server for all its chats and keeps stdio.
+
+To start it at login on Linux (systemd user unit; on macOS a LaunchAgent running the same command):
+
+```ini
+# ~/.config/systemd/user/graylog-mcp.service, then: systemctl --user enable --now graylog-mcp
+[Service]
+ExecStart=%h/.local/bin/uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp serve --shared
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
 ## Shared HTTP server and Docker
 
 stdio is the default. For one server shared by a team, use streamable HTTP with its own bearer token:
