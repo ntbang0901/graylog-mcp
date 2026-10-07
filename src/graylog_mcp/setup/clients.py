@@ -16,12 +16,17 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from graylog_mcp import secrets
 
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 PYPI_PACKAGE = "graylog-mcp"
 SERVER_NAME = "graylog"
+SOURCES = ("git", "pypi", "local", "shared")  # shared: connect to 'graylog-mcp serve --shared' instead of starting it
+SHARED_URL = "http://127.0.0.1:8000/mcp"
+REPO_HEADER = "X-Graylog-MCP-Repo"  # graylog_mcp.shared.REPO_HEADER (not imported: it pulls in the server)
+HTTP_TOKEN_ENV = "GRAYLOG_MCP_HTTP_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ CLIENTS: dict[str, Client] = {
 
 
 def command(source: str = "git") -> tuple[str, list[str]]:
+    if source == "shared":
+        raise ValueError("the shared server is reached by URL, not started by the client")
     if source == "pypi":
         return "uvx", [PYPI_PACKAGE]
     if source == "local":
@@ -93,8 +100,11 @@ def server_entry(
     secret_envs: list[str],
     source: str = "git",
     with_secrets: bool = False,
+    url: str = SHARED_URL,
 ) -> dict[str, Any]:
     spec = CLIENTS[client]
+    if source == "shared":
+        return shared_entry(client, url)
     cmd, args = command(source)
     env: dict[str, str] = {}
     for name in secret_envs:
@@ -117,9 +127,38 @@ def server_entry(
     return entry
 
 
-def claude_code_command(secret_envs: list[str] | None = None, source: str = "git", scope: str = "user") -> str:
+def _needs_token(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return bool(secrets.get(HTTP_TOKEN_ENV)) or host not in ("127.0.0.1", "localhost", "::1")
+
+
+def shared_entry(client: str, url: str = SHARED_URL) -> dict[str, Any]:
+    """An entry connecting to the shared server, telling it which repository this client works in."""
+    spec = CLIENTS[client]
+    if spec.env_style == "none":
+        raise ValueError(
+            f"{spec.title} runs one server for all its chats already; --source shared is for clients that start "
+            "one per session or project (claude-code, cursor, vscode)"
+        )
+    # Claude Code expands ${PWD} (the folder it runs in; the server walks up to the repository root),
+    # Cursor and VS Code ${workspaceFolder}. The token stays a reference to the developer's variable.
+    folder = "${PWD:-}" if spec.env_style == "dollar" else "${workspaceFolder}"
+    headers = {REPO_HEADER: folder}
+    if _needs_token(url):
+        ref = "${" + HTTP_TOKEN_ENV + ":-}" if spec.env_style == "dollar" else "${env:" + HTTP_TOKEN_ENV + "}"
+        headers["Authorization"] = "Bearer " + ref
+    entry: dict[str, Any] = {"url": url, "headers": headers}
+    return entry if client == "cursor" else {"type": "http", **entry}
+
+
+def claude_code_command(
+    secret_envs: list[str] | None = None, source: str = "git", scope: str = "user", url: str = SHARED_URL
+) -> str:
     """`claude mcp add` for all projects. No --env: a shell would expand "$VAR" and write the secret itself
     into the user's Claude config. The server reads the secrets saved by `graylog-mcp login` instead."""
+    if source == "shared":  # single quotes: Claude Code expands the variables, not the shell
+        headers = " ".join(f"--header '{k}: {v}'" for k, v in shared_entry("claude-code", url)["headers"].items())
+        return f"claude mcp add --transport http {SERVER_NAME} --scope {scope} {url} {headers}"
     cmd, args = command(source)
     return f"claude mcp add {SERVER_NAME} --scope {scope} -- {cmd} {' '.join(args)}".strip()
 
@@ -145,13 +184,14 @@ def install(
     source: str = "git",
     with_secrets: bool = False,
     dry_run: bool = False,
+    url: str = SHARED_URL,
 ) -> InstallResult:
     """Add or replace the server entry in the client's config file, keeping everything else."""
     spec = CLIENTS[client]
     if scope not in spec.scopes:
         raise ValueError(f"{spec.title} supports scope {', '.join(spec.scopes)}, not {scope!r}")
     path = config_path(client, scope, project_dir)
-    entry = server_entry(client, scope, project_dir, config_file, secret_envs, source, with_secrets)
+    entry = server_entry(client, scope, project_dir, config_file, secret_envs, source, with_secrets, url)
     data: dict[str, Any] = {}
     if path.exists():
         text = path.read_text(encoding="utf-8").strip()
