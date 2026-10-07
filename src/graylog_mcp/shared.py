@@ -10,6 +10,7 @@ versions and stream/field caches are shared by every repository using the same G
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from graylog_mcp.backends import Graylog
-from graylog_mcp.config import Config, ConfigError, InstanceConfig, load_config
+from graylog_mcp.config import Config, ConfigError, InstanceConfig, find_project_config, load_config
 from graylog_mcp.tools import App
 
 log = logging.getLogger(__name__)
@@ -61,8 +62,9 @@ class _Entry:
 class AppPool:
     """The App of each repository, loaded on first use and reloaded when its configuration changes.
 
-    ``config_path`` (``--config`` or ``GRAYLOG_MCP_CONFIG``) is used for every repository; otherwise each one
-    uses its own ``.graylog-mcp.toml`` (or the user config). ``default`` serves requests naming no repository.
+    A repository uses its own ``.graylog-mcp.toml``; one without it uses ``config_path`` (the server's
+    ``--config``, e.g. the company file listing every group and its repositories), else the user config.
+    The group and focus always follow the repository. ``default`` serves requests naming no repository.
     """
 
     def __init__(self, config_path: str | None = None, default: Config | None = None, transport: Any = None):
@@ -106,8 +108,9 @@ class AppPool:
         return entry.app
 
     def _load(self, repo: Path, previous: _Entry | None, now: float) -> _Entry:
+        own = find_project_config(repo) is not None or bool(os.environ.get("GRAYLOG_MCP_CONFIG"))
         try:
-            config = load_config(self.config_path, repo_dir=repo)
+            config = load_config(None if own else self.config_path, repo_dir=repo)
         except ConfigError as exc:
             if previous is None or previous.error != str(exc):
                 log.warning("repository %s: %s", repo, exc)

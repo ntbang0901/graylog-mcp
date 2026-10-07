@@ -231,3 +231,93 @@ def install(
             shutil.copy2(path, backup)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return InstallResult(path=path, backup=backup, replaced=replaced, entry=entry)
+
+
+# ----------------------------------------------------------------------------- Claude Code, one registration
+
+
+def claude_binary() -> str | None:
+    return shutil.which("claude")
+
+
+def claude_config_path() -> Path:
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (Path(base).expanduser() if base else Path.home()) / ".claude.json"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _is_http_to(entry: Any, url: str) -> bool:
+    return isinstance(entry, dict) and entry.get("url") == url
+
+
+def _project_entry(folder: Path) -> Any:
+    servers = _read_json(folder / ".mcp.json").get("mcpServers")
+    return servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+
+
+def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None) -> dict[str, Any]:
+    """Whether Claude Code reaches the shared server in every project.
+
+    ``stdio_projects``: folders whose committed .mcp.json starts graylog-mcp itself (uvx), without a private
+    override pointing to the shared server; Claude Code prefers a project's entry to the user-level one.
+    Looks at every project Claude Code knows (~/.claude.json) plus ``folders``.
+    """
+    config = _read_json(claude_config_path())
+    user = (config.get("mcpServers") or {}).get(SERVER_NAME)
+    raw_projects = config.get("projects")
+    projects: dict[str, Any] = raw_projects if isinstance(raw_projects, dict) else {}
+    candidates = {Path(p) for p in projects} | {Path(f) for f in folders or []}
+    stdio = []
+    for folder in sorted(candidates):
+        entry = _project_entry(folder)
+        if not isinstance(entry, dict) or entry.get("url"):
+            continue
+        local = ((projects.get(str(folder)) or {}).get("mcpServers") or {}).get(SERVER_NAME)
+        if not _is_http_to(local, url):
+            stdio.append(str(folder))
+    return {
+        "cli": claude_binary() is not None,
+        "registered": _is_http_to(user, url),
+        "user_entry": bool(user),
+        "stdio_projects": stdio,
+        "command": claude_code_command([], "shared", url=url),
+    }
+
+
+def register_claude_code(url: str = SHARED_URL, folders: list[Path] | None = None, runner: Any = None) -> dict:
+    """Register the shared server in Claude Code for every project (user scope), and override the projects
+    whose .mcp.json still starts graylog-mcp itself, privately (local scope: the committed file is untouched)."""
+    import subprocess
+
+    claude = claude_binary()
+    if claude is None:
+        raise ValueError(
+            f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
+        )
+    run = runner or (lambda cmd, **kw: subprocess.run(cmd, capture_output=True, text=True, check=False, **kw))
+    headers = [h for k, v in shared_entry("claude-code", url)["headers"].items() for h in ("--header", f"{k}: {v}")]
+    status = claude_code_status(url, folders)
+    done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
+    if not status["registered"]:
+        if status["user_entry"]:
+            run([claude, "mcp", "remove", SERVER_NAME, "--scope", "user"])
+        added = run([claude, "mcp", "add", "--transport", "http", "--scope", "user", SERVER_NAME, url, *headers])
+        if added.returncode != 0:
+            done["errors"].append(f"user: {(added.stderr or added.stdout).strip()}")
+        done["user"] = added.returncode == 0
+    for folder in status["stdio_projects"]:
+        run([claude, "mcp", "remove", SERVER_NAME, "--scope", "local"], cwd=folder)
+        added = run([claude, "mcp", "add", "--transport", "http", "--scope", "local", SERVER_NAME, url, *headers],
+                    cwd=folder)  # fmt: skip
+        if added.returncode == 0:
+            done["projects"].append(folder)
+        else:
+            done["errors"].append(f"{folder}: {(added.stderr or added.stdout).strip()}")
+    return done
