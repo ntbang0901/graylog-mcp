@@ -17,6 +17,7 @@ from graylog_mcp import __version__, rca, scan, tools
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
+from graylog_mcp.shared import AppPool
 from graylog_mcp.tools import App
 
 log = logging.getLogger(__name__)
@@ -112,12 +113,22 @@ Streams = Annotated[
 ]
 
 
-def build_server(app: App) -> MCPServer:
+def build_server(app: App | AppPool) -> MCPServer:
+    """``app`` serves every call, or with a pool (shared server) the App of the caller's repository."""
+    current: Callable[[], App]
+    startup: App | None
+    if isinstance(app, AppPool):
+        current, startup = app.current, app.default
+    else:
+        single = app
+        current, startup = (lambda: single), single
+
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-        status = await tools.list_instances(app)  # detect versions once, cached afterwards
-        for inst in status["instances"]:
-            log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
+        if startup is not None:
+            status = await tools.list_instances(startup)  # detect versions once, cached afterwards
+            for inst in status["instances"]:
+                log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
         try:
             yield
         finally:
@@ -143,7 +154,7 @@ def build_server(app: App) -> MCPServer:
 
     async def call(fn: Callable[..., Any], **kwargs: Any) -> str:
         try:
-            result = fn(app, **kwargs)
+            result = fn(current(), **kwargs)
             if hasattr(result, "__await__"):
                 result = await result
         except (GraylogError, ConfigError, ValueError) as exc:

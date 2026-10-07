@@ -8,13 +8,14 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from graylog_mcp import __version__
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError, load_config
+from graylog_mcp.config import Config, ConfigError, HttpConfig, load_config
 
 log = logging.getLogger("graylog_mcp")
 
@@ -55,35 +56,84 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def run_http(config: Config, host: str, port: int, path: str, allow_no_auth: bool) -> None:
-    import uvicorn
+def build_http_app(
+    config: Config | None,
+    host: str,
+    path: str,
+    allow_no_auth: bool,
+    shared: bool = False,
+    config_path: str | None = None,
+    transport: Any = None,
+) -> Any:
+    """The ASGI app of the streamable HTTP transport. ``shared``: one process for every client, each answered
+    with the configuration of the repository it names (see graylog_mcp.shared); ``config`` is then the default
+    for clients naming none, and may be None."""
     from mcp.server.transport_security import TransportSecuritySettings
     from starlette.responses import JSONResponse
 
-    from graylog_mcp.server import build_server, create_app
+    from graylog_mcp.server import build_server
+    from graylog_mcp.shared import AppPool, RepoContext
+    from graylog_mcp.tools import App
 
-    token = config.http.auth_token
+    if config is None and not shared:
+        raise ConfigError("no configuration")
+    http = config.http if config is not None else HttpConfig(auth_token=_http_token_from_env())
+    token = http.auth_token
     if not token and not (_is_loopback(host) or allow_no_auth):
         raise ConfigError(
             f"refusing to serve on {host} without authentication: set GRAYLOG_MCP_HTTP_TOKEN "
             "(or http.auth_token_env), or pass --allow-no-auth behind a trusted proxy"
         )
-    server = build_server(create_app(config))
+    if shared:
+        server = build_server(AppPool(config_path, default=config, transport=transport))
+    else:
+        assert config is not None
+        server = build_server(App.create(config, transport))
 
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Any) -> JSONResponse:
         return JSONResponse({"status": "ok", "version": __version__})
 
     security = None
-    if config.http.allowed_hosts:
+    if http.allowed_hosts:
         security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=True, allowed_hosts=list(config.http.allowed_hosts)
+            enable_dns_rebinding_protection=True, allowed_hosts=list(http.allowed_hosts)
         )
     app: Any = server.streamable_http_app(streamable_http_path=path, host=host, transport_security=security)
+    if shared:
+        app = RepoContext(app)
     if token:
         app = BearerAuth(app, token)
-    log.info("serving MCP over streamable HTTP on http://%s:%s%s (auth: %s)", host, port, path, bool(token))
+    return app
+
+
+def run_http(
+    config: Config | None,
+    host: str,
+    port: int,
+    path: str,
+    allow_no_auth: bool,
+    shared: bool = False,
+    config_path: str | None = None,
+) -> None:
+    import uvicorn
+
+    app = build_http_app(config, host, path, allow_no_auth, shared, config_path)
+    log.info(
+        "serving MCP over streamable HTTP on http://%s:%s%s (auth: %s%s)",
+        host,
+        port,
+        path,
+        isinstance(app, BearerAuth),
+        ", shared by every repository" if shared else "",
+    )
     uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True)
+
+
+def _http_token_from_env() -> str | None:
+    from graylog_mcp import secrets
+
+    return secrets.get("GRAYLOG_MCP_HTTP_TOKEN") or None
 
 
 async def _check(config: Config) -> int:
@@ -110,6 +160,8 @@ usage: graylog-mcp [serve] [options]          run the MCP server (default)
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
        graylog-mcp ui [options]               local admin web UI
 
+One process for every session: 'graylog-mcp serve --shared', then 'graylog-mcp install CLIENT --shared'.
+
 Run 'graylog-mcp COMMAND --help' for the options of a command.
 """
 
@@ -128,33 +180,50 @@ def _serve(argv: list[str]) -> int:
     parser.add_argument(
         "--allow-no-auth", action="store_true", help="serve HTTP on a non-loopback host without a token"
     )
+    parser.add_argument(
+        "--shared",
+        action="store_true",
+        help="one HTTP server for every session and repository: each client sends its repository folder "
+        "(X-Graylog-MCP-Repo header) and gets that repository's config; implies --transport streamable-http",
+    )
     parser.add_argument("--check", action="store_true", help="validate config, connect, print detected versions, exit")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--version", action="version", version=f"graylog-mcp {__version__}")
     args = parser.parse_args(argv)
 
     _setup_logging(args.log_level)
+    if args.shared:
+        args.transport = "streamable-http"
+    config: Config | None
     try:
         config = load_config(args.config)
     except ConfigError as exc:
-        print(f"graylog-mcp: configuration error: {exc}", file=sys.stderr)
-        print("hint: run 'graylog-mcp init' for a guided setup", file=sys.stderr)
-        return 2
+        if not (args.shared and not args.check and not args.config and not os.environ.get("GRAYLOG_MCP_CONFIG")):
+            print(f"graylog-mcp: configuration error: {exc}", file=sys.stderr)
+            print("hint: run 'graylog-mcp init' for a guided setup", file=sys.stderr)
+            return 2
+        log.info("no default configuration here (%s): each client must name its repository", exc)
+        config = None
 
     try:
         if args.check:
+            assert config is not None
             return asyncio.run(_check(config))
         if args.transport == "stdio":
+            assert config is not None
             from graylog_mcp.server import build_server, create_app
 
             build_server(create_app(config)).run("stdio")
         else:
+            http = config.http if config is not None else HttpConfig()
             run_http(
                 config,
-                host=args.host or config.http.host,
-                port=args.port or config.http.port,
-                path=args.path or config.http.path,
+                host=args.host or http.host,
+                port=args.port or http.port,
+                path=args.path or http.path,
                 allow_no_auth=args.allow_no_auth,
+                shared=args.shared,
+                config_path=args.config,
             )
     except ConfigError as exc:
         print(f"graylog-mcp: configuration error: {exc}", file=sys.stderr)
@@ -177,7 +246,12 @@ def _init(argv: list[str]) -> int:
     parser.add_argument("--packs", help="country redaction packs, comma separated (vn,us,eu,uk,in)")
     parser.add_argument("--client", action="append", help="register in this client (repeatable, 'none' to skip)")
     parser.add_argument("--no-detect", action="store_true", help="skip field detection")
-    parser.add_argument("--source", choices=["git", "pypi", "local"], default="git", help="how clients start it")
+    parser.add_argument(
+        "--source",
+        choices=["git", "pypi", "local", "shared"],
+        default="git",
+        help="how clients start it; shared: connect to 'graylog-mcp serve --shared' (one process for every session)",
+    )
     parser.add_argument("--force", action="store_true", help="start from an empty config")
     parser.add_argument("--yes", "-y", action="store_true", help="non-interactive: accept defaults")
     args = parser.parse_args(argv)
@@ -297,6 +371,7 @@ def _repo(argv: list[str]) -> int:
     add.add_argument("group")
     add.add_argument("repo", nargs="?", default=".", help="folder (default: current directory) or git URL")
     add.add_argument("--no-setup", action="store_true", help="do not write .graylog-mcp.toml / .mcp.json in it")
+    add.add_argument("--shared", action="store_true", help=".mcp.json connects to 'graylog-mcp serve --shared'")
     rm = sub.add_parser("remove", help="detach a repository from a group")
     rm.add_argument("group")
     rm.add_argument("repo")
@@ -355,7 +430,8 @@ def _repo(argv: list[str]) -> int:
                 project = configfile.setup_repo(folder, path, args.group)
                 print(f"  ✓ wrote {project} (includes {path.name}, default group {args.group})")
                 names = configfile.secret_envs(data, path.parent) or ["GRAYLOG_TOKEN"]
-                installed = clients.install("claude-code", "project", folder, project, names)
+                source = "shared" if args.shared else "git"
+                installed = clients.install("claude-code", "project", folder, project, names, source)
                 print(f"  ✓ Claude Code: {installed.path}")
     except ConfigError as exc:
         print(f"graylog-mcp repo: {exc}", file=sys.stderr)
@@ -464,7 +540,14 @@ def _install(argv: list[str]) -> int:
     parser.add_argument("--scope", choices=["project", "user"], help="default: the client's usual scope")
     parser.add_argument("--project-dir", default=".")
     parser.add_argument("--config", "-c", help="config file (default: discovered .graylog-mcp.toml)")
-    parser.add_argument("--source", choices=["git", "pypi", "local"], default="git")
+    parser.add_argument(
+        "--source",
+        choices=["git", "pypi", "local", "shared"],
+        default="git",
+        help="how the client starts the server; shared: connect to 'graylog-mcp serve --shared' instead",
+    )
+    parser.add_argument("--shared", action="store_const", const="shared", dest="source", help="same as --source shared")
+    parser.add_argument("--url", default=None, help="URL of the shared server (default http://127.0.0.1:8000/mcp)")
     parser.add_argument("--with-secrets", action="store_true", help="claude-desktop: copy current token values")
     parser.add_argument("--dry-run", action="store_true", help="print the entry, write nothing")
     args = parser.parse_args(argv)
@@ -479,7 +562,15 @@ def _install(argv: list[str]) -> int:
     scope = args.scope or spec.scopes[0]
     try:
         result = clients.install(
-            args.client, scope, project_dir, config_file, secrets, args.source, args.with_secrets, args.dry_run
+            args.client,
+            scope,
+            project_dir,
+            config_file,
+            secrets,
+            args.source,
+            args.with_secrets,
+            args.dry_run,
+            url=args.url or clients.SHARED_URL,
         )
     except ValueError as exc:
         print(f"graylog-mcp install: {exc}", file=sys.stderr)
@@ -493,10 +584,14 @@ def _install(argv: list[str]) -> int:
         print(f"  previous file saved as {result.backup}")
     if spec.note:
         print(f"  {spec.note}")
-    if config_file is None:
+    if args.source == "shared":
+        print("  the client connects to the shared server: keep 'graylog-mcp serve --shared' running")
+        print("  (it reads each repository's .graylog-mcp.toml and the tokens saved by 'graylog-mcp login')")
+    elif config_file is None:
         print("  no .graylog-mcp.toml found: the server will use GRAYLOG_URL/GRAYLOG_TOKEN from the environment")
     if args.client == "claude-code":
-        print(f"  for all your projects instead: {clients.claude_code_command(secrets, args.source)}")
+        command = clients.claude_code_command(secrets, args.source, url=args.url or clients.SHARED_URL)
+        print(f"  for all your projects instead: {command}")
     return 0
 
 

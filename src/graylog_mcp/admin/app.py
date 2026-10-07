@@ -599,17 +599,22 @@ def build_app(state: AdminState) -> Starlette:
         names = configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"]
         config_file = state.path if state.path.exists() else None
         out = {}
+
+        def snippet(key: str, scope: str) -> str:
+            try:
+                return clients.snippet(
+                    key, clients.server_entry(key, scope, state.project_dir, config_file, names, source)
+                )
+            except ValueError as exc:  # e.g. Claude Desktop cannot use the shared server
+                return f"// {exc}"
+
         for key, spec in clients.CLIENTS.items():
             out[key] = {
-                scope: {
-                    "path": str(clients.config_path(key, scope, state.project_dir)),
-                    "snippet": clients.snippet(
-                        key, clients.server_entry(key, scope, state.project_dir, config_file, names, source)
-                    ),
-                }
+                scope: {"path": str(clients.config_path(key, scope, state.project_dir)), "snippet": snippet(key, scope)}
                 for scope in spec.scopes
             }
         out["claude-code-command"] = clients.claude_code_command(names, source)  # type: ignore[assignment]
+        out["shared"] = await clients.probe_shared()
         return JSONResponse(out)
 
     async def install_client(request: Request) -> Response:

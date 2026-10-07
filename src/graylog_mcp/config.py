@@ -1126,12 +1126,13 @@ def find_project_config(start: Path | None = None) -> Path | None:
     return None
 
 
-def default_config_path() -> Path | None:
-    """GRAYLOG_MCP_CONFIG, else a project config (.graylog-mcp.toml), else the user config."""
+def default_config_path(start: Path | None = None) -> Path | None:
+    """GRAYLOG_MCP_CONFIG, else a project config (.graylog-mcp.toml from ``start`` or the current directory up
+    to the repository root), else the user config."""
     env = os.environ.get("GRAYLOG_MCP_CONFIG")
     if env:
         return Path(env).expanduser()
-    project = find_project_config()
+    project = find_project_config(start)
     if project is not None:
         return project
     base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
@@ -1143,7 +1144,7 @@ def load_config(
     path: str | os.PathLike[str] | None = None, require_usable: bool = True, repo_dir: Path | None = None
 ) -> Config:
     """Load and validate the configuration. Raises ``ConfigError`` on any problem."""
-    file_path = Path(path).expanduser() if path else default_config_path()
+    file_path = Path(path).expanduser() if path else default_config_path(repo_dir)
     data: dict[str, Any] = {}
     source = "env"
     if file_path is not None:
