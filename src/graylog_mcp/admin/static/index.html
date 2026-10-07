@@ -652,20 +652,23 @@ function renderGroups() {
       <div class="actions"><button class="btn primary" onclick="openDrawer(null)">+ Add an environment in a group</button></div></div>`;
     return;
   }
+  const sharedUp = !!(STATE.shared && STATE.shared.running);
   $("groupCards").innerHTML = groups.map((g) => {
     const repos = (g.repos || []).map((r) => {
       const meta = r.kind === "url" ? '<span class="badge">matched by git remote</span>'
         : !r.exists ? '<span class="badge fail">folder not found</span>'
         : [r.remote ? `<span class="badge mono">${esc(r.remote)}</span>` : '<span class="badge">no git remote</span>',
            r.project_config ? '<span class="badge ok">.graylog-mcp.toml</span>' : '<span class="badge warn">not set up</span>',
-           r.claude_code ? '<span class="badge ok">Claude Code</span>' : "",
+           r.claude_code === "shared" ? '<span class="badge ok">Claude Code · shared server</span>'
+             : r.claude_code ? `<span class="badge${sharedUp ? " warn" : " ok"}">Claude Code · uvx, one process per session</span>` : "",
            r.project_config ? focusBadge(r.focus) : ""].join(" ");
-      const canSetup = r.kind === "path" && r.exists && !(r.project_config && r.claude_code);
+      const toShared = sharedUp && r.claude_code === "stdio";
+      const canSetup = r.kind === "path" && r.exists && (!(r.project_config && r.claude_code) || toShared);
       const canFocus = r.kind === "path" && r.exists;
       const f = r.focus || {};
       const svc = f.service === false ? "" : Array.isArray(f.service) ? f.service.join(", ") : (f.service || "");
       return `<div class="repo"><div><span class="mono">${esc(r.entry)}</span><div class="meta">${meta}</div></div>
-        <div class="actions">${canSetup ? `<button class="btn sm" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">Set up</button>` : ""}
+        <div class="actions">${canSetup ? `<button class="btn sm${toShared ? " primary" : ""}" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">${toShared ? "Use shared server" : "Set up"}</button>` : ""}
           ${canFocus ? `<button class="btn sm" data-focusrepo="${esc(r.entry)}">Focus</button>` : ""}
           <button class="btn sm ghost danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}">Remove</button></div>
         ${canFocus ? `<div class="focus-form hidden" data-focusform="${esc(r.entry)}">
@@ -700,8 +703,9 @@ function renderGroups() {
       </div>
       <div class="actions small" style="margin-top:8px">
         <label class="check small"><input type="checkbox" class="rproject" checked>write .graylog-mcp.toml in it</label>
-        <label class="check small"><input type="checkbox" class="rclaude" checked>register Claude Code (.mcp.json)</label>
+        <label class="check small"><input type="checkbox" class="rclaude" checked>register Claude Code (.mcp.json${sharedUp ? ", connects to the shared server" : ""})</label>
       </div>
+      ${sharedUp ? "" : '<div class="hint small muted" style="margin-top:6px">Claude Code will start one process per session (uvx). Run <span class="mono">graylog-mcp serve --shared</span> and reload this page to share one process instead.</div>'}
     </div>`;
   }).join("");
 }
@@ -743,9 +747,9 @@ $("groupCards").addEventListener("click", async (ev) => {
     const path = card.querySelector(".rpath").value.trim();
     if (!path) throw new Error("Enter the folder of the repository");
     const r = await api("/api/repos", "POST", {group: add.dataset.addrepo, repo: path, project_config: card.querySelector(".rproject").checked, claude_code: card.querySelector(".rclaude").checked});
-    toast(`Added to ${add.dataset.addrepo}${r.remote ? ` (${r.remote})` : ""}${r.project_config ? ", set up" : ""}`); await loadState();
+    toast(`Added to ${add.dataset.addrepo}${r.remote ? ` (${r.remote})` : ""}${r.project_config ? ", set up" : ""}${r.source === "shared" ? ", via the shared server" : ""}`); await loadState();
   });
-  if (setup) busy(setup, async () => { await api("/api/repos/setup", "POST", {group: setup.dataset.group, repo: setup.dataset.setuprepo}); toast("Repository set up"); await loadState(); });
+  if (setup) busy(setup, async () => { const r = await api("/api/repos/setup", "POST", {group: setup.dataset.group, repo: setup.dataset.setuprepo}); toast(r.source === "shared" ? "Claude Code now connects to the shared server" : "Repository set up"); await loadState(); });
   if (rm && await confirmBox(`Remove ${rm.dataset.rmrepo}?`, `It is detached from ${rm.dataset.group}. Files in the repository are not touched.`, "Remove", true)) {
     try { await api("/api/repos/remove", "POST", {group: rm.dataset.group, repo: rm.dataset.rmrepo}); toast("Removed"); await loadState(); } catch (e) { toast(e.message, "fail"); }
   }
