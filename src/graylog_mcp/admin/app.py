@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import ipaddress
+import json
 import secrets
 import socket
 import time
@@ -183,6 +184,25 @@ def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _claude_code_mode(mcp: Path) -> str | None:
+    """How the repository's .mcp.json reaches graylog-mcp: 'shared' (HTTP), 'stdio' (starts it), or None."""
+    try:
+        entry = json.loads(mcp.read_text(encoding="utf-8")).get("mcpServers", {}).get(clients.SERVER_NAME)
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(entry, dict):
+        return None
+    return "shared" if entry.get("url") else "stdio"
+
+
+async def _client_source(body: dict[str, Any]) -> str:
+    """The source asked for, else the shared server when it is running, else uvx from GitHub."""
+    source = str(body.get("source") or "")
+    if source in clients.SOURCES:
+        return source
+    return "shared" if (await clients.probe_shared())["running"] else "git"
+
+
 def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
     """What we know about one repository entry of a group (a local path or a git URL)."""
     if not is_repo_path(entry):
@@ -192,8 +212,7 @@ def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
     if path.is_dir():
         out["remote"] = detect_repo(path).remote
         out["project_config"] = (path / ".graylog-mcp.toml").is_file()
-        mcp = path / ".mcp.json"
-        out["claude_code"] = mcp.is_file() and '"graylog"' in mcp.read_text(encoding="utf-8", errors="replace")
+        out["claude_code"] = _claude_code_mode(path / ".mcp.json")
         out["focus"] = configfile.repo_focus(path)
     return out
 
@@ -244,6 +263,7 @@ def build_app(state: AdminState) -> Starlette:
         return JSONResponse(
             {
                 "version": __version__,
+                "shared": await clients.probe_shared(),
                 "project_dir": str(state.project_dir),
                 "config_path": str(state.path),
                 "exists": state.path.exists(),
@@ -408,10 +428,17 @@ def build_app(state: AdminState) -> Starlette:
                 if body.get("claude_code"):
                     names = configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"]
                     project_file = path / ".graylog-mcp.toml"
+                    source = await _client_source(body)
                     installed = clients.install(
-                        "claude-code", "project", path, project_file if project_file.exists() else state.path, names
+                        "claude-code",
+                        "project",
+                        path,
+                        project_file if project_file.exists() else state.path,
+                        names,
+                        source,
                     )
                     result["claude_code"] = str(installed.path)
+                    result["source"] = source
         except (ConfigError, ValueError) as exc:
             return _err(str(exc))
         return JSONResponse(result)
@@ -425,13 +452,16 @@ def build_app(state: AdminState) -> Starlette:
         path = resolve_repo_path(entry, state.path.parent)
         if not path.is_dir():
             return _err(f"folder not found: {path}")
+        source = await _client_source(body)
         try:
             project = configfile.setup_repo(path, state.path, group)
             names = configfile.secret_envs(state.raw(), state.path.parent) or ["GRAYLOG_TOKEN"]
-            installed = clients.install("claude-code", "project", path, project, names)
+            installed = clients.install("claude-code", "project", path, project, names, source)
         except (ConfigError, ValueError) as exc:
             return _err(str(exc))
-        return JSONResponse({"ok": True, "project_config": str(project), "claude_code": str(installed.path)})
+        return JSONResponse(
+            {"ok": True, "project_config": str(project), "claude_code": str(installed.path), "source": source}
+        )
 
     async def focus_repo(request: Request) -> Response:
         """Set what the MCP server searches by default inside a repository ([focus] in its .graylog-mcp.toml)."""
