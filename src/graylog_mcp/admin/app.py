@@ -83,6 +83,7 @@ class AdminState:
         self.token = token
         self.transport = transport
         self.allowed_hosts = allowed_hosts
+        self.server_port: int | None = None  # set when served by the shared server itself (graylog-mcp start)
         self._app: tools.App | None = None
         self._app_key: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
@@ -184,26 +185,62 @@ def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _claude_code_mode(mcp: Path) -> str | None:
-    """How the repository's .mcp.json reaches graylog-mcp: 'shared' (HTTP), 'stdio' (starts it), or None."""
+def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None:
+    """How Claude Code reaches graylog-mcp in this repository: 'shared' (the shared server, through the
+    repository's .mcp.json, a private override or the registration for every project), 'stdio' (its
+    .mcp.json starts a process per session), or None (not registered)."""
     try:
-        entry = json.loads(mcp.read_text(encoding="utf-8")).get("mcpServers", {}).get(clients.SERVER_NAME)
+        servers = json.loads((folder / ".mcp.json").read_text(encoding="utf-8")).get("mcpServers", {})
+        entry = servers.get(clients.SERVER_NAME) if isinstance(servers, dict) else None
     except (OSError, ValueError, AttributeError):
-        return None
-    if not isinstance(entry, dict):
-        return None
-    return "shared" if entry.get("url") else "stdio"
+        entry = None
+    if isinstance(entry, dict):
+        if entry.get("url"):
+            return "shared"
+        return "stdio" if claude is None or str(folder) in claude["stdio_projects"] else "shared"
+    return "shared" if claude and claude["registered"] else None
 
 
-async def _client_source(body: dict[str, Any]) -> str:
+def _shared_url(state: AdminState) -> str:
+    from graylog_mcp.setup import service
+
+    port = state.server_port or int(service.saved_settings().get("port") or service.DEFAULT_PORT)
+    return service.server_url(port)
+
+
+async def _shared_running(state: AdminState) -> bool:
+    return state.server_port is not None or (await clients.probe_shared(_shared_url(state)))["running"]
+
+
+async def _client_source(state: AdminState, body: dict[str, Any]) -> str:
     """The source asked for, else the shared server when it is running, else uvx from GitHub."""
     source = str(body.get("source") or "")
     if source in clients.SOURCES:
         return source
-    return "shared" if (await clients.probe_shared())["running"] else "git"
+    return "shared" if await _shared_running(state) else "git"
 
 
-def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
+async def _register_repo(state: AdminState, folder: Path, project: Path, names: list[str], source: str) -> str:
+    """Make Claude Code reach graylog-mcp in this repository. Shared: the registration for every project, plus
+    a private override when the repository's .mcp.json starts its own process (the committed file is kept)."""
+    if source != "shared":
+        return str(clients.install("claude-code", "project", folder, project, names, source).path)
+    done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder])
+    if done["errors"]:
+        raise ValueError("; ".join(done["errors"]))
+    return "every project (shared server)"
+
+
+async def _shared_status(state: AdminState) -> dict[str, Any]:
+    from graylog_mcp.setup import service
+
+    if state.server_port is not None:  # served by the shared server itself
+        have = service.installed()
+        return {"url": _shared_url(state), "running": True, "version": have.version, "commit": have.commit}
+    return await clients.probe_shared(_shared_url(state))
+
+
+def _repo_view(entry: str, base_dir: Path, claude: dict[str, Any] | None = None) -> dict[str, Any]:
     """What we know about one repository entry of a group (a local path or a git URL)."""
     if not is_repo_path(entry):
         return {"entry": entry, "kind": "url"}
@@ -212,21 +249,23 @@ def _repo_view(entry: str, base_dir: Path) -> dict[str, Any]:
     if path.is_dir():
         out["remote"] = detect_repo(path).remote
         out["project_config"] = (path / ".graylog-mcp.toml").is_file()
-        out["claude_code"] = _claude_code_mode(path / ".mcp.json")
+        out["claude_code"] = _claude_code_mode(path, claude)
         out["focus"] = configfile.repo_focus(path)
     return out
 
 
-def _groups_view(config: Config | None, base_dir: Path) -> list[dict[str, Any]]:
+def _groups_view(config: Config | None, base_dir: Path, url: str | None = None) -> list[dict[str, Any]]:
     if config is None:
         return []
+    folders = [resolve_repo_path(r, base_dir) for g in config.groups.values() for r in g.repos if is_repo_path(r)]
+    claude = clients.claude_code_status(url, folders) if url else None
     return [
         {
             "name": g.name,
             "description": g.description,
             "default_environment": g.default_environment,
             "environments": sorted(i.environment or "" for i in config.instances.values() if i.group == g.name),
-            "repos": [_repo_view(r, base_dir) for r in g.repos],
+            "repos": [_repo_view(r, base_dir, claude) for r in g.repos],
         }
         for g in config.groups.values()
     ]
@@ -260,17 +299,18 @@ def build_app(state: AdminState) -> Starlette:
                     "paths": {s: str(clients.config_path(key, s, state.project_dir)) for s in spec.scopes},
                 }
             )
+        shared = await _shared_status(state)
         return JSONResponse(
             {
                 "version": __version__,
-                "shared": await clients.probe_shared(),
+                "shared": shared,
                 "project_dir": str(state.project_dir),
                 "config_path": str(state.path),
                 "exists": state.path.exists(),
                 "error": error,
                 "data": configfile.scrub(data),
                 "instances": _instances_view(data, config) if config or not data else _raw_instances_view(data),
-                "groups": _groups_view(config, state.path.parent),
+                "groups": _groups_view(config, state.path.parent, _shared_url(state) if shared["running"] else None),
                 "environments": config.environments if config else {},
                 "default_group": config.default_group if config else None,
                 "secret_envs": [{"name": n, "source": secret_store.source(n)} for n in secret_names],
@@ -428,16 +468,9 @@ def build_app(state: AdminState) -> Starlette:
                 if body.get("claude_code"):
                     names = configfile.secret_envs(data, state.path.parent) or ["GRAYLOG_TOKEN"]
                     project_file = path / ".graylog-mcp.toml"
-                    source = await _client_source(body)
-                    installed = clients.install(
-                        "claude-code",
-                        "project",
-                        path,
-                        project_file if project_file.exists() else state.path,
-                        names,
-                        source,
-                    )
-                    result["claude_code"] = str(installed.path)
+                    source = await _client_source(state, body)
+                    project = project_file if project_file.exists() else state.path
+                    result["claude_code"] = await _register_repo(state, path, project, names, source)
                     result["source"] = source
         except (ConfigError, ValueError) as exc:
             return _err(str(exc))
@@ -452,16 +485,14 @@ def build_app(state: AdminState) -> Starlette:
         path = resolve_repo_path(entry, state.path.parent)
         if not path.is_dir():
             return _err(f"folder not found: {path}")
-        source = await _client_source(body)
+        source = await _client_source(state, body)
         try:
             project = configfile.setup_repo(path, state.path, group)
             names = configfile.secret_envs(state.raw(), state.path.parent) or ["GRAYLOG_TOKEN"]
-            installed = clients.install("claude-code", "project", path, project, names, source)
+            where = await _register_repo(state, path, project, names, source)
         except (ConfigError, ValueError) as exc:
             return _err(str(exc))
-        return JSONResponse(
-            {"ok": True, "project_config": str(project), "claude_code": str(installed.path), "source": source}
-        )
+        return JSONResponse({"ok": True, "project_config": str(project), "claude_code": where, "source": source})
 
     async def focus_repo(request: Request) -> Response:
         """Set what the MCP server searches by default inside a repository ([focus] in its .graylog-mcp.toml)."""
@@ -623,6 +654,79 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         return JSONResponse({"ok": True, "backup": str(backup) if backup else None})
 
+    # ------------------------------------------------------------------ setup checklist (graylog-mcp start)
+
+    def _folders() -> list[Path]:
+        try:
+            config = configfile.validate(state.raw(), base_dir=state.path.parent)
+        except ConfigError:
+            return []
+        entries = [e for g in config.groups.values() for e in g.repos if is_repo_path(e)]
+        return [p for p in (resolve_repo_path(e, state.path.parent) for e in entries) if p.is_dir()]
+
+    async def get_setup(request: Request) -> Response:
+        from graylog_mcp.setup import service
+
+        shared = await _shared_status(state)
+        have = service.installed()
+        autostart = service.Autostart()
+        kind = await asyncio.to_thread(lambda: autostart.kind)
+        out: dict[str, Any] = {
+            "server": {**shared, "embedded": state.server_port is not None},
+            "install": {"version": have.version, "commit": have.commit, "label": have.label, "via": have.via},
+            "autostart": {"kind": kind, "enabled": autostart.enabled},
+            "claude": clients.claude_code_status(_shared_url(state), _folders()),
+            "log": str(service.log_path()),
+        }
+        if request.query_params.get("check") and shared.get("running"):
+            latest = await asyncio.to_thread(service.latest_commit)
+            running = shared.get("commit")
+            out["update"] = {"latest": latest, "available": bool(latest and running and latest != running)}
+        return JSONResponse(out)
+
+    async def setup_claude(_request: Request) -> Response:
+        if not await _shared_running(state):
+            return _err("start the shared server first")
+        try:
+            done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), _folders())
+        except ValueError as exc:
+            return _err(str(exc))
+        if done["errors"]:
+            return _err("; ".join(done["errors"]))
+        return JSONResponse({"ok": True, **done})
+
+    async def setup_autostart(request: Request) -> Response:
+        from graylog_mcp.setup import service
+
+        body = await _body(request)
+        autostart = service.Autostart()
+        if await asyncio.to_thread(lambda: autostart.kind) is None:
+            return _err("starting at login is not supported on this system")
+        port = state.server_port or service.DEFAULT_PORT
+        if body.get("on"):
+            cmd = service.server_command(service.current_command(), port, state.path)
+            await asyncio.to_thread(autostart.install_only, cmd)
+        else:
+            await asyncio.to_thread(autostart.disable, False)  # keeps running until logout
+        return JSONResponse({"ok": True, "enabled": autostart.enabled})
+
+    async def setup_start(_request: Request) -> Response:
+        """From a standalone UI: run 'graylog-mcp start' in the background (it installs and starts the server)."""
+        from graylog_mcp.setup import service
+
+        if await _shared_running(state):
+            return JSONResponse({"ok": True, "already": True})
+        service.spawn_detached([*service.current_command(), "start", "--no-browser", "--config", str(state.path)])
+        return JSONResponse({"ok": True})
+
+    async def setup_update(_request: Request) -> Response:
+        """Install the latest version and restart the server; this page reconnects when it is back."""
+        from graylog_mcp.setup import service
+
+        port = state.server_port or service.DEFAULT_PORT
+        service.spawn_detached([*service.current_command(), "update", "--port", str(port)])
+        return JSONResponse({"ok": True})
+
     async def client_snippets(request: Request) -> Response:
         source = request.query_params.get("source", "git")
         data = state.raw()
@@ -693,6 +797,11 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
+        Route("/api/setup", get_setup),
+        Route("/api/setup/claude", setup_claude, methods=["POST"]),
+        Route("/api/setup/autostart", setup_autostart, methods=["POST"]),
+        Route("/api/setup/start", setup_start, methods=["POST"]),
+        Route("/api/setup/update", setup_update, methods=["POST"]),
         Route("/api/clients", client_snippets),
         Route("/api/clients/install", install_client, methods=["POST"]),
     ]

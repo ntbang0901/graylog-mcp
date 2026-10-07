@@ -142,6 +142,16 @@ tr.group-row td { background: var(--panel-2); font-weight: 600; font-size: 12.5p
 .banner.fail { background: var(--fail-soft); border-color: transparent; color: var(--fail); }
 .banner.info { background: var(--info-soft); border-color: transparent; color: var(--info); }
 .check-list { display: flex; flex-direction: column; }
+.setup-row { display: grid; grid-template-columns: 26px 1fr auto; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line); align-items: center; }
+.setup-row:last-child { border-bottom: 0; }
+.setup-row .state { width: 22px; height: 22px; border-radius: 999px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.setup-row .state.ok { background: var(--ok-soft); color: var(--ok); }
+.setup-row .state.todo { background: var(--warn-soft); color: var(--warn); }
+.setup-row .state.off { background: var(--panel-2); color: var(--muted); }
+.setup-row .what { font-weight: 600; }
+.setup-row .why { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.setup-row .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 640px) { .setup-row { grid-template-columns: 26px 1fr; } .setup-row .actions { grid-column: 2; justify-content: flex-start; } }
 .check-item { display: grid; grid-template-columns: 22px 160px 1fr; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--line); align-items: start; }
 .check-item:last-child { border-bottom: 0; }
 .check-item .icon { font-weight: 700; text-align: center; }
@@ -211,6 +221,11 @@ details[open] summary { margin-bottom: 8px; }
 
       <!-- ============================================================ overview -->
       <section class="page active" id="overview" data-title="Overview" data-sub="Health of every Graylog environment this project can reach">
+        <div class="card" id="setupCard" style="margin-bottom:16px">
+          <div class="card-head"><h2>Setup</h2><span class="muted small" id="setupSummary"></span><span class="spacer"></span>
+            <button class="btn sm" id="setupRefresh">Refresh</button></div>
+          <div id="setupRows"><div class="inline-msg">Checking…</div></div>
+        </div>
         <div class="grid4" id="stats"></div>
         <div id="envGroups"></div>
         <div class="card" style="margin-top:16px">
@@ -408,8 +423,10 @@ function toast(msg, kind = "ok") {
   $("toasts").appendChild(el);
   setTimeout(() => el.remove(), kind === "fail" ? 7000 : 3500);
 }
+// served at / by 'graylog-mcp ui', or at /admin/ by the shared server ('graylog-mcp start')
+const BASE = location.pathname.replace(/\/[^/]*$/, "");
 async function api(path, method = "GET", body) {
-  const res = await fetch(path, {method, headers: {"X-Admin-Token": TOKEN, "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)});
+  const res = await fetch(BASE + path, {method, headers: {"X-Admin-Token": TOKEN, "Content-Type": "application/json"}, body: body === undefined ? undefined : JSON.stringify(body)});
   let data = {};
   try { data = await res.json(); } catch (e) { data = {error: res.statusText}; }
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -470,6 +487,7 @@ async function loadState() {
     ? `<div class="banner fail"><b>✕</b><div><b>The config file has a problem.</b> ${esc(STATE.error)}<div class="small" style="margin-top:4px">Fix it from <a href="#" data-goto="envs">Environments</a> or <a href="#" data-goto="config">Config file</a>.</div></div></div>` : "";
   try { SCOPES = (await api("/api/scope?scope=global")).scopes; } catch (e) { /* invalid config */ }
   renderStats(); renderEnvGroups(); renderEnvTable(); renderGroups(); renderFields(); renderRedaction(); renderPlayground();
+  if (SETUP) renderSetup();
 }
 
 // ------------------------------------------------------------------ overview
@@ -703,9 +721,9 @@ function renderGroups() {
       </div>
       <div class="actions small" style="margin-top:8px">
         <label class="check small"><input type="checkbox" class="rproject" checked>write .graylog-mcp.toml in it</label>
-        <label class="check small"><input type="checkbox" class="rclaude" checked>register Claude Code (.mcp.json${sharedUp ? ", connects to the shared server" : ""})</label>
+        <label class="check small"><input type="checkbox" class="rclaude" checked>${sharedUp ? "connect Claude Code (shared server, nothing written in the repository)" : "register Claude Code (.mcp.json)"}</label>
       </div>
-      ${sharedUp ? "" : '<div class="hint small muted" style="margin-top:6px">Claude Code will start one process per session (uvx). Run <span class="mono">graylog-mcp serve --shared</span> and reload this page to share one process instead.</div>'}
+      ${sharedUp ? "" : '<div class="hint small muted" style="margin-top:6px">Claude Code will start one process per session (uvx). Run <span class="mono">graylog-mcp start</span> (or "Start it" on the Overview page) to share one process instead.</div>'}
     </div>`;
   }).join("");
 }
@@ -940,7 +958,7 @@ async function loadClients() {
   const sh = data.shared;
   $("c_shared").innerHTML = sh.running
     ? `<span class="badge ok">shared server running</span> <span class="mono">${esc(sh.url)}</span> (v${esc(sh.version || "?")}): one process for every session`
-    : `<span class="badge">no shared server</span> <span class="muted">uvx starts one process per session. For one process for all of them, run <span class="mono">graylog-mcp serve --shared</span> and pick "connect to the shared server".</span>`;
+    : `<span class="badge">no shared server</span> <span class="muted">uvx starts one process per session. For one process for all of them, run <span class="mono">graylog-mcp start</span> (or "Start it" on the Overview page).</span>`;
   $("ccCommand").textContent = data["claude-code-command"];
   $("clientCards").innerHTML = STATE.clients.map((c) => c.scopes.map((scope) => `
     <div class="card"><div class="card-head"><h2>${esc(c.title)}</h2><span class="badge">${esc(scope)}</span><span class="muted small mono" style="overflow:hidden;text-overflow:ellipsis">${esc(data[c.key][scope].path)}</span>
@@ -976,11 +994,95 @@ $("saveRaw").addEventListener("click", (ev) => busy(ev.target, async () => {
 }));
 $("reloadRaw").addEventListener("click", loadRaw);
 
+// ------------------------------------------------------------------ setup checklist
+let SETUP = null;
+function setupRow(state, what, why, actions = "") {
+  const icon = {ok: "✓", todo: "!", off: "–"}[state];
+  return `<div class="setup-row"><span class="state ${state}">${icon}</span><div><div class="what">${what}</div><div class="why">${why}</div></div><div class="actions">${actions}</div></div>`;
+}
+function renderSetup() {
+  const s = SETUP, srv = s.server, cl = s.claude, rows = [];
+  const ver = (v, c) => `v${esc(v || "?")}${c ? ` · ${esc(String(c).slice(0, 7))}` : ""}`;
+  if (srv.running) {
+    const upd = s.update ? (s.update.available ? ` · <b>a newer version is available</b>` : " · up to date") : "";
+    rows.push(setupRow("ok", "Graylog MCP server is running",
+      `One process for every Claude session · ${ver(srv.version, srv.commit)}${upd}`,
+      s.update && s.update.available ? '<button class="btn sm primary" data-setup="update">Update now</button>'
+        : '<button class="btn sm" data-setup="check">Check for updates</button>'));
+  } else {
+    rows.push(setupRow("todo", "Graylog MCP server is not running",
+      "Without it, every Claude session starts its own copy (or cannot reach Graylog at all).",
+      '<button class="btn sm primary" data-setup="start">Start it</button>'));
+  }
+  if (s.autostart.kind) {
+    rows.push(s.autostart.enabled
+      ? setupRow("ok", "Starts when you log in", `Managed by ${esc(s.autostart.kind)}; nothing to remember after a restart.`, '<button class="btn sm ghost" data-setup="autostart-off">Turn off</button>')
+      : setupRow("todo", "Does not start when you log in", "After a restart you would have to run graylog-mcp start again.", srv.running ? '<button class="btn sm primary" data-setup="autostart-on">Turn on</button>' : ""));
+  }
+  if (cl.registered && !cl.stdio_projects.length) {
+    rows.push(setupRow("ok", "Claude Code is connected", "In every project, through the server above. Open a new Claude session to use it."));
+  } else if (!cl.registered) {
+    rows.push(setupRow("todo", "Claude Code is not connected", cl.cli
+      ? "One click registers graylog for every project (nothing is written into your repositories)."
+      : `The <span class="mono">claude</span> command was not found. Run this once in a terminal: <span class="mono">${esc(cl.command)}</span>`,
+      cl.cli && srv.running ? '<button class="btn sm primary" data-setup="claude">Connect</button>' : ""));
+  }
+  if (cl.registered && cl.stdio_projects.length) {
+    rows.push(setupRow("todo", `${cl.stdio_projects.length} project${cl.stdio_projects.length > 1 ? "s" : ""} still start their own process`,
+      `Their .mcp.json runs uvx: ${cl.stdio_projects.map((p) => `<span class="mono">${esc(p)}</span>`).join(", ")}. Switching only changes your own Claude settings, not the files.`,
+      '<button class="btn sm primary" data-setup="claude">Switch them</button>'));
+  }
+  const envs = STATE ? STATE.instances : [], missing = envs.filter((e) => !e.secret_set).length;
+  rows.push(!envs.length
+    ? setupRow("todo", "No Graylog environment yet", "Add the URL of your Graylog and a token of a read-only user.", '<button class="btn sm primary" data-goto="envs">Add environment</button>')
+    : missing ? setupRow("todo", `${missing} environment${missing > 1 ? "s" : ""} without a token`, "Open it and paste the token; it is saved on this machine only.", '<button class="btn sm primary" data-goto="envs">Add token</button>')
+    : setupRow("ok", `${envs.length} Graylog environment${envs.length > 1 ? "s" : ""}`, "With their tokens. Health checks are below."));
+  const todo = rows.filter((r) => r.includes('state todo')).length;
+  if (s.install.commit) $("ver").textContent = `v${s.install.version} · ${s.install.commit.slice(0, 7)}`;
+  $("setupSummary").textContent = todo ? `${todo} step${todo > 1 ? "s" : ""} left` : "all done";
+  $("setupRows").innerHTML = rows.join("");
+}
+async function loadSetup(check = false) {
+  try { SETUP = await api(`/api/setup${check ? "?check=1" : ""}`); renderSetup(); }
+  catch (e) { $("setupRows").innerHTML = `<div class="inline-msg">${esc(e.message)}</div>`; }
+}
+async function waitForServer(oldCommit, seconds = 180) {
+  const root = BASE.replace(/\/admin$/, "");
+  for (let i = 0; i < seconds / 2; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try { const h = await (await fetch(`${root}/healthz`, {cache: "no-store"})).json(); if (h.status === "ok" && h.commit !== oldCommit) return h; } catch (e) { /* restarting */ }
+  }
+  return null;
+}
+$("setupRefresh").addEventListener("click", () => loadSetup());
+$("setupRows").addEventListener("click", (ev) => {
+  const b = ev.target.closest("[data-setup]"); if (!b) return;
+  const what = b.dataset.setup;
+  busy(b, async () => {
+    if (what === "check") { await loadSetup(true); toast(SETUP.update && SETUP.update.available ? "A newer version is available" : SETUP.update && SETUP.update.latest ? "You have the latest version" : "Could not reach GitHub", "info"); return; }
+    if (what === "claude") { const r = await api("/api/setup/claude", "POST", {}); toast(r.projects.length ? `Connected; ${r.projects.length} project(s) switched` : "Claude Code connected for every project"); }
+    if (what === "autostart-on" || what === "autostart-off") { await api("/api/setup/autostart", "POST", {on: what === "autostart-on"}); toast(what === "autostart-on" ? "Starts when you log in" : "Will not start at login"); }
+    if (what === "start") {
+      await api("/api/setup/start", "POST", {}); toast("Starting… (the first time it installs a copy, about a minute)", "info");
+      if (!(await waitForServer("__none__"))) throw new Error(`The server did not start; see ${SETUP.log}`);
+      toast("Server started");
+    }
+    if (what === "update") {
+      const old = SETUP.server.commit; await api("/api/setup/update", "POST", {});
+      toast("Updating… this page reloads when the new version runs", "info");
+      if (await waitForServer(old)) { location.reload(); return; }
+      throw new Error(`The update did not finish; see ${SETUP.log}`);
+    }
+    await loadSetup(); await loadState();
+  });
+});
+
 // ------------------------------------------------------------------ start
 (async () => {
-  if (!TOKEN) { $("banner").innerHTML = '<div class="banner fail"><b>✕</b><div>Missing access token. Open the link printed by <code>graylog-mcp ui</code>.</div></div>'; return; }
+  if (!TOKEN) { $("banner").innerHTML = '<div class="banner fail"><b>✕</b><div>Missing access token. Run <code>graylog-mcp ui</code> to open this page with it.</div></div>'; return; }
   try {
     await loadState();
+    loadSetup();
     const start = location.hash.slice(1);
     showPage($(start) && $(start).classList.contains("page") ? start : "overview");
     if (STATE.instances.length) runDoctor(); else { CHECKS = []; renderChecks(); renderStats(); }

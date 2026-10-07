@@ -13,6 +13,7 @@ from graylog_mcp import tools
 from graylog_mcp.config import ConfigError, detect_repo, load_config, normalize_repo, parse_config
 from graylog_mcp.setup import clients, connect
 from graylog_mcp.tools import App
+from tests import fake_claude
 from tests.fake_graylog import FakeGraylog
 
 
@@ -205,28 +206,34 @@ async def test_admin_repos(admin, monkeypatch):
     assert (repo / ".graylog-mcp.toml").exists()  # removing never deletes files in the repository
 
 
-async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch):
+async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp_path):
     client, root, _ = admin
     _shared_server(monkeypatch, running=False)
     old = make_repo(root, "erp-web")
     await client.post(
         "/api/repos", json={"group": "erp", "repo": str(old), "project_config": True, "claude_code": True}
     )
+    committed = (old / ".mcp.json").read_text()
     _shared_server(monkeypatch, running=True)
+    log = fake_claude.install(tmp_path, monkeypatch)
     state = (await client.get("/api/state")).json()
     assert state["shared"]["running"] and state["groups"][1]["repos"][0]["claude_code"] == "stdio"
-    # "Use shared server" on a repository set up with uvx
+    # "Use shared server" on a repository whose .mcp.json starts uvx: a private override, the file is kept
     switched = (await client.post("/api/repos/setup", json={"group": "erp", "repo": str(old)})).json()
-    assert switched["source"] == "shared"
-    assert json.loads((old / ".mcp.json").read_text())["mcpServers"]["graylog"]["type"] == "http"
-    # a new repository gets the HTTP entry right away
+    assert switched["source"] == "shared" and switched["claude_code"] == "every project (shared server)"
+    assert (old / ".mcp.json").read_text() == committed
+    cfg = fake_claude.config()
+    assert cfg["mcpServers"]["graylog"]["url"] == clients.SHARED_URL
+    assert cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+    # a new repository needs nothing written: the registration for every project covers it
     new = make_repo(root, "payment-api")
     added = await client.post(
         "/api/repos", json={"group": "payment", "repo": str(new), "project_config": True, "claude_code": True}
     )
-    assert added.json()["source"] == "shared"
+    assert added.json()["source"] == "shared" and not (new / ".mcp.json").exists()
     groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
     assert [r["claude_code"] for g in groups.values() for r in g["repos"]] == ["shared", "shared"]
+    assert len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 2  # user + the one override
 
 
 def test_repo_cli(tmp_path, monkeypatch, capsys):
