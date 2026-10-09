@@ -89,6 +89,10 @@ def track(
             entry["results"] = found
         if args:
             entry["args"] = args
+        if isinstance(result, dict) and result.get("rewritten"):
+            entry["rewritten"] = True  # a safe or learned fix ran instead of the query as written
+        if isinstance(result, dict) and result.get("suggestions"):
+            entry["suggested"] = len(result["suggestions"])
         if error:
             entry["error"] = (app.redactor.text(error) if app is not None else error)[:300]
         if repo:

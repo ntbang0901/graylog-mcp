@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, scan, tools, usage
+from graylog_mcp import __version__, rca, recover, scan, tools, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -669,6 +669,17 @@ def build_app(state: AdminState) -> Starlette:
         rows = await asyncio.gather(*(one(name) for name in app.instances))
         return JSONResponse({"range": rng, "bucket_hours": step, "environments": list(rows)})
 
+    async def get_learned(_request: Request) -> Response:
+        rules = await asyncio.to_thread(recover.LEARNED.listing)
+        return JSONResponse({"enabled": recover.enabled(), "auto_weight": recover.AUTO_WEIGHT,
+                             "auto_min_uses": recover.AUTO_MIN_USES, "rules": rules})  # fmt: skip
+
+    async def forget_learned(request: Request) -> Response:
+        key = str((await _body(request)).get("key") or "")
+        if not await asyncio.to_thread(recover.LEARNED.forget, key):
+            return _err("no such rule")
+        return JSONResponse({"ok": True})
+
     async def run_doctor(_request: Request) -> Response:
         try:
             app = await state.app()
@@ -841,6 +852,8 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/doctor", run_doctor),
         Route("/api/usage", get_usage),
         Route("/api/logstats", get_logstats),
+        Route("/api/learned", get_learned),
+        Route("/api/learned/forget", forget_learned, methods=["POST"]),
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
