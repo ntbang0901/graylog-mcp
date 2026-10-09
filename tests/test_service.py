@@ -285,7 +285,7 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         health = service.probe(port)
         assert health and health["admin"] is True and "commit" in health
         page = httpx.get(f"{base}/admin/", trust_env=False)
-        assert page.status_code == 200 and "graylog-mcp" in page.text and "setupRows" in page.text
+        assert page.status_code == 200 and "graylog-mcp" in page.text and "setupCard" in page.text
         token = {"X-Admin-Token": service.admin_token()}
         assert httpx.get(f"{base}/admin/api/state", trust_env=False).status_code == 401
         state = httpx.get(f"{base}/admin/api/state", headers=token, trust_env=False).json()
