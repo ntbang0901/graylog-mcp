@@ -61,7 +61,7 @@ def test_install_tool(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "uv_binary", lambda: "/bin/uv")
     rec = Recorder(stdout=str(tmp_path / "bin") + "\n")
     exe = service.install_tool("git+https://example.test/repo@main", rec)
-    assert rec.calls[0] == ["/bin/uv", "tool", "install", "--force", "--reinstall", "--refresh",
+    assert rec.calls[0] == ["/bin/uv", "--color", "never", "tool", "install", "--force", "--reinstall", "--refresh",
                             "git+https://example.test/repo@main"]  # fmt: skip
     assert exe == [str(tmp_path / "bin" / ("graylog-mcp.exe" if sys.platform == "win32" else "graylog-mcp"))]
     with pytest.raises(RuntimeError, match="uv tool install failed"):
