@@ -86,6 +86,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
     try:
         main()
     finally:
