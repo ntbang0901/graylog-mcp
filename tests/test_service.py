@@ -61,7 +61,7 @@ def test_install_tool(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "uv_binary", lambda: "/bin/uv")
     rec = Recorder(stdout=str(tmp_path / "bin") + "\n")
     exe = service.install_tool("git+https://example.test/repo@main", rec)
-    assert rec.calls[0] == ["/bin/uv", "tool", "install", "--force", "--reinstall", "--refresh",
+    assert rec.calls[0] == ["/bin/uv", "--color", "never", "tool", "install", "--force", "--reinstall", "--refresh",
                             "git+https://example.test/repo@main"]  # fmt: skip
     assert exe == [str(tmp_path / "bin" / ("graylog-mcp.exe" if sys.platform == "win32" else "graylog-mcp"))]
     with pytest.raises(RuntimeError, match="uv tool install failed"):
@@ -105,7 +105,137 @@ def test_systemd_unit(monkeypatch, tmp_path):
     assert rec.calls[-1] == ["systemctl", "--user", "enable", "graylog-mcp.service"]
     auto.disable(stop_now=True)
     assert ["systemctl", "--user", "disable", "--now", "graylog-mcp.service"] in rec.calls and not auto.enabled
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
+    monkeypatch.delenv("DESKTOP_SESSION", raising=False)
     assert service.Autostart(Recorder(returncode=1), system="Linux").kind is None  # no user session bus
+
+
+def test_xdg_autostart_without_systemd(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    spawned = []
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: spawned.append(cmd) or 1)
+    auto = service.Autostart(Recorder(), system="Linux")
+    assert auto.kind == "xdg-autostart"
+    cmd = ["/opt/my tools/graylog-mcp", "serve", "--config", "/c/50%.toml"]
+    path = auto.enable(cmd, start_now=True)
+    assert path == tmp_path / "autostart" / "graylog-mcp.desktop" and auto.enabled
+    entry = path.read_text()
+    assert ('Exec="/opt/my tools/graylog-mcp" keepalive -- "/opt/my tools/graylog-mcp" serve --config /c/50%%.toml'
+            in entry)  # fmt: skip
+    assert spawned == [["/opt/my tools/graylog-mcp", "keepalive", "--", *cmd]]  # runs now like at login
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP")
+    assert auto.kind == "xdg-autostart"  # still found from a shell without the desktop session, to turn it off
+    auto.disable(stop_now=True)
+    assert not path.exists() and auto.kind is None
+
+
+def test_desktop_quote():
+    assert service._desktop_quote("/usr/bin/x") == "/usr/bin/x"
+    assert service._desktop_quote('a "b" $c') == '"a \\"b\\" \\$c"'
+
+
+class TaskScheduler(Recorder):
+    """schtasks: remembers whether the task exists."""
+
+    def __init__(self, create_returncode: int = 0):
+        super().__init__()
+        self.exists, self.create_returncode = False, create_returncode
+
+    def __call__(self, cmd, **_kw):
+        self.calls.append(list(cmd))
+        code = 0
+        if cmd[:2] == ["schtasks", "/Create"]:
+            code = self.create_returncode
+            self.exists = self.exists or code == 0
+        elif cmd[:2] == ["schtasks", "/Delete"]:
+            self.exists = False
+        elif cmd[:2] == ["schtasks", "/Query"]:
+            code = 0 if self.exists else 1
+        return subprocess.CompletedProcess(cmd, code, "", "Access is denied." if code else "")
+
+
+def test_task_scheduler(monkeypatch, tmp_path):
+    monkeypatch.setattr(service.shutil, "which", lambda name: "C:/Windows/System32/schtasks.exe")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("USERDOMAIN", "ACME")
+    monkeypatch.setenv("USERNAME", "an")
+    legacy = service._startup_file()
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("@echo off\r\n")  # what earlier versions wrote
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pythonw.exe").write_bytes(b"")
+    exe = str(scripts / "graylog-mcp.exe")
+    rec = TaskScheduler()
+    auto = service.Autostart(rec, system="Windows")
+    assert auto.kind == "task-scheduler" and not auto.enabled
+    path = auto.enable([exe, "serve", "--config", "C:/My Config/org.toml"], start_now=True)
+    assert auto.enabled and not legacy.exists()
+    xml = path.read_text(encoding="utf-16")
+    assert "<UserId>ACME\\an</UserId>" in xml and "<RestartOnFailure>" in xml
+    assert f"<Command>{scripts / 'pythonw.exe'}</Command>" in xml  # pythonw: no console window
+    assert f'<Arguments>-m graylog_mcp keepalive -- {exe} serve --config "C:/My Config/org.toml"</Arguments>' in xml
+    changes = [c for c in rec.calls if c[1] != "/Query"]
+    assert changes == [["schtasks", "/Create", "/TN", "graylog-mcp", "/XML", str(path), "/F"],
+                       ["schtasks", "/Run", "/TN", "graylog-mcp"]]  # fmt: skip
+    auto.disable(stop_now=True)
+    assert ["schtasks", "/End", "/TN", "graylog-mcp"] in rec.calls and not auto.enabled and not path.exists()
+    with pytest.raises(RuntimeError, match="Access is denied"):
+        service.Autostart(TaskScheduler(create_returncode=1), system="Windows").enable([exe, "serve"], True)
+
+
+def test_pythonw_of_a_uv_tool(monkeypatch, tmp_path):
+    tools = tmp_path / "uv" / "tools"
+    (tools / "graylog-mcp" / "Scripts").mkdir(parents=True)
+    (tools / "graylog-mcp" / "Scripts" / "pythonw.exe").write_bytes(b"")
+    monkeypatch.setattr(service, "uv_binary", lambda: "uv")
+    exe = str(tmp_path / "bin" / "graylog-mcp.exe")  # uv's bin directory holds only a launcher
+    cmd = service.keepalive_command([exe, "serve"], windowless=True, runner=Recorder(stdout=f"{tools}\n"))
+    assert cmd == [str(tools / "graylog-mcp" / "Scripts" / "pythonw.exe"), "-m", "graylog_mcp", "keepalive", "--",
+                   exe, "serve"]  # fmt: skip
+    monkeypatch.setattr(service, "uv_binary", lambda: None)  # no pythonw found: the launcher itself
+    assert service.keepalive_command([exe, "serve"], windowless=True)[:2] == [exe, "keepalive"]
+    assert service.keepalive_command(["/py", "-m", "graylog_mcp", "serve"]) == [
+        "/py", "-m", "graylog_mcp", "keepalive", "--", "/py", "-m", "graylog_mcp", "serve"]  # fmt: skip
+
+
+def test_restart_through_task_scheduler(monkeypatch):
+    rec = TaskScheduler()
+    rec.exists = True
+    monkeypatch.setattr(service.shutil, "which", lambda name: "schtasks")
+    monkeypatch.setattr(service, "kill_server", lambda: True)
+    monkeypatch.setattr(service, "wait_down", lambda port: True)
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: pytest.fail("spawned outside the task"))
+    service.restart(["graylog-mcp.exe", "serve"], 8000, service.Autostart(rec, system="Windows"))
+    assert rec.calls[-1] == ["schtasks", "/Run", "/TN", "graylog-mcp"]
+    assert rec.calls[-2][:4] == ["schtasks", "/Create", "/TN", "graylog-mcp"]  # the new copy's command
+
+
+def _exit_with(code):
+    return [sys.executable, "-c", f"import sys; sys.exit({code})"]
+
+
+def test_keepalive_restarts_after_a_crash(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "log_path", lambda: tmp_path / "server.log")
+    marker = tmp_path / "runs"
+    script = (f"import pathlib, sys; p = pathlib.Path({str(marker)!r}); n = len(p.read_text()) if p.exists() else 0;"
+              " p.write_text('x' * (n + 1)); sys.exit(3 if n < 2 else 0)")  # fmt: skip
+    sleeps = []
+    assert service.keep_alive([sys.executable, "-c", script], sleep=sleeps.append) == 0
+    assert marker.read_text() == "xxx" and sleeps == [2, 4]  # crashed twice, then exited cleanly
+
+
+def test_keepalive_gives_up_and_stops_on_purpose(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "log_path", lambda: tmp_path / "server.log")
+    sleeps = []
+    assert service.keep_alive(_exit_with(3), sleep=sleeps.append) == 3
+    assert len(sleeps) == 4 and "5 times in a row" in service.log_path().read_text()
+    assert service._stopped_on_purpose(-service.signal.SIGTERM)  # graylog-mcp stop / update
+    assert not service._stopped_on_purpose(1)
+    assert main(["keepalive"]) == 2
+    assert main(["keepalive", "--", *_exit_with(0)]) == 0
 
 
 def test_with_admin_dispatch():
@@ -239,11 +369,38 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert projects[str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
-def test_start_refuses_a_port_used_by_another_server(monkeypatch, capsys):
+def test_start_moves_off_a_port_used_by_another_program(monkeypatch, capsys):
     monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
-    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok"})  # no admin: not ours
-    assert main(["start", "--no-browser", "--no-claude"]) == 1
-    assert "port 8000 is used by another server" in capsys.readouterr().err
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
+    monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
+    spawned: list = []
+    monkeypatch.setattr(service, "spawn_detached", spawned.append)
+    taken = {service.DEFAULT_PORT, service.DEFAULT_PORT + 1}
+    monkeypatch.setattr(service, "port_free", lambda port: port not in taken)
+    assert main(["start", "--no-browser", "--no-claude"]) == 0
+    out = capsys.readouterr().out
+    assert f"port {service.DEFAULT_PORT} is used by another program: using {service.DEFAULT_PORT + 2}" in out
+    assert spawned[0][spawned[0].index("--port") + 1] == str(service.DEFAULT_PORT + 2)
+    assert service.current_port() == service.DEFAULT_PORT + 2  # stop, status, update and the page follow it
+    assert service.shared_url() == f"http://127.0.0.1:{service.DEFAULT_PORT + 2}/mcp"
+    # a port asked for explicitly is not changed
+    assert main(["start", "--no-browser", "--no-claude", "--port", str(service.DEFAULT_PORT)]) == 1
+    assert f"port {service.DEFAULT_PORT} is used by another program" in capsys.readouterr().err
+
+
+def test_ports(monkeypatch):
+    import socket
+
+    assert service.current_port() == service.DEFAULT_PORT and service.shared_url() == clients.SHARED_URL
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert not service.port_free(port)
+        assert service.free_port(port - 1) != port
+    monkeypatch.setattr(service, "port_free", lambda port: False)
+    assert service.free_port(service.DEFAULT_PORT) > 0  # nothing free nearby: the system picks one
 
 
 def test_status_when_not_running(monkeypatch, capsys):
@@ -257,3 +414,16 @@ def test_ui_opens_the_running_server(monkeypatch, capsys):
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok", "admin": True})
     assert main(["ui", "--no-browser"]) == 0
     assert service.admin_url() in capsys.readouterr().out
+
+
+def test_output_that_cannot_show_a_character(monkeypatch):
+    import io
+
+    from graylog_mcp.__main__ import _tolerant_output
+
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # a pipe on Windows
+    monkeypatch.setattr(sys, "stdout", out)
+    _tolerant_output()
+    print("✓ started")
+    out.flush()
+    assert out.buffer.getvalue().strip() == b"? started"

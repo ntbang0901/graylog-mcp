@@ -204,8 +204,7 @@ def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None
 def _shared_url(state: AdminState) -> str:
     from graylog_mcp.setup import service
 
-    port = state.server_port or int(service.saved_settings().get("port") or service.DEFAULT_PORT)
-    return service.server_url(port)
+    return service.server_url(state.server_port) if state.server_port else service.shared_url()
 
 
 async def _shared_running(state: AdminState) -> bool:
@@ -670,11 +669,11 @@ def build_app(state: AdminState) -> Starlette:
         shared = await _shared_status(state)
         have = service.installed()
         autostart = service.Autostart()
-        kind = await asyncio.to_thread(lambda: autostart.kind)
+        kind, enabled = await asyncio.to_thread(lambda: (autostart.kind, autostart.enabled))
         out: dict[str, Any] = {
             "server": {**shared, "embedded": state.server_port is not None},
             "install": {"version": have.version, "commit": have.commit, "label": have.label, "via": have.via},
-            "autostart": {"kind": kind, "enabled": autostart.enabled},
+            "autostart": {"kind": kind, "enabled": enabled},
             "claude": clients.claude_code_status(_shared_url(state), _folders()),
             "log": str(service.log_path()),
         }
@@ -702,13 +701,16 @@ def build_app(state: AdminState) -> Starlette:
         autostart = service.Autostart()
         if await asyncio.to_thread(lambda: autostart.kind) is None:
             return _err("starting at login is not supported on this system")
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         if body.get("on"):
             cmd = service.server_command(service.current_command(), port, state.path)
-            await asyncio.to_thread(autostart.install_only, cmd)
+            try:
+                await asyncio.to_thread(autostart.install_only, cmd)
+            except RuntimeError as exc:
+                return _err(str(exc))
         else:
             await asyncio.to_thread(autostart.disable, False)  # keeps running until logout
-        return JSONResponse({"ok": True, "enabled": autostart.enabled})
+        return JSONResponse({"ok": True, "enabled": await asyncio.to_thread(lambda: autostart.enabled)})
 
     async def setup_start(_request: Request) -> Response:
         """From a standalone UI: run 'graylog-mcp start' in the background (it installs and starts the server)."""
@@ -723,7 +725,7 @@ def build_app(state: AdminState) -> Starlette:
         """Install the latest version and restart the server; this page reconnects when it is back."""
         from graylog_mcp.setup import service
 
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         service.spawn_detached([*service.current_command(), "update", "--port", str(port)])
         return JSONResponse({"ok": True})
 
