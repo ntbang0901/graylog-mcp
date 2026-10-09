@@ -234,6 +234,29 @@ Writing rules that are fast and accurate:
 - Give each rule a severity that matches who should be woken up, and tags that match how people ask
   ("payment", "security", "dependencies").
 
+## Searches that find nothing
+
+`search_logs` and `count_logs` do not stop at "no matches". Three decisions, each explained in the result:
+
+1. **Safe rewrite, before the search runs**, only for a query that cannot match as written: a field this Graylog
+   does not have but with one clear counterpart (`Service:payment` -> `service:payment`, or an alias learned
+   below), or a level word on a numeric level field (`level:ERROR` -> `level:3`). The result carries
+   `rewritten: {from, ran, why}`.
+2. **Counted suggestions, after a search found nothing**: a misspelled field (close names and known synonyms
+   such as `app` -> `service`), the level in the other form, another letter case (keyword fields are
+   case-sensitive), a prefix wildcard (`OrderNotFound` -> `OrderNotFound*`), outside the repository's focus,
+   a wider range. Each is counted exactly by Graylog (in parallel, bounded); the ones that find something come
+   back in `suggestions` with their count and reason, best first, and the hint names the one to run.
+3. **Learning from use.** A suggestion counts as offered; it counts as used when the model then runs it and
+   finds something. A fix's weight is the mean of Beta(1 + used, 1 + offered - used), so it needs evidence and
+   loses weight when it is ignored. A fix used at least twice with weight >= 0.75 applies by itself on that
+   instance: a field alias becomes a safe rewrite, and a case or prefix fix reruns the empty search. Focus and
+   range are only ever suggested, since they change the question.
+
+Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > What
+graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
+request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on

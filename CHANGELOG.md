@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Searches that find nothing: `search_logs` and `count_logs` fix queries that cannot match before they run (a
+  field that does not exist but has one clear counterpart, a level word on a numeric level field) and report it
+  in `rewritten`; after an empty search they count likely fixes (misspelled field or synonym, level form, letter
+  case, prefix wildcard, outside the focus, a wider range) and return the ones that find something in
+  `suggestions`, with exact counts. Fixes the model then uses are learned per instance (weight = mean of
+  Beta(1 + used, 1 + offered - used)); one used twice with weight >= 0.75 applies by itself. `learned.json`,
+  `GRAYLOG_MCP_LEARN=off`, admin page Activity > What graylog-mcp learned, `/api/learned`.
 - Usage statistics: the MCP server records each tool call (tool, environment, duration, results, size, the query
   redacted with the redaction rules) in `usage.jsonl` next to its state, trimmed past 4 MB; `GRAYLOG_MCP_USAGE=off`
   turns it off. The admin page's Dashboard charts log volume and errors per environment from Graylog (24 hours or

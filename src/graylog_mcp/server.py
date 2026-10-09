@@ -48,6 +48,13 @@ field (e.g. application:"other-service"). trace_request, service_map and root_ca
 Inside a group's repository only that group is loaded (list_instances shows 'scope'); if the user
 asks about another group, say it is not loaded here and how to enable it, as the error explains.
 
+Searches that find nothing: search_logs and count_logs try the likely fixes and return 'suggestions', each
+with its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,
+outside the focus, a wider range). Run the one that fits the question rather than guessing again. When a
+result carries 'rewritten', the query you sent could not match as written (a field this Graylog does not
+have, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,
+for the reasons in 'why'; tell the user when that changes the meaning of their question.
+
 Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
 
