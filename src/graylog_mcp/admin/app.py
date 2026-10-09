@@ -204,8 +204,7 @@ def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None
 def _shared_url(state: AdminState) -> str:
     from graylog_mcp.setup import service
 
-    port = state.server_port or int(service.saved_settings().get("port") or service.DEFAULT_PORT)
-    return service.server_url(port)
+    return service.server_url(state.server_port) if state.server_port else service.shared_url()
 
 
 async def _shared_running(state: AdminState) -> bool:
@@ -702,7 +701,7 @@ def build_app(state: AdminState) -> Starlette:
         autostart = service.Autostart()
         if await asyncio.to_thread(lambda: autostart.kind) is None:
             return _err("starting at login is not supported on this system")
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         if body.get("on"):
             cmd = service.server_command(service.current_command(), port, state.path)
             try:
@@ -726,7 +725,7 @@ def build_app(state: AdminState) -> Starlette:
         """Install the latest version and restart the server; this page reconnects when it is back."""
         from graylog_mcp.setup import service
 
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         service.spawn_detached([*service.current_command(), "update", "--port", str(port)])
         return JSONResponse({"ok": True})
 

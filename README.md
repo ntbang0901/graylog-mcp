@@ -571,7 +571,8 @@ What `start` does, so you know what is on your machine:
 
 - **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
   `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
-- **The server**: `graylog-mcp serve --shared --admin --port 8000 --config <file>` on 127.0.0.1, started at
+- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (if another
+  program uses that port, the next free one; `--port` picks one, later commands follow it), started at
   login and started again if it crashes:
 
   | | Started at login by | Restarted after a crash by |
@@ -584,10 +585,10 @@ What `start` does, so you know what is on your machine:
   Elsewhere (WSL or a server without systemd, no desktop session) it runs until you log out; on WSL, turning
   on systemd (`[boot] systemd=true` in `/etc/wsl.conf`) is enough. Log: `~/Library/Logs/graylog-mcp.log` or
   `~/.config/graylog-mcp/server.log`.
-- **The admin page** at `http://127.0.0.1:8000/admin/`, with the access token kept in
+- **The admin page** at `http://127.0.0.1:18742/admin/`, with the access token kept in
   `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
 - **Claude Code**, registered once for every project (user scope):
-  `claude mcp add --transport http graylog --scope user http://127.0.0.1:8000/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
+  `claude mcp add --transport http graylog --scope user http://127.0.0.1:18742/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
   Claude Code fills in the folder it runs in; the server walks up to the repository. A project whose committed
   `.mcp.json` still starts graylog-mcp itself gets a private override (local scope) instead: the file stays as
   it is for your teammates.

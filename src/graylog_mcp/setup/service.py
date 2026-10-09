@@ -16,6 +16,7 @@ import plistlib
 import secrets
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -30,7 +31,7 @@ from graylog_mcp import __version__
 
 LABEL = "io.github.ntbang0901.graylog-mcp"
 TASK_NAME = "graylog-mcp"  # Windows Task Scheduler
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 18742  # 'start': rarely taken (8000 is every dev server's), and 'start' moves on if it is
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 GITHUB_REPO = "ntbang0901/graylog-mcp"
 
@@ -98,6 +99,43 @@ def admin_token() -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(token + "\n")
     return token
+
+
+def current_port() -> int:
+    """The port 'start' last ran the server on, else the default: what stop, status, update and the page use."""
+    try:
+        return int(saved_settings().get("port") or DEFAULT_PORT)
+    except (TypeError, ValueError):
+        return DEFAULT_PORT
+
+
+def shared_url() -> str:
+    """The shared server's URL: the one 'start' runs, else a 'serve --shared' run by hand (port 8000)."""
+    from graylog_mcp.setup import clients
+
+    return server_url(current_port()) if saved_settings().get("port") else clients.SHARED_URL
+
+
+def port_free(port: int) -> bool:
+    """Whether a server could listen on 127.0.0.1:``port`` (on Windows, not reserved by Hyper-V/WSL either)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if os.name != "nt":  # as uvicorn does; on Windows it would allow sharing a port that is in use
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def free_port(after: int, tries: int = 20) -> int:
+    """The first free port after ``after``, else one the system picks."""
+    for port in range(after + 1, min(after + 1 + tries, 65536)):
+        if port_free(port):
+            return port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def server_url(port: int = DEFAULT_PORT) -> str:
