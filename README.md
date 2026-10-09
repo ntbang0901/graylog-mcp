@@ -417,8 +417,13 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
-- **Home**: the setup steps (one **Finish setup** button), then every environment's health with the problem,
-  how to fix it and a button for it (*Add token*, *Fix*) on the same row;
+- **Dashboard**: the setup steps (one **Finish setup** button), log volume and errors over the last 24 hours or
+  7 days (read from Graylog when the page opens, nothing stored), every environment's health with a sparkline or
+  its problem and a button to fix it (*Add token*, *Fix*), the tools the model used, and the searches that found
+  nothing;
+- **Activity**: every tool call the model made, per hour: found something / found nothing / error, per-tool
+  counts and latency (median, p95), and the recent calls with what was asked; *Re-run* opens one in the
+  Playground;
 - **Environments**: one card per group with its environments, default environment, repositories and their
   focus; descriptions and defaults save as you change them. The environment form tests the connection and saves
   in one click (*Save anyway* if Graylog cannot be reached), names the environment from the URL
@@ -432,9 +437,14 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 - **Other clients**: snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file**: edit the TOML with validation and an automatic backup.
 
+Tool calls are recorded by the MCP server (stdio or shared) in `~/.config/graylog-mcp/usage.jsonl`: tool,
+environment, duration, number of results, size, and the query or id asked for, **redacted with your redaction
+rules before it is written**. It stays on your machine, is trimmed past 4 MB, and `GRAYLOG_MCP_USAGE=off` in the
+server's environment turns it off.
+
 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
 save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Dark by default, with a
-light theme and a phone layout.
+light theme and a phone layout; neutral grays with one blue for data, red and green only for state.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password

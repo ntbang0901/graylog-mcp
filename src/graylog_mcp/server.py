@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -13,7 +14,7 @@ from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, scan, tools
+from graylog_mcp import __version__, rca, scan, tools, usage
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
@@ -153,13 +154,22 @@ def build_server(app: App | AppPool) -> MCPServer:
         )
 
     async def call(fn: Callable[..., Any], **kwargs: Any) -> str:
+        started, app, result, text, error = time.monotonic(), None, None, "", None
         try:
-            result = fn(current(), **kwargs)
+            app = current()
+            result = fn(app, **kwargs)
             if hasattr(result, "__await__"):
                 result = await result
+            text = dumps(result)
+            return text
         except (GraylogError, ConfigError, ValueError) as exc:
-            raise ToolError(str(exc)) from None
-        return dumps(result)
+            error = str(exc)
+            raise ToolError(error) from None
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            usage.track(fn.__name__, app, kwargs, result, error, started, len(text))
 
     # ------------------------------------------------------------------ search
 
