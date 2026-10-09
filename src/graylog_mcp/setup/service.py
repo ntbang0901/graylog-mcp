@@ -190,10 +190,10 @@ def install_tool(source: str, runner: Runner = run) -> list[str]:
     uv = uv_binary()
     if uv is None:
         raise RuntimeError("uv is not installed: see https://docs.astral.sh/uv/ (or pip install graylog-mcp)")
-    done = runner([uv, "tool", "install", "--force", "--reinstall", "--refresh", source])
+    done = runner([uv, "--color", "never", "tool", "install", "--force", "--reinstall", "--refresh", source])
     if done.returncode != 0:
         raise RuntimeError(f"uv tool install failed: {(done.stderr or done.stdout).strip()[-500:]}")
-    bin_dir = runner([uv, "tool", "dir", "--bin"]).stdout.strip().splitlines()[-1]
+    bin_dir = runner([uv, "--color", "never", "tool", "dir", "--bin"]).stdout.strip().splitlines()[-1]
     exe = Path(bin_dir) / ("graylog-mcp.exe" if platform.system() == "Windows" else "graylog-mcp")
     return [str(exe)]
 
@@ -490,7 +490,7 @@ def _pythonw(cmd: list[str], runner: Runner) -> Path | None:
     if not (_is_graylog_mcp(cmd[0]) and uv):
         return None
     # uv's bin directory holds only a launcher; the environment is in the tool directory
-    tools = runner([uv, "tool", "dir"]).stdout.strip().splitlines()
+    tools = runner([uv, "--color", "never", "tool", "dir"]).stdout.strip().splitlines()
     found = Path(tools[-1]) / "graylog-mcp" / "Scripts" / "pythonw.exe" if tools else None
     return found if found and found.is_file() else None
 
