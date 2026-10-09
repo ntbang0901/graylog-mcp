@@ -1,9 +1,9 @@
 """The background server behind ``graylog-mcp start``: one process for every session, started at login.
 
 ``start`` installs a stable copy (``uv tool``, so it does not live in uvx's cache), runs
-``graylog-mcp serve --shared --admin`` in the background (launchd on macOS, systemd on Linux, the Startup
-folder on Windows, else a detached process), registers Claude Code once for every project and opens the
-admin page. ``update`` reinstalls from the same source and restarts it; ``stop`` stops it.
+``graylog-mcp serve --shared --admin`` in the background (launchd on macOS, systemd or else XDG autostart on
+Linux, Task Scheduler on Windows, else a detached process), registers Claude Code once for every project and
+opens the admin page. ``update`` reinstalls from the same source and restarts it; ``stop`` stops it.
 """
 
 from __future__ import annotations
@@ -24,10 +24,12 @@ from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 from graylog_mcp import __version__
 
 LABEL = "io.github.ntbang0901.graylog-mcp"
+TASK_NAME = "graylog-mcp"  # Windows Task Scheduler
 DEFAULT_PORT = 8000
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 GITHUB_REPO = "ntbang0901/graylog-mcp"
@@ -201,7 +203,11 @@ def wait_healthy(port: int, timeout: float = 20.0, commit: str | None = None) ->
 
 
 class Autostart:
-    """Start at login: launchd (macOS), systemd --user (Linux), Startup folder (Windows)."""
+    """Start at login: launchd (macOS), systemd --user or else XDG autostart (Linux), Task Scheduler (Windows).
+
+    launchd and systemd start the server again when it crashes; for XDG autostart and Task Scheduler the
+    server runs under ``graylog-mcp keepalive``, which does the same.
+    """
 
     def __init__(self, runner: Runner = run, system: str | None = None):
         self.run = runner
@@ -212,10 +218,13 @@ class Autostart:
         if self.system == "Darwin":
             return "launchd"
         if self.system == "Windows":
-            return "startup-folder"
-        if self.system == "Linux" and shutil.which("systemctl"):
-            probe_run = self.run(["systemctl", "--user", "show-environment"])
-            return "systemd" if probe_run.returncode == 0 else None
+            return "task-scheduler" if shutil.which("schtasks") else "startup-folder"
+        if self.system == "Linux":
+            if shutil.which("systemctl") and self.run(["systemctl", "--user", "show-environment"]).returncode == 0:
+                return "systemd"
+            # a desktop session runs ~/.config/autostart at login (GNOME, KDE, Xfce...)
+            if os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("DESKTOP_SESSION") or _xdg_file().is_file():
+                return "xdg-autostart"
         return None
 
     @property
@@ -225,17 +234,30 @@ class Autostart:
         if self.kind == "systemd":
             base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
             return base / "systemd" / "user" / "graylog-mcp.service"
+        if self.kind == "xdg-autostart":
+            return _xdg_file()
+        if self.kind == "task-scheduler":
+            return home_dir() / "autostart-task.xml"  # what was registered; the task itself lives in Task Scheduler
         if self.kind == "startup-folder":
-            appdata = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-            return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "graylog-mcp.cmd"
+            return _startup_file()
         return None
 
     @property
     def enabled(self) -> bool:
+        if self.kind == "task-scheduler":
+            return self.run(["schtasks", "/Query", "/TN", TASK_NAME]).returncode == 0
         return bool(self.path and self.path.is_file())
 
     def _domain(self) -> str:
         return f"gui/{os.getuid()}"  # type: ignore[attr-defined,unused-ignore]
+
+    def launch_command(self, cmd: list[str]) -> list[str]:
+        """What runs at login: ``cmd`` itself, or ``cmd`` under keepalive where no service manager restarts it."""
+        if self.kind == "xdg-autostart":
+            return keepalive_command(cmd)
+        if self.kind == "task-scheduler":
+            return keepalive_command(cmd, windowless=True, runner=self.run)
+        return cmd
 
     def write(self, cmd: list[str]) -> Path:
         path = self.path
@@ -265,6 +287,20 @@ class Autostart:
                 "[Install]\nWantedBy=default.target\n",
                 encoding="utf-8",
             )
+        elif self.kind == "xdg-autostart":
+            # string values unescape backslashes once more before the Exec quoting applies
+            line = " ".join(_desktop_quote(a) for a in self.launch_command(cmd)).replace("\\", "\\\\")
+            path.write_text(
+                "[Desktop Entry]\nType=Application\nName=graylog-mcp\nComment=graylog-mcp shared MCP server\n"
+                f"Exec={line}\nTerminal=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\n",
+                encoding="utf-8",
+            )
+        elif self.kind == "task-scheduler":
+            path.write_text(_task_xml(self.launch_command(cmd)), encoding="utf-16")  # schtasks wants UTF-16
+            done = self.run(["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(path), "/F"])
+            if done.returncode != 0:
+                raise RuntimeError(f"Task Scheduler refused the task: {(done.stderr or done.stdout).strip()[-300:]}")
+            _startup_file().unlink(missing_ok=True)  # what earlier versions used: do not start twice
         else:
             line = subprocess.list2cmdline(cmd)
             path.write_text(f'@echo off\r\nstart "graylog-mcp" /min {line}\r\n', encoding="utf-8")
@@ -279,8 +315,11 @@ class Autostart:
         elif self.kind == "systemd":
             self.run(["systemctl", "--user", "daemon-reload"])
             self.run(["systemctl", "--user", "enable", *(["--now"] if start_now else []), "graylog-mcp.service"])
+        elif self.kind == "task-scheduler":
+            if start_now:
+                self.run(["schtasks", "/Run", "/TN", TASK_NAME])
         elif start_now:
-            spawn_detached(cmd)
+            spawn_detached(self.launch_command(cmd))
         return path
 
     def install_only(self, cmd: list[str]) -> Path:
@@ -297,6 +336,11 @@ class Autostart:
             self.run(["launchctl", "bootout", f"{self._domain()}/{LABEL}"])
         elif self.kind == "systemd":
             self.run(["systemctl", "--user", "disable", *(["--now"] if stop_now else []), "graylog-mcp.service"])
+        elif self.kind == "task-scheduler":
+            if stop_now:
+                self.run(["schtasks", "/End", "/TN", TASK_NAME])
+            self.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
+            _startup_file().unlink(missing_ok=True)
         if path is not None:
             path.unlink(missing_ok=True)
         if self.kind == "systemd":
@@ -311,6 +355,55 @@ class Autostart:
         if self.kind == "systemd":
             return self.run(["systemctl", "--user", "restart", "graylog-mcp.service"]).returncode == 0
         return False
+
+
+def _xdg_file() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "autostart" / "graylog-mcp.desktop"
+
+
+def _startup_file() -> Path:
+    appdata = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "graylog-mcp.cmd"
+
+
+def _task_xml(cmd: list[str]) -> str:
+    """A task that starts at this user's login, without a time limit or a battery condition."""
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    if os.environ.get("USERDOMAIN"):
+        user = f"{os.environ['USERDOMAIN']}\\{user}"
+    user = xml_escape(user)
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>graylog-mcp shared MCP server</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec><Command>{xml_escape(cmd[0])}</Command><Arguments>{xml_escape(subprocess.list2cmdline(cmd[1:]))}</Arguments></Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _desktop_quote(arg: str) -> str:
+    """Quote an argument for the Exec key of a .desktop file."""
+    arg = arg.replace("%", "%%")
+    if not any(c in arg for c in " \t\n\"'\\><~|&;$*?#()`"):
+        return arg
+    return '"' + "".join("\\" + c if c in '"`$\\' else c for c in arg) + '"'
 
 
 def _systemd_quote(arg: str) -> str:
@@ -332,6 +425,79 @@ def spawn_detached(cmd: list[str]) -> int:
     with log.open("ab") as out:
         proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, **kwargs)
     return proc.pid
+
+
+def keepalive_command(cmd: list[str], windowless: bool = False, runner: Runner = run) -> list[str]:
+    """``cmd`` run by ``graylog-mcp keepalive``; with ``windowless`` (Windows) through pythonw, so no console opens."""
+    python = _pythonw(cmd, runner) if windowless else None
+    if python:
+        prefix = [str(python), "-m", "graylog_mcp"]
+    elif _is_graylog_mcp(cmd[0]):
+        prefix = [cmd[0]]
+    else:  # python -m graylog_mcp ...
+        prefix = cmd[:3]
+    return [*prefix, "keepalive", "--", *cmd]
+
+
+def _is_graylog_mcp(exe: str) -> bool:
+    return Path(exe).name.lower() in ("graylog-mcp", "graylog-mcp.exe")
+
+
+def _pythonw(cmd: list[str], runner: Runner) -> Path | None:
+    """The pythonw.exe of the environment ``cmd`` runs from: next to it, or in uv's tool directory."""
+    beside = Path(cmd[0]).with_name("pythonw.exe")
+    if beside.is_file():
+        return beside
+    uv = uv_binary()
+    if not (_is_graylog_mcp(cmd[0]) and uv):
+        return None
+    # uv's bin directory holds only a launcher; the environment is in the tool directory
+    tools = runner([uv, "tool", "dir"]).stdout.strip().splitlines()
+    found = Path(tools[-1]) / "graylog-mcp" / "Scripts" / "pythonw.exe" if tools else None
+    return found if found and found.is_file() else None
+
+
+def _stopped_on_purpose(code: int) -> bool:
+    """A clean exit, or a stop (SIGTERM/Ctrl+C; on Windows os.kill terminates with the signal as exit code)."""
+    if code in (0, -signal.SIGTERM, -signal.SIGINT):
+        return True
+    return platform.system() == "Windows" and code == signal.SIGTERM
+
+
+def keep_alive(cmd: list[str], sleep: Callable[[float], None] = time.sleep) -> int:
+    """Run ``cmd`` and start it again when it crashes, like systemd's Restart=on-failure.
+
+    For the login items that have no service manager to do it (XDG autostart, Windows Task Scheduler, which
+    only retries a task that fails to start). Gives up after 5 crashes in a row within a minute of starting.
+    """
+    log = log_path()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL}
+    if platform.system() == "Windows":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    child: subprocess.Popen[bytes] | None = None
+
+    def forward(signum: int, _frame: Any) -> None:  # logging out stops us: stop the server too
+        if child is not None and child.poll() is None:
+            child.terminate()
+        raise SystemExit(0)
+
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, forward)
+    quick_failures = 0
+    while True:
+        started = time.monotonic()
+        with log.open("ab") as out:
+            child = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, **kwargs)
+            code = child.wait()
+        if _stopped_on_purpose(code):
+            return 0
+        quick_failures = quick_failures + 1 if time.monotonic() - started < 60 else 1
+        if quick_failures >= 5:
+            with log.open("a", encoding="utf-8") as note:
+                note.write(f"graylog-mcp keepalive: the server exited with {code} 5 times in a row; giving up\n")
+            return code
+        sleep(min(30, 2**quick_failures))
 
 
 def write_pid() -> None:
@@ -371,7 +537,8 @@ def wait_down(port: int, timeout: float = 10.0) -> bool:
 
 def restart(cmd: list[str], port: int, autostart: Autostart) -> None:
     """Restart the running server on the new copy: through the service manager, else kill and spawn."""
-    if autostart.enabled:
+    managed = autostart.enabled
+    if managed:
         autostart.write(cmd)  # the command may point to a new copy
         if autostart.kind == "launchd":
             autostart.enable(cmd, start_now=True)
@@ -380,9 +547,12 @@ def restart(cmd: list[str], port: int, autostart: Autostart) -> None:
             autostart.run(["systemctl", "--user", "daemon-reload"])
             if autostart.restart():
                 return
-    kill_server()
+    kill_server()  # a keepalive above it takes this as a stop and exits too
     wait_down(port)
-    spawn_detached(cmd)
+    if managed and autostart.kind == "task-scheduler":
+        autostart.run(["schtasks", "/Run", "/TN", TASK_NAME])
+    else:
+        spawn_detached(autostart.launch_command(cmd) if managed else cmd)
 
 
 # ----------------------------------------------------------------------------- updates
