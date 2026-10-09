@@ -572,8 +572,18 @@ What `start` does, so you know what is on your machine:
 - **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
   `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
 - **The server**: `graylog-mcp serve --shared --admin --port 8000 --config <file>` on 127.0.0.1, started at
-  login by a LaunchAgent (macOS), a systemd user unit (Linux) or the Startup folder (Windows); elsewhere it
-  runs until you log out. Log: `~/Library/Logs/graylog-mcp.log` or `~/.config/graylog-mcp/server.log`.
+  login and started again if it crashes:
+
+  | | Started at login by | Restarted after a crash by |
+  |---|---|---|
+  | macOS | a LaunchAgent (`~/Library/LaunchAgents/io.github.ntbang0901.graylog-mcp.plist`) | launchd |
+  | Linux with systemd | a user unit (`~/.config/systemd/user/graylog-mcp.service`) | systemd |
+  | Linux desktop without systemd | XDG autostart (`~/.config/autostart/graylog-mcp.desktop`) | `graylog-mcp keepalive` |
+  | Windows | a Task Scheduler task `graylog-mcp`, no console window | `graylog-mcp keepalive` |
+
+  Elsewhere (WSL or a server without systemd, no desktop session) it runs until you log out; on WSL, turning
+  on systemd (`[boot] systemd=true` in `/etc/wsl.conf`) is enough. Log: `~/Library/Logs/graylog-mcp.log` or
+  `~/.config/graylog-mcp/server.log`.
 - **The admin page** at `http://127.0.0.1:8000/admin/`, with the access token kept in
   `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
 - **Claude Code**, registered once for every project (user scope):

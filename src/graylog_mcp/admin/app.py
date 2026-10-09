@@ -670,11 +670,11 @@ def build_app(state: AdminState) -> Starlette:
         shared = await _shared_status(state)
         have = service.installed()
         autostart = service.Autostart()
-        kind = await asyncio.to_thread(lambda: autostart.kind)
+        kind, enabled = await asyncio.to_thread(lambda: (autostart.kind, autostart.enabled))
         out: dict[str, Any] = {
             "server": {**shared, "embedded": state.server_port is not None},
             "install": {"version": have.version, "commit": have.commit, "label": have.label, "via": have.via},
-            "autostart": {"kind": kind, "enabled": autostart.enabled},
+            "autostart": {"kind": kind, "enabled": enabled},
             "claude": clients.claude_code_status(_shared_url(state), _folders()),
             "log": str(service.log_path()),
         }
@@ -705,10 +705,13 @@ def build_app(state: AdminState) -> Starlette:
         port = state.server_port or service.DEFAULT_PORT
         if body.get("on"):
             cmd = service.server_command(service.current_command(), port, state.path)
-            await asyncio.to_thread(autostart.install_only, cmd)
+            try:
+                await asyncio.to_thread(autostart.install_only, cmd)
+            except RuntimeError as exc:
+                return _err(str(exc))
         else:
             await asyncio.to_thread(autostart.disable, False)  # keeps running until logout
-        return JSONResponse({"ok": True, "enabled": autostart.enabled})
+        return JSONResponse({"ok": True, "enabled": await asyncio.to_thread(lambda: autostart.enabled)})
 
     async def setup_start(_request: Request) -> Response:
         """From a standalone UI: run 'graylog-mcp start' in the background (it installs and starts the server)."""

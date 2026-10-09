@@ -198,7 +198,8 @@ async def _check(config: Config) -> int:
 
 
 SUBCOMMANDS = (
-    "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install", "ui"
+    "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
+    "ui", "keepalive",  # keepalive is internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
 Getting started (one command, then everything happens in the browser):
@@ -738,12 +739,10 @@ def _start(argv: list[str]) -> int:
     if running is not None:
         print("  restarting the running server on this version…")
         if not args.no_autostart and autostart.kind:
-            autostart.write(cmd)
+            _try_autostart(autostart.write, cmd)
         service.restart(cmd, args.port, autostart)
         service.wait_down(args.port, timeout=3)
-    elif not args.no_autostart and autostart.kind:
-        autostart.enable(cmd, start_now=True)
-    else:
+    elif args.no_autostart or not autostart.kind or not _try_autostart(autostart.enable, cmd, start_now=True):
         service.spawn_detached(cmd)
     body = service.wait_healthy(args.port)
     if body is None:
@@ -758,6 +757,15 @@ def _start(argv: list[str]) -> int:
     if not args.no_browser:
         webbrowser.open(url)
     return 0
+
+
+def _try_autostart(step: Any, *args: Any, **kwargs: Any) -> bool:
+    try:
+        step(*args, **kwargs)
+    except (RuntimeError, OSError) as exc:
+        print(f"  ! cannot start at login: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def _stop(argv: list[str]) -> int:
@@ -871,6 +879,17 @@ def _ui(argv: list[str]) -> int:
         return 130
 
 
+def _keepalive(argv: list[str]) -> int:
+    """Internal: what the login item runs where no service manager restarts a crashed server."""
+    from graylog_mcp.setup import service
+
+    command = argv[1:] if argv[:1] == ["--"] else argv
+    if not command:
+        print("usage: graylog-mcp keepalive -- COMMAND [ARGS...]", file=sys.stderr)
+        return 2
+    return service.keep_alive(command)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help", "help"):
@@ -891,6 +910,7 @@ def main(argv: list[str] | None = None) -> int:
         "detect": _detect,
         "install": _install,
         "ui": _ui,
+        "keepalive": _keepalive,
     }
     return handlers[command](argv)
 
