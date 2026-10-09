@@ -174,7 +174,8 @@ def run_http(
         log.info("admin page: http://127.0.0.1:%s/admin/ (token in %s)", port, service.home_dir() / "admin-token")
         service.write_pid()
     try:
-        uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True)
+        # Claude sessions keep event streams open: give them a few seconds, not forever, on Ctrl+C or stop
+        uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True, timeout_graceful_shutdown=3)
     finally:
         if admin:
             service.clear_pid()

@@ -927,5 +927,5 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
     print("  (Ctrl+C to stop; the link contains a one-time access token)")
     if open_browser:
         webbrowser.open(url)
-    uvicorn.run(build_app(state), host=host, port=port, log_level="warning")
+    uvicorn.run(build_app(state), host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     return 0

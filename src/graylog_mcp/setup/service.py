@@ -226,7 +226,7 @@ def probe(port: int = DEFAULT_PORT, timeout: float = 0.5) -> dict[str, Any] | No
     return body if isinstance(body, dict) and body.get("status") == "ok" else None
 
 
-def wait_healthy(port: int, timeout: float = 20.0, commit: str | None = None) -> dict[str, Any] | None:
+def wait_healthy(port: int, timeout: float = 60.0, commit: str | None = None) -> dict[str, Any] | None:
     """Wait until the server answers (with ``commit`` when given: the restarted copy)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

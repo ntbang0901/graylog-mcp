@@ -116,3 +116,25 @@ async def test_admin_usage_and_log_stats(admin_client):
     assert len(main["buckets"]) >= 24 and len(main["error_buckets"]) == len(main["buckets"])
     assert "error" in envs["down"] and "total" not in envs["down"]  # one unreachable environment, others still shown
     assert (await admin_client.get("/api/usage", headers={"X-Admin-Token": "bad"})).status_code == 401
+
+
+async def test_server_starts_without_waiting_for_graylog(make_app, monkeypatch):
+    """Version detection runs in the background: an unreachable Graylog must not hold the start."""
+    import asyncio
+
+    from graylog_mcp import tools
+    from graylog_mcp.server import build_server
+
+    started = asyncio.Event()
+
+    async def slow_detection(app):
+        started.set()
+        await asyncio.sleep(3600)  # Graylog behind a VPN that is off
+
+    monkeypatch.setattr(tools, "list_instances", slow_detection)
+    app, _ = make_app("6.1.2")
+    server = build_server(app)
+    lifespan = server.settings.lifespan
+    async with asyncio.timeout(2):
+        async with lifespan(server):
+            await asyncio.wait_for(started.wait(), 1)  # detection began, and the server is already up

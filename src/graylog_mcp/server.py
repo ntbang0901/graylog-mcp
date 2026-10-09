@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -131,15 +133,26 @@ def build_server(app: App | AppPool) -> MCPServer:
         single = app
         current, startup = (lambda: single), single
 
+    async def detect(app: App) -> None:
+        try:
+            status = await tools.list_instances(app)  # detect versions once, cached afterwards
+        except Exception as exc:  # each tool call detects again if needed
+            log.warning("version detection failed: %s", exc)
+            return
+        for inst in status["instances"]:
+            log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
+
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-        if startup is not None:
-            status = await tools.list_instances(startup)  # detect versions once, cached afterwards
-            for inst in status["instances"]:
-                log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
+        # in the background: an unreachable Graylog (VPN off) must not hold the server's start
+        task = asyncio.create_task(detect(startup)) if startup is not None else None
         try:
             yield
         finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await app.close()
 
     server = MCPServer(
