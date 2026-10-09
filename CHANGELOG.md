@@ -102,6 +102,13 @@ All notable changes to this project are documented here. The format follows
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
 
+### Fixed
+- Ctrl+C, `graylog-mcp stop` and `update` no longer wait for requests still in flight (a check against an
+  unreachable Graylog, an open Claude session): the HTTP server and the admin UI give them 3 seconds.
+- The server no longer waits for every Graylog's version to be detected before it answers: detection runs in the
+  background, so an unreachable Graylog (VPN off) does not make `graylog-mcp start` report that it did not start.
+  `start` also waits up to a minute (was 20 seconds) for a slow first start.
+
 ## [0.1.0] - 2026-10-06
 
 ### Added
