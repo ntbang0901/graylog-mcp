@@ -369,11 +369,38 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert projects[str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
-def test_start_refuses_a_port_used_by_another_server(monkeypatch, capsys):
+def test_start_moves_off_a_port_used_by_another_program(monkeypatch, capsys):
     monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
-    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok"})  # no admin: not ours
-    assert main(["start", "--no-browser", "--no-claude"]) == 1
-    assert "port 8000 is used by another server" in capsys.readouterr().err
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
+    monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
+    spawned: list = []
+    monkeypatch.setattr(service, "spawn_detached", spawned.append)
+    taken = {service.DEFAULT_PORT, service.DEFAULT_PORT + 1}
+    monkeypatch.setattr(service, "port_free", lambda port: port not in taken)
+    assert main(["start", "--no-browser", "--no-claude"]) == 0
+    out = capsys.readouterr().out
+    assert f"port {service.DEFAULT_PORT} is used by another program: using {service.DEFAULT_PORT + 2}" in out
+    assert spawned[0][spawned[0].index("--port") + 1] == str(service.DEFAULT_PORT + 2)
+    assert service.current_port() == service.DEFAULT_PORT + 2  # stop, status, update and the page follow it
+    assert service.shared_url() == f"http://127.0.0.1:{service.DEFAULT_PORT + 2}/mcp"
+    # a port asked for explicitly is not changed
+    assert main(["start", "--no-browser", "--no-claude", "--port", str(service.DEFAULT_PORT)]) == 1
+    assert f"port {service.DEFAULT_PORT} is used by another program" in capsys.readouterr().err
+
+
+def test_ports(monkeypatch):
+    import socket
+
+    assert service.current_port() == service.DEFAULT_PORT and service.shared_url() == clients.SHARED_URL
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert not service.port_free(port)
+        assert service.free_port(port - 1) != port
+    monkeypatch.setattr(service, "port_free", lambda port: False)
+    assert service.free_port(service.DEFAULT_PORT) > 0  # nothing free nearby: the system picks one
 
 
 def test_status_when_not_running(monkeypatch, capsys):

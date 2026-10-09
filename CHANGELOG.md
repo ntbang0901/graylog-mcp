@@ -15,6 +15,9 @@ All notable changes to this project are documented here. The format follows
   their git commit. Where no service manager restarts a crashed server (XDG autostart, Task Scheduler), it runs
   under `graylog-mcp keepalive`, which starts it again (giving up after 5 quick crashes); on Windows through
   pythonw, so no console window opens. A Startup-folder entry from an earlier version is replaced.
+  The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); when another program
+  has the port, `start` takes the next free one, and `stop`, `status`, `update`, `ui` and `install --shared`
+  follow the port `start` used.
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
   config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.
