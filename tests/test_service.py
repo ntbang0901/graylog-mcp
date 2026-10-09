@@ -414,3 +414,16 @@ def test_ui_opens_the_running_server(monkeypatch, capsys):
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok", "admin": True})
     assert main(["ui", "--no-browser"]) == 0
     assert service.admin_url() in capsys.readouterr().out
+
+
+def test_output_that_cannot_show_a_character(monkeypatch):
+    import io
+
+    from graylog_mcp.__main__ import _tolerant_output
+
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # a pipe on Windows
+    monkeypatch.setattr(sys, "stdout", out)
+    _tolerant_output()
+    print("✓ started")
+    out.flush()
+    assert out.buffer.getvalue().strip() == b"? started"

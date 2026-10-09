@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format follows
   The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); when another program
   has the port, `start` takes the next free one, and `stop`, `status`, `update`, `ui` and `install --shared`
   follow the port `start` used.
+  Command output no longer fails on consoles that cannot show ✓ (a Windows pipe in cp1252).
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
   config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.

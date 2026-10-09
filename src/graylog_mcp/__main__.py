@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hmac
+import io
 import ipaddress
 import json
 import logging
@@ -904,7 +905,15 @@ def _keepalive(argv: list[str]) -> int:
     return service.keep_alive(command)
 
 
+def _tolerant_output() -> None:
+    """Print '?' for characters the console cannot show (✓ on a Windows cp1252 pipe) instead of failing."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerant_output()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help", "help"):
         print(HELP)
