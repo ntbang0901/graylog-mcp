@@ -7,13 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- Admin page rebuilt for fewer steps (6 pages instead of 9): **Finish setup** runs every step that needs no
-  input and opens the form for the rest; Home shows each environment's problem, fix and button on one row;
+- Usage statistics: the MCP server records each tool call (tool, environment, duration, results, size, the query
+  redacted with the redaction rules) in `usage.jsonl` next to its state, trimmed past 4 MB; `GRAYLOG_MCP_USAGE=off`
+  turns it off. The admin page's Dashboard charts log volume and errors per environment from Graylog (24 hours or
+  7 days), the tools used and the searches that found nothing; a new Activity page shows calls over time,
+  per-tool latency and the recent calls, each re-runnable in the Playground. `/api/usage`, `/api/logstats`.
+- Admin page rebuilt for fewer steps (8 pages instead of 9, Activity included): **Finish setup** runs every step that needs no
+  input and opens the form for the rest; the Dashboard shows each environment's problem, fix and button on one row;
   Environments, groups and repositories share one page and save as you change them; field detection sits in
   Log fields and applies to the scope being edited; the environment form tests and saves in one click and
   names the environment from its URL; Ctrl/⌘+K command palette; save bar with Ctrl/⌘+S and a guard against
-  losing changes. New look in the Linear / Vercel design language (near-black, hairlines, one indigo
-  accent), dark by default with a light theme, accessible contrast, focus rings, reduced-motion support, SVG
+  losing changes. New look: quiet neutral grays with one blue for data and red/green only for state,
+  dark by default with a light theme, accessible contrast, focus rings, reduced-motion support, SVG
   icons. "Start the server" from `graylog-mcp ui` no longer waits for a /healthz that page does not serve.
 - `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
   background with the admin page at `/admin`, start it at login (launchd, systemd, XDG autostart, Windows Task

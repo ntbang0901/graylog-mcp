@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, scan, tools
+from graylog_mcp import __version__, rca, scan, tools, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -626,6 +626,49 @@ def build_app(state: AdminState) -> Starlette:
             }
         )
 
+    def _range(request: Request) -> tuple[str, int, int]:
+        """24h in hourly buckets (default) or 7d in 6-hour buckets."""
+        return ("7d", 168, 6) if request.query_params.get("range") == "7d" else ("24h", 24, 1)
+
+    async def get_usage(request: Request) -> Response:
+        _, hours, step = _range(request)
+        return JSONResponse(await asyncio.to_thread(usage.summarize, hours, step))
+
+    async def get_logstats(request: Request) -> Response:
+        """Messages and errors per bucket in every environment, straight from Graylog (nothing is stored)."""
+        rng, _, step = _range(request)
+        try:
+            app = await state.app()
+        except ConfigError as exc:
+            return _err(str(exc))
+
+        async def one(name: str) -> dict[str, Any]:
+            gl = app.instances[name]
+
+            def histogram(query: str) -> Any:
+                return tools.log_histogram(
+                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name
+                )
+
+            try:
+                every, errors = await asyncio.wait_for(
+                    asyncio.gather(histogram("*"), histogram(gl.cfg.error_query)),
+                    timeout=20,
+                )
+            except Exception as exc:  # one unreachable environment must not hide the others
+                return {"name": name, "error": str(exc)[:300] or type(exc).__name__}
+            return {
+                "name": name,
+                "total": every.get("total") or 0,
+                "errors": errors.get("total") or 0,
+                "error_query": gl.cfg.error_query,
+                "buckets": every.get("buckets") or [],
+                "error_buckets": errors.get("buckets") or [],
+            }
+
+        rows = await asyncio.gather(*(one(name) for name in app.instances))
+        return JSONResponse({"range": rng, "bucket_hours": step, "environments": list(rows)})
+
     async def run_doctor(_request: Request) -> Response:
         try:
             app = await state.app()
@@ -796,6 +839,8 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/redact", redact_preview, methods=["POST"]),
         Route("/api/run", run_tool, methods=["POST"]),
         Route("/api/doctor", run_doctor),
+        Route("/api/usage", get_usage),
+        Route("/api/logstats", get_logstats),
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
