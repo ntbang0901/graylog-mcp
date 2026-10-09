@@ -8,11 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 - `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
-  background with the admin page at `/admin`, start it at login (launchd, systemd, Startup folder), register
-  Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
+  background with the admin page at `/admin`, start it at login (launchd, systemd, XDG autostart, Windows Task
+  Scheduler), register Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
   the page. `stop`, `status`, `update` (reinstall from the same source and restart); `ui` opens the running
   server's page. The admin page starts with a Setup checklist with one button per step, and versions show
-  their git commit.
+  their git commit. Where no service manager restarts a crashed server (XDG autostart, Task Scheduler), it runs
+  under `graylog-mcp keepalive`, which starts it again (giving up after 5 quick crashes); on Windows through
+  pythonw, so no console window opens. A Startup-folder entry from an earlier version is replaced.
+  The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); when another program
+  has the port, `start` takes the next free one, and `stop`, `status`, `update`, `ui` and `install --shared`
+  follow the port `start` used.
+  Command output no longer fails on consoles that cannot show ✓ (a Windows pipe in cp1252).
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
   config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.

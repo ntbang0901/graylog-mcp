@@ -122,11 +122,31 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/mcp)" = 401
           docker rm -f mcp
 
+  start:
+    name: Start at login (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: start, crash, restart, stop with the real service manager
+        env:
+          XDG_CURRENT_DESKTOP: CI   # Linux without a systemd user session: XDG autostart
+        run: uv run python tests/smoke_start.py
+
   # Single required check for branch protection.
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, test, build, docker]
+    needs: [lint, test, build, docker, start]
     runs-on: ubuntu-latest
     steps:
       - env:
