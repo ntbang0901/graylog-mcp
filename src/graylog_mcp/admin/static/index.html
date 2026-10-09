@@ -4,33 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>graylog-mcp admin</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230F172A'/%3E%3Cpath d='M7 21l6-7 4 4 8-10' stroke='%2322C55E' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0E17'/%3E%3Cpath d='M7 21l6-7 4 4 8-10' stroke='%23D4AF6A' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <script>
 // theme before first paint: dark unless the viewer picked light
 try { const t = localStorage.getItem("gm-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) { /* storage blocked */ }
 </script>
 <style>
-/* Design tokens: Minimalism / Swiss, dark first (slate + run green). Text pairs meet WCAG AA 4.5:1. */
+/* Design tokens: Minimalism / Swiss, dark first: midnight ink with champagne gold for actions, green kept for
+   "healthy". Every text pair meets WCAG AA 4.5:1, input borders 3:1. */
 :root, [data-theme="dark"] {
-  --bg: #0F172A; --sidebar: #0B1222; --panel: #1B2336; --panel-2: #222B3F; --raised: #26304A;
-  --text: #F8FAFC; --muted: #A3B1C6; --faint: #7C8BA1;
-  --line: #2A3448; --line-strong: #64748B;
-  --accent: #22C55E; --accent-hover: #4ADE80; --on-accent: #0F172A; --accent-soft: rgba(34, 197, 94, .14);
+  --bg: #0B0E17; --sidebar: #080B12; --panel: #131826; --panel-2: #1A2032; --raised: #1E2538;
+  --text: #F5F3EE; --muted: #A9B0C2; --faint: #8A93A8;
+  --line: #262E44; --line-strong: #5A6684;
+  --accent: #D4AF6A; --accent-hover: #E3C68E; --on-accent: #17120A; --accent-soft: rgba(212, 175, 106, .13);
   --ok: #4ADE80; --ok-soft: rgba(74, 222, 128, .12); --warn: #FBBF24; --warn-soft: rgba(251, 191, 36, .12);
-  --fail: #F87171; --fail-soft: rgba(248, 113, 113, .13); --info: #7DB4FF; --info-soft: rgba(96, 165, 250, .13);
-  --code: #111A2E; --ring: #F8FAFC; --scrim: rgba(2, 6, 23, .66);
-  --shadow: 0 1px 2px rgba(0, 0, 0, .3); --shadow-lg: 0 16px 40px rgba(0, 0, 0, .55);
+  --fail: #F87171; --fail-soft: rgba(248, 113, 113, .13); --info: #8FB4FF; --info-soft: rgba(143, 180, 255, .13);
+  --code: #0D111C; --ring: #E3C68E; --scrim: rgba(3, 5, 12, .7);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35); --shadow-lg: 0 18px 44px rgba(0, 0, 0, .6);
   color-scheme: dark;
 }
 [data-theme="light"] {
-  --bg: #F8FAFC; --sidebar: #FFFFFF; --panel: #FFFFFF; --panel-2: #F1F5F9; --raised: #FFFFFF;
-  --text: #0F172A; --muted: #475569; --faint: #64748B;
-  --line: #E2E8F0; --line-strong: #8A99AF;
-  --accent: #15803D; --accent-hover: #166534; --on-accent: #FFFFFF; --accent-soft: #DCFCE7;
+  --bg: #FAF8F4; --sidebar: #FFFFFF; --panel: #FFFFFF; --panel-2: #F3F0EA; --raised: #FFFFFF;
+  --text: #14161F; --muted: #4E5566; --faint: #6B7280;
+  --line: #E7E2D8; --line-strong: #8E887B;
+  --accent: #8A6A2B; --accent-hover: #735722; --on-accent: #FFFFFF; --accent-soft: #F4ECDB;
   --ok: #15803D; --ok-soft: #DCFCE7; --warn: #B45309; --warn-soft: #FEF3C7;
   --fail: #B91C1C; --fail-soft: #FEE2E2; --info: #1D4ED8; --info-soft: #DBEAFE;
-  --code: #F1F5F9; --ring: #0F172A; --scrim: rgba(15, 23, 42, .45);
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 1px 3px rgba(15, 23, 42, .08); --shadow-lg: 0 16px 40px rgba(15, 23, 42, .2);
+  --code: #F7F4EE; --ring: #8A6A2B; --scrim: rgba(20, 22, 31, .45);
+  --shadow: 0 1px 2px rgba(20, 22, 31, .05), 0 1px 3px rgba(20, 22, 31, .07); --shadow-lg: 0 18px 44px rgba(20, 22, 31, .18);
   color-scheme: light;
 }
 :root {
@@ -55,7 +56,7 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .app { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { background: var(--sidebar); border-right: 1px solid var(--line); padding: var(--sp-4) var(--sp-3); position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 2px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px var(--sp-4); font-weight: 600; font-size: 15px; }
-.brand .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); display: grid; place-items: center; color: var(--accent); }
+.brand .logo { width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); display: grid; place-items: center; color: var(--accent); }
 .nav { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 7px 10px; border: 0; background: none; border-radius: 8px; color: var(--muted); font: inherit; cursor: pointer; text-align: left; transition: background var(--dur), color var(--dur); }
 .nav:hover { background: var(--panel-2); color: var(--text); }
 .nav[aria-current="page"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
@@ -122,7 +123,7 @@ textarea { font-size: 12.5px; line-height: 1.5; }
 .btn.ghost { border-color: transparent; background: none; color: var(--muted); }
 .btn.ghost:hover { background: var(--panel-2); color: var(--text); }
 .btn.danger { color: var(--fail); }
-.btn.danger-solid { background: var(--fail); border-color: var(--fail); color: #0F172A; font-weight: 600; }
+.btn.danger-solid { background: var(--fail); border-color: var(--fail); color: #17120A; font-weight: 600; }
 [data-theme="light"] .btn.danger-solid { color: #FFFFFF; }
 .btn.sm { min-height: 30px; padding: 4px 10px; font-size: 12.5px; }
 .btn.icon { padding: 6px; min-width: 32px; }
@@ -135,7 +136,7 @@ textarea { font-size: 12.5px; line-height: 1.5; }
 .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .badge.fail { background: var(--fail-soft); color: var(--fail); border-color: transparent; }
-.badge.info { background: var(--info-soft); color: var(--info); border-color: transparent; }
+.badge.info { background: var(--accent-soft); color: var(--accent); border-color: transparent; }  /* default, focus: labels, not alerts */
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.fail { background: var(--fail); }
 .dot.busy { background: var(--info); animation: pulse 1s ease-in-out infinite; }
