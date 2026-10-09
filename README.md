@@ -35,8 +35,9 @@ uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp start
 ```
 
 It installs graylog-mcp, runs it in the background as **one process for every Claude session**, starts it
-again when you log in, connects Claude Code in every project and opens the admin page. The page's **Setup**
-checklist shows what is left (usually: add your Graylog URL and a token) with a button for each step.
+again when you log in, connects Claude Code in every project and opens the admin page. Its **Get set up** card
+shows what is left; **Finish setup** does every step that needs no input in one click and then opens the form
+for what does (usually: your Graylog URL and a token).
 
 Afterwards:
 
@@ -416,16 +417,24 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
-- **Overview**: environment cards and the doctor checks with fixes;
-- **Environments**: add, edit, delete, set default; type the token or password once, test the connection, and
-  save (the secret goes to your per-user secrets file, the variable name is chosen for you);
-- **Field mapping**: run detection on an environment, review the evidence, apply the selected settings;
+- **Home**: the setup steps (one **Finish setup** button), then every environment's health with the problem,
+  how to fix it and a button for it (*Add token*, *Fix*) on the same row;
+- **Environments**: one card per group with its environments, default environment, repositories and their
+  focus; descriptions and defaults save as you change them. The environment form tests the connection and saves
+  in one click (*Save anyway* if Graylog cannot be reached), names the environment from the URL
+  (`graylog-uat.acme.com` gives `uat`) and saves the token or password to your per-user secrets file;
+- **Log fields**: settings per scope, with detection from your logs in the same page: suggestions next to the
+  value in effect, applied to the scope you are editing;
 - **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
   mask your sample text;
 - **Playground**: run any tool against any environment and see the exact output, its size and an
   approximate token count;
-- **Connect clients**: ready-to-copy snippets and one-click install for each client;
+- **Other clients**: snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file**: edit the TOML with validation and an automatic backup.
+
+<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
+save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Dark by default, with a
+light theme and a phone layout.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password
@@ -520,7 +529,7 @@ To reach more groups from a repository, set `only_groups = ["payment", "erp"]` (
 `.graylog-mcp.toml`, or `GRAYLOG_MCP_GROUPS=payment,erp` in the MCP client's environment. `only_groups` also
 works without repositories, e.g. in a personal config. The admin UI always shows every group.
 
-Manage them in the admin UI (Environments > Groups > Repositories: add a local folder, see its git remote and
+Manage them in the admin UI (Environments, in each group's card: add a local folder, see its git remote and
 whether it is set up, "Set up" writes `.graylog-mcp.toml` with an `include` of the shared file and
 `only_groups`, so the scope holds on every machine whatever its folder layout, and registers
 Claude Code there) or from the command line:
@@ -551,12 +560,12 @@ streams = ["MDM"]               # optional: streams searched by default
 Without `[focus]`, the service is guessed from the repository name (folder or git remote) by matching it against
 the values of the service fields (`service`, `application`, ...) over the last 24 hours: `cobra-mdm` finds
 `cobra-mdm-service`. No clear match, no filter; `list_instances` shows what was picked. Set it from the admin UI
-(Groups & repositories > Focus), with `graylog-mcp repo focus cobra-mdm-service --streams MDM` inside the
+(Environments > the repository's Focus), with `graylog-mcp repo focus cobra-mdm-service --streams MDM` inside the
 repository, or for one MCP client with `GRAYLOG_MCP_SERVICE=<name>` (`off` disables it).
 
 ### Settings by scope
 
-The admin UI's **Settings** page edits field names, queries and connection options for a chosen scope: global,
+The admin UI's **Log fields** page edits field names, queries and connection options for a chosen scope: global,
 one environment (for every group), one group, or a single instance. Each field shows the value currently in
 effect; leaving it empty inherits it.
 

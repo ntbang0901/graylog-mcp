@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Admin page rebuilt for fewer steps (6 pages instead of 9): **Finish setup** runs every step that needs no
+  input and opens the form for the rest; Home shows each environment's problem, fix and button on one row;
+  Environments, groups and repositories share one page and save as you change them; field detection sits in
+  Log fields and applies to the scope being edited; the environment form tests and saves in one click and
+  names the environment from its URL; Ctrl/⌘+K command palette; save bar with Ctrl/⌘+S and a guard against
+  losing changes. New look: dark by default with a light theme, accessible contrast, focus rings,
+  reduced-motion support, SVG icons. "Start the server" from `graylog-mcp ui` no longer waits for a /healthz
+  that page does not serve.
 - `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
   background with the admin page at `/admin`, start it at login (launchd, systemd, XDG autostart, Windows Task
   Scheduler), register Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
