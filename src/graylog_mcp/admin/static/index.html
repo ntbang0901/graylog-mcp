@@ -355,6 +355,7 @@ details[open] summary { margin-bottom: 8px; }
         <div id="usageOff"></div>
         <div class="card"><div class="card-head"><h2>Tool calls</h2><span class="muted small" id="callsSub"></span></div><div id="callsChart"><div class="skeleton"></div></div></div>
         <div class="card"><div class="card-head"><h2>By tool</h2></div><div id="toolTable"></div></div>
+        <div class="card"><div class="card-head"><h2>What graylog-mcp learned</h2><span class="muted small" id="learnSub"></span></div><div id="learned"></div></div>
         <div class="card"><div class="card-head"><h2>Recent calls</h2><span class="muted small">queries are redacted before they are recorded</span></div><div id="recentCalls"></div></div>
       </section>
 
@@ -618,7 +619,7 @@ async function showPage(name) {
   document.title = `${page.dataset.title} · graylog-mcp`;
   history.replaceState(null, "", `#${name}`);
   const active = document.querySelector(".nav[aria-current]"); if (active) active.scrollIntoView({block: "nearest", inline: "nearest"});
-  if (name === "home" || name === "activity") { loadDashboard(); if (name === "activity") renderActivity(); }
+  if (name === "home" || name === "activity") { loadDashboard(); if (name === "activity") { renderActivity(); loadLearned(); } }
   if (name === "config") loadRaw();
   if (name === "connect") loadClients();
   if (name === "redaction") { renderRedaction(); previewRedaction(); }
@@ -1031,7 +1032,7 @@ function renderActivity() {
   $("recentCalls").innerHTML = ACT_ROWS.length ? `<div class="table-wrap"><table class="calls"><thead><tr><th>When</th><th>Tool</th><th>Environment</th><th>Asked for</th><th class="num">Found</th><th class="num">Time</th><th><span class="hidden">Actions</span></th></tr></thead><tbody>
     ${ACT_ROWS.map((e, k) => `<tr><td title="${esc(new Date(e.ts * 1000).toLocaleString())}" style="white-space:nowrap">${timeAgo(e.ts)}</td><td class="mono">${esc(e.tool)}</td><td>${esc(e.instance || "")}${e.repo ? `<div class="faint">${esc(e.repo)}</div>` : ""}</td>
       <td class="q">${esc(callWhat(e))}${e.error ? `<div class="miss" style="font-family:var(--sans)">${esc(e.error)}</div>` : ""}</td>
-      <td class="num">${!e.ok ? '<span class="miss">error</span>' : e.results === 0 ? '<span class="miss">0</span>' : e.results === undefined ? "–" : num(e.results)}</td>
+      <td class="num">${e.rewritten ? '<span class="badge" title="A safe or learned fix ran instead of the query as written">fixed</span> ' : ""}${!e.ok ? '<span class="miss">error</span>' : e.results === 0 ? '<span class="miss">0</span>' : e.results === undefined ? "–" : num(e.results)}</td>
       <td class="num" style="white-space:nowrap">${num(e.ms)} ms</td>
       <td><button class="btn sm ghost" data-rerun-act="${k}" title="Open in the Playground">Re-run</button></td></tr>`).join("")}</tbody></table></div>
       ${matching.length > ACT_ROWS.length ? `<div style="margin-top:10px"><button class="btn sm" id="actMore">Show ${Math.min(25, matching.length - ACT_ROWS.length)} more · ${matching.length - ACT_ROWS.length} left</button></div>` : ""}`
@@ -1039,6 +1040,30 @@ function renderActivity() {
 }
 let resizeTimer = null;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (CURRENT === "home") renderDashboard(); if (CURRENT === "activity") renderActivity(); }, 150); });
+// learned fixes: weight = mean of Beta(1 + used, 1 + offered - used); automatic past the server's threshold
+let LEARNED = null;
+const KIND_TEXT = {field: "field name", level: "level form", case: "letter case", prefix: "prefix wildcard", focus: "outside focus"};
+async function loadLearned() {
+  try { LEARNED = await api("/api/learned"); } catch (e) { $("learned").innerHTML = `<div class="inline-msg">${esc(e.message)}</div>`; return; }
+  renderLearned();
+}
+function renderLearned() {
+  const L = LEARNED; if (!L) return;
+  $("learnSub").textContent = L.enabled ? `a fix used ${L.auto_min_uses}+ times with weight ≥ ${L.auto_weight} applies by itself` : "learning is off (GRAYLOG_MCP_LEARN=off)";
+  if (!L.rules.length) { $("learned").innerHTML = '<div class="inline-msg">Nothing yet. When a search finds nothing, graylog-mcp suggests fixes with exact counts; the ones the model uses are learned here.</div>'; return; }
+  const change = (r) => r.kind === "field" ? `${r.from} → ${r.to}` : r.kind === "case" ? `${r.from}: ${r.to} case` : r.kind === "level" ? `${r.from}: as a ${r.to}` : r.kind === "prefix" ? "word → word*" : "every stream";
+  $("learned").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Environment</th><th>Fix</th><th>Change</th><th class="num">Used / offered</th><th>Weight</th><th>Applied</th><th><span class="hidden">Actions</span></th></tr></thead><tbody>
+    ${L.rules.map((r) => `<tr><td>${esc(r.instance)}</td><td>${esc(KIND_TEXT[r.kind] || r.kind)}</td><td class="mono small">${esc(change(r))}</td>
+      <td class="num">${num(r.used)} / ${num(r.offered)}</td>
+      <td><div class="cov"><div class="bar"><div style="width:${Math.round(r.weight * 100)}%"></div></div><span class="small">${r.weight.toFixed(2)}</span></div></td>
+      <td>${r.auto ? '<span class="badge ok">automatically</span>' : '<span class="badge">as a suggestion</span>'}</td>
+      <td><button class="btn sm ghost danger" data-forget="${esc(r.key)}">Forget</button></td></tr>`).join("")}</tbody></table></div>`;
+}
+$("learned").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-forget]"); if (!b) return;
+  if (!await confirmBox("Forget this fix?", "It is suggested again from scratch the next time it fits.", "Forget", true)) return;
+  try { await api("/api/learned/forget", "POST", {key: b.dataset.forget}); toast("Forgotten"); loadLearned(); } catch (e) { toast(e.message, "fail"); }
+});
 $("a_tool").addEventListener("change", () => { ACT_LIMIT = 25; renderActivity(); }); $("a_problems").addEventListener("change", () => { ACT_LIMIT = 25; renderActivity(); });
 $("recentCalls").addEventListener("click", (ev) => {
   const b = ev.target.closest("[data-rerun-act]"); if (b) rerun(ACT_ROWS[+b.dataset.rerunAct]);
