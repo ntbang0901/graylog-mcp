@@ -220,12 +220,12 @@ async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp
     assert state["shared"]["running"] and state["groups"][1]["repos"][0]["claude_code"] == "stdio"
     # "Use shared server" on a repository whose .mcp.json starts uvx: a private override, the file is kept
     switched = (await client.post("/api/repos/setup", json={"group": "erp", "repo": str(old)})).json()
-    assert switched["source"] == "shared" and switched["claude_code"] == "every project (shared server)"
+    assert switched["source"] == "shared" and switched["claude_code"] == "this repository (shared server)"
     assert (old / ".mcp.json").read_text() == committed
     cfg = fake_claude.config()
-    assert cfg["mcpServers"]["graylog"]["url"] == clients.SHARED_URL
+    assert "graylog" not in cfg.get("mcpServers", {})  # nothing global: only this repository
     assert cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
-    # a new repository needs nothing written: the registration for every project covers it
+    # a new repository gets its own private registration; nothing is written in it
     new = make_repo(root, "payment-api")
     added = await client.post(
         "/api/repos", json={"group": "payment", "repo": str(new), "project_config": True, "claude_code": True}
@@ -233,7 +233,9 @@ async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp
     assert added.json()["source"] == "shared" and not (new / ".mcp.json").exists()
     groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
     assert [r["claude_code"] for g in groups.values() for r in g["repos"]] == ["shared", "shared"]
-    assert len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 2  # user + the one override
+    assert (
+        len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 2
+    )  # one private registration per repository
 
 
 def test_repo_cli(tmp_path, monkeypatch, capsys):

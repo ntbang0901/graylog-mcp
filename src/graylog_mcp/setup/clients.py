@@ -282,59 +282,104 @@ def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None)
     raw_projects = config.get("projects")
     projects: dict[str, Any] = raw_projects if isinstance(raw_projects, dict) else {}
     candidates = {Path(p) for p in projects} | {Path(f) for f in folders or []}
-    stdio, stale = [], []
+    stdio, stale, local_ok, missing = [], [], [], []
+    registered = _is_http_to(user, url)
+    wanted = {str(Path(f)) for f in folders or []}
     for folder in sorted(candidates):
         entry = _project_entry(folder)
         local = ((projects.get(str(folder)) or {}).get("mcpServers") or {}).get(SERVER_NAME)
         if _is_http_to(local, url):
-            continue
-        if isinstance(local, dict) and _is_local_mcp_url(local.get("url")):
+            local_ok.append(str(folder))
+        elif isinstance(local, dict) and _is_local_mcp_url(local.get("url")):
             stale.append(str(folder))  # a private override left by 'start' on another port
         elif isinstance(entry, dict) and not entry.get("url"):
             stdio.append(str(folder))
         elif isinstance(entry, dict) and _is_local_mcp_url(entry.get("url")) and entry["url"] != url:
             stale.append(str(folder))  # the committed .mcp.json points to another local port
+        elif str(folder) in wanted and entry is None and not registered:
+            missing.append(str(folder))  # a repository of a group that Claude Code does not reach yet
     return {
         "cli": claude_binary() is not None,
-        "registered": _is_http_to(user, url),
-        "user_stale": _is_local_mcp_url(user.get("url")) if isinstance(user, dict) else False,
+        "registered": registered,
+        "user_stale": _is_local_mcp_url(user.get("url")) and user["url"] != url if isinstance(user, dict) else False,
         "user_entry": bool(user),
         "stdio_projects": stdio,
         "stale_projects": stale,  # registered on another port: moved by register_claude_code
+        "local_projects": local_ok,  # reached through their own private registration
+        "missing_projects": missing,
+        "repos": len(wanted),
         "command": claude_code_command([], "shared", url=url),
     }
 
 
-def register_claude_code(url: str = SHARED_URL, folders: list[Path] | None = None, runner: Any = None) -> dict:
-    """Register the shared server in Claude Code for every project (user scope), and override the projects
-    whose .mcp.json still starts graylog-mcp itself or points to another port, privately (local scope: the
-    committed file is untouched). Registrations of an earlier port are replaced."""
+def _claude_runner(runner: Any) -> Any:
     import subprocess
 
+    return runner or (lambda cmd, **kw: subprocess.run(cmd, capture_output=True, text=True, check=False, **kw))
+
+
+def _headers(url: str) -> list[str]:
+    return [h for k, v in shared_entry("claude-code", url)["headers"].items() for h in ("--header", f"{k}: {v}")]
+
+
+def _add_user(claude: str, run: Any, url: str, replace: bool, done: dict[str, Any]) -> None:
+    if replace:
+        run([claude, "mcp", "remove", SERVER_NAME, "--scope", "user"])
+    added = run([claude, "mcp", "add", "--transport", "http", "--scope", "user", SERVER_NAME, url, *_headers(url)])
+    if added.returncode != 0:
+        done["errors"].append(f"user: {(added.stderr or added.stdout).strip()}")
+    done["user"] = added.returncode == 0
+
+
+def _add_local(claude: str, run: Any, url: str, folder: str, done: dict[str, Any]) -> None:
+    """A private registration for one project (Claude Code's local scope): nothing is written in the repository."""
+    run([claude, "mcp", "remove", SERVER_NAME, "--scope", "local"], cwd=folder)
+    added = run([claude, "mcp", "add", "--transport", "http", "--scope", "local", SERVER_NAME, url, *_headers(url)],
+                cwd=folder)  # fmt: skip
+    if added.returncode == 0:
+        done["projects"].append(folder)
+    else:
+        done["errors"].append(f"{folder}: {(added.stderr or added.stdout).strip()}")
+
+
+def register_claude_code(
+    url: str = SHARED_URL, folders: list[Path] | None = None, runner: Any = None, user: bool = True
+) -> dict:
+    """Connect Claude Code to the shared server.
+
+    ``user=True``: one registration for every project (user scope). ``user=False``: per repository only, nothing
+    global is created (a user entry of an earlier port is still moved): each of ``folders`` gets a private
+    registration (local scope). Either way the projects whose .mcp.json starts graylog-mcp itself or points to
+    another port are overridden privately, and the committed file is untouched."""
     claude = claude_binary()
     if claude is None:
         raise ValueError(
             f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
         )
-    run = runner or (lambda cmd, **kw: subprocess.run(cmd, capture_output=True, text=True, check=False, **kw))
-    headers = [h for k, v in shared_entry("claude-code", url)["headers"].items() for h in ("--header", f"{k}: {v}")]
+    run = _claude_runner(runner)
     status = claude_code_status(url, folders)
     done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
-    if not status["registered"]:
-        if status["user_entry"]:
-            run([claude, "mcp", "remove", SERVER_NAME, "--scope", "user"])
-        added = run([claude, "mcp", "add", "--transport", "http", "--scope", "user", SERVER_NAME, url, *headers])
-        if added.returncode != 0:
-            done["errors"].append(f"user: {(added.stderr or added.stdout).strip()}")
-        done["user"] = added.returncode == 0
-    for folder in [*status["stdio_projects"], *status["stale_projects"]]:
-        run([claude, "mcp", "remove", SERVER_NAME, "--scope", "local"], cwd=folder)
-        added = run([claude, "mcp", "add", "--transport", "http", "--scope", "local", SERVER_NAME, url, *headers],
-                    cwd=folder)  # fmt: skip
-        if added.returncode == 0:
-            done["projects"].append(folder)
-        else:
-            done["errors"].append(f"{folder}: {(added.stderr or added.stdout).strip()}")
+    if not status["registered"] and (user or status["user_stale"]):
+        _add_user(claude, run, url, status["user_entry"], done)
+    todo = [*status["stdio_projects"], *status["stale_projects"], *(status["missing_projects"] if not user else [])]
+    for folder in todo:
+        _add_local(claude, run, url, folder, done)
+    return done
+
+
+def repair_registrations(url: str, folders: list[Path] | None = None, runner: Any = None) -> dict:
+    """Move what an earlier port registered (user entry, private overrides, committed .mcp.json URLs) to ``url``.
+    Creates nothing new; does nothing without the claude command."""
+    done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
+    claude = claude_binary()
+    if claude is None:
+        return done
+    status = claude_code_status(url, folders)
+    run = _claude_runner(runner)
+    if status["user_stale"]:
+        _add_user(claude, run, url, True, done)
+    for folder in status["stale_projects"]:
+        _add_local(claude, run, url, folder, done)
     return done
 
 

@@ -35,7 +35,7 @@ uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp start
 ```
 
 It installs graylog-mcp, runs it in the background as **one process for every Claude session**, starts it
-again when you log in, connects Claude Code in every project and opens the admin page. Its **Get set up** card
+again when you log in, connects Claude Code in the repositories of your groups and opens the admin page. Its **Get set up** card
 shows what is left; **Finish setup** does every step that needs no input in one click and then opens the form
 for what does (usually: your Graylog URL and a token).
 
@@ -629,11 +629,17 @@ What `start` does, so you know what is on your machine:
   `~/.config/graylog-mcp/server.log`.
 - **The admin page** at `http://127.0.0.1:18742/admin/`, with the access token kept in
   `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
-- **Claude Code**, registered once for every project (user scope):
-  `claude mcp add --transport http graylog --scope user http://127.0.0.1:18742/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
-  Claude Code fills in the folder it runs in; the server walks up to the repository. A project whose committed
-  `.mcp.json` still starts graylog-mcp itself gets a private override (local scope) instead: the file stays as
-  it is for your teammates.
+- **Claude Code**, connected repository by repository: each repository of your groups gets a private registration
+  (Claude Code's local scope, nothing is written in the repository), as if you had run in its folder
+  `claude mcp add --transport http graylog --scope local http://127.0.0.1:18742/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
+  Claude Code fills in the folder it runs in; the server walks up to the repository. A repository whose committed
+  `.mcp.json` still starts graylog-mcp itself is overridden the same way: the file stays as it is for your
+  teammates. `graylog-mcp start --global` registers it once for every project (user scope) instead of, or as
+  well.
+- **A different port**: whenever the server starts (by `start`, at login, after `update`), what an earlier port
+  registered follows it: Claude Code's registrations and overrides, committed `.mcp.json` URLs (through an
+  override) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
+  elsewhere.
 
 How the server picks the configuration of a session:
 
