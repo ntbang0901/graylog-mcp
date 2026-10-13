@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,13 @@ from graylog_mcp.setup import clients, connect
 from graylog_mcp.tools import App
 from tests import fake_claude
 from tests.fake_graylog import FakeGraylog
+
+
+def same_folder(header: str, folder: Path) -> bool:
+    """The repository header Claude Code sends: ${PWD:-} (expanded by it), or on Windows the folder itself."""
+    if header == "${PWD:-}":
+        return platform.system() != "Windows"
+    return Path(header).resolve() == folder.resolve()
 
 
 def make_repo(root: Path, name: str, remote: str | None = None) -> Path:
@@ -224,7 +232,8 @@ async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp
     assert (old / ".mcp.json").read_text() == committed
     cfg = fake_claude.config()
     assert "graylog" not in cfg.get("mcpServers", {})  # nothing global: only this repository
-    assert cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+    header = cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"]["X-Graylog-MCP-Repo"]
+    assert same_folder(header, old)  # ${PWD:-}, or the folder itself where Windows has no PWD
     # a new repository gets the shared server in its own .mcp.json, created as it has none
     new = make_repo(root, "payment-api")
     added = await client.post(

@@ -18,6 +18,7 @@ import pytest
 from graylog_mcp.__main__ import build_http_app, main, with_admin
 from graylog_mcp.setup import clients, service
 from tests import fake_claude
+from tests.test_repos import same_folder
 from tests.test_shared import _free_port, workspace
 
 
@@ -302,7 +303,8 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
         assert setup["claude"]["missing_projects"] == []
         written = json.loads((pay / ".mcp.json").read_text())["mcpServers"]["graylog"]
-        assert written["url"] == f"{base}/mcp" and written["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+        assert written["url"] == f"{base}/mcp"
+        assert same_folder(written["headers"]["X-Graylog-MCP-Repo"], pay)
         # ... and, when asked, one registration for every project
         done = httpx.post(
             f"{base}/admin/api/setup/claude", headers=token, json={"everywhere": True}, trust_env=False
@@ -459,9 +461,63 @@ def test_per_repository_leaves_no_conflicting_scopes(tmp_path, monkeypatch):
     assert not clients.register_claude_code(url, [repo], user=True).get("removed_user")
 
 
-def test_register_without_claude_cli():
+def test_windows_writes_the_repository_folder_where_pwd_is_empty(tmp_path, monkeypatch):
+    """Claude Code on Windows has no PWD: ${PWD:-} would send an empty header and the server could not tell the
+    repository ('no repository given and no default configuration')."""
+    url = "http://127.0.0.1:18742/mcp"
+    monkeypatch.setattr(clients, "_windows", lambda: True)
+    repo = tmp_path / "InboundReceiving"
+    repo.mkdir()
+    assert clients.shared_entry("claude-code", url)["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}  # no folder known
+    assert clients.shared_entry("claude-code", url, repo)["headers"] == {"X-Graylog-MCP-Repo": str(repo)}
+    assert clients.shared_entry("cursor", url, repo)["headers"] == {"X-Graylog-MCP-Repo": "${workspaceFolder}"}
+    clients.install("claude-code", "project", repo, None, [], "shared", url=url)  # a new .mcp.json
+    written = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert written["headers"] == {"X-Graylog-MCP-Repo": str(repo)} and written["url"] == url
+    # an .mcp.json written by an earlier version has the empty one: fixed in place
+    (repo / ".mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"graylog": {"type": "http", "url": url, "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}
+        )
+    )
+    assert clients.repoint_files(url, [repo]) == [repo / ".mcp.json"]
+    fixed = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert fixed["headers"] == {"X-Graylog-MCP-Repo": str(repo)}
+    assert clients.repoint_files(url, [repo]) == []
+    # each repository gets its own folder, not the last one's
+    first, second = tmp_path / "first", tmp_path / "second"
+    for folder in (first, second):
+        folder.mkdir()
+        (folder / ".mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"graylog": {"type": "http", "url": url, "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}
+            )
+        )
+    assert set(clients.repoint_files(url, [first, second])) == {first / ".mcp.json", second / ".mcp.json"}
+    for folder in (first, second):
+        assert json.loads((folder / ".mcp.json").read_text())["mcpServers"]["graylog"]["headers"] == {
+            "X-Graylog-MCP-Repo": str(folder)
+        }
+    # elsewhere ${PWD:-} stays: Claude Code fills in the folder it runs in
+    monkeypatch.setattr(clients, "_windows", lambda: False)
+    other = tmp_path / "unix"
+    other.mkdir()
+    clients.install("claude-code", "project", other, None, [], "shared", url=url)
+    unix = json.loads((other / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert unix["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+
+
+def test_register_without_claude_cli(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="claude mcp add --transport http graylog --scope user"):
         clients.register_claude_code()
+    # per repository the .mcp.json is a file: written without the claude command
+    monkeypatch.setattr(clients, "claude_binary", lambda: None)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    done = clients.register_claude_code("http://127.0.0.1:18742/mcp", [repo], user=False)
+    assert done["errors"] == [] and done["written"] == [str(repo / ".mcp.json")]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:18742/mcp"
 
 
 def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
@@ -586,7 +642,7 @@ def test_update_on_windows_leaves_the_install_to_a_copy_outside_uv_tools(monkeyp
     assert main(["update"]) == 0
     assert done[:2] == ["kill", "down"] and done[2][0] == "spawn"  # no install here
     cmd = done[2][1]
-    assert cmd[:6] == ["uv", "tool", "run", "--from", "git+https://x/y", "graylog-mcp"]
+    assert cmd[:7] == ["uv", "tool", "run", "--isolated", "--from", "git+https://x/y", "graylog-mcp"]
     assert "--restart" in cmd and "--after-pid" in cmd and cmd[cmd.index("--port") + 1] == str(service.DEFAULT_PORT)
     assert "updating in the background" in capsys.readouterr().out
 
@@ -612,3 +668,26 @@ def test_update_finishes_from_the_copy_in_uvs_cache(monkeypatch, capsys):
     done = _windows_update(monkeypatch, "uvx", [RuntimeError("uv tool install failed: no network")], running=False)
     assert main(["update"]) == 1
     assert done == ["install"] and "no network" in capsys.readouterr().err
+
+
+def test_start_says_why_its_config_is_unusable(monkeypatch, tmp_path, capsys):
+    from graylog_mcp.__main__ import _check_start_config
+
+    _check_start_config(tmp_path / "missing.toml")  # not created yet: nothing to say
+    assert capsys.readouterr().out == ""
+    config = tmp_path / "config.toml"
+    config.write_text('[instances.dev]\nurl = "https://gl.test"\ntoken_env = "NO_SUCH_TOKEN_VAR"\n', encoding="utf-8")
+    monkeypatch.delenv("NO_SUCH_TOKEN_VAR", raising=False)
+    monkeypatch.setattr("graylog_mcp.secrets.get", lambda name: None)
+    _check_start_config(config)
+    out = capsys.readouterr().out
+    assert str(config) in out and "NO_SUCH_TOKEN_VAR" in out and "only answers repositories" in out
+
+
+def test_update_continuation_never_hands_over_again(monkeypatch):
+    """The background copy may itself end up in a uv tool environment: it installs, it does not spawn another."""
+    done = _windows_update(monkeypatch, "uv-tool", [["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert (
+        ("wait", 123) in done and "install" in done and not any(isinstance(d, tuple) and d[0] == "spawn" for d in done)
+    )

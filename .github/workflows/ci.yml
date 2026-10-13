@@ -141,6 +141,8 @@ jobs:
         env:
           XDG_CURRENT_DESKTOP: CI   # Linux without a systemd user session: XDG autostart
         run: uv run python tests/smoke_start.py
+      - name: per-repository setup, port change and update on this machine
+        run: uv run python tests/smoke_repo.py
 
   # Single required check for branch protection.
   ci-ok:
