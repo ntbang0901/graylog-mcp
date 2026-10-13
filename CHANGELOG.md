@@ -120,10 +120,11 @@ All notable changes to this project are documented here. The format follows
 - The server no longer waits for every Graylog's version to be detected before it answers: detection runs in the
   background, so an unreachable Graylog (VPN off) does not make `graylog-mcp start` report that it did not start.
   `start` also waits up to a minute (was 20 seconds) for a slow first start.
-- Claude Code is connected repository by repository: `start`, **Finish setup** and the repositories page register
-  each repository of the groups privately (local scope; nothing is written in it, nothing for every project).
-  `graylog-mcp start --global` still registers it once for every project. An existing registration for every
-  project is kept and moved with the port.
+- Claude Code is connected repository by repository: `start`, **Finish setup** and the repositories page write the
+  shared server into the `.mcp.json` of each repository of the groups, creating the file when it has none (other
+  servers in it stay, `.bak` kept); a repository whose `.mcp.json` starts its own process gets a private override.
+  Nothing is registered for every project: `graylog-mcp start --global` does that, and without it the
+  registration for every project that an earlier version made is removed.
 - Changing the port no longer leaves the registrations of the earlier one behind: every time the server starts,
   Claude Code's registrations and private overrides, committed `.mcp.json` entries pointing to another local port
   (through a private override; the files are untouched) and Cursor / VS Code entries (URL rewritten, `.bak`

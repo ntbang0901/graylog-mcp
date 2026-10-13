@@ -630,14 +630,16 @@ What `start` does, so you know what is on your machine:
   `~/.config/graylog-mcp/server.log`.
 - **The admin page** at `http://127.0.0.1:18742/admin/`, with the access token kept in
   `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
-- **Claude Code**, connected repository by repository: each repository of your groups gets a private registration
-  (Claude Code's local scope, nothing is written in the repository), as if you had run in its folder
-  `claude mcp add --transport http graylog --scope local http://127.0.0.1:18742/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
-  Claude Code fills in the folder it runs in; the server walks up to the repository. A repository whose committed
-  `.mcp.json` still starts graylog-mcp itself is overridden the same way: the file stays as it is for your
-  teammates. `graylog-mcp start --global` registers it once for every project (user scope) instead. Without it, `start`
-  removes a registration for every project that an earlier version made, so that Claude Code does not report
-  the server as defined in several scopes with different endpoints.
+- **Claude Code**, connected repository by repository: `start` writes the shared server into the `.mcp.json` of
+  each repository of your groups, creating the file when it has none (the other servers in it stay, the previous
+  file is kept as `.mcp.json.bak`):
+  `{"mcpServers": {"graylog": {"type": "http", "url": "http://127.0.0.1:18742/mcp", "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}`.
+  Claude Code fills in the folder it runs in; the server walks up to the repository, and asks you once to approve
+  a project's server. A repository whose `.mcp.json` still starts graylog-mcp itself gets a private override
+  (Claude Code's local scope) instead: the file stays as it is for your teammates. `graylog-mcp start --global`
+  registers it once for every project (user scope) instead. Without it, `start` removes a registration for every
+  project that an earlier version made, so that Claude Code does not report the server as defined in several
+  scopes with different endpoints.
 - **A different port**: whenever the server starts (by `start`, at login, after `update`), what an earlier port
   registered follows it: Claude Code's registrations and overrides, the URL of a `.mcp.json` entry on
   another local port (rewritten in place, `.bak` kept) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
