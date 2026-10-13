@@ -31,7 +31,7 @@ from graylog_mcp import __version__
 
 LABEL = "io.github.ntbang0901.graylog-mcp"
 TASK_NAME = "graylog-mcp"  # Windows Task Scheduler
-DEFAULT_PORT = 18742  # 'start': rarely taken (8000 is every dev server's), and 'start' moves on if it is
+DEFAULT_PORT = 18742  # 'start': rarely taken (8000 is every dev server's); fixed, so no client config goes stale
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 GITHUB_REPO = "ntbang0901/graylog-mcp"
 
@@ -126,16 +126,6 @@ def port_free(port: int) -> bool:
         except OSError:
             return False
     return True
-
-
-def free_port(after: int, tries: int = 20) -> int:
-    """The first free port after ``after``, else one the system picks."""
-    for port in range(after + 1, min(after + 1 + tries, 65536)):
-        if port_free(port):
-            return port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def server_url(port: int = DEFAULT_PORT) -> str:

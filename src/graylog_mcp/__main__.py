@@ -746,7 +746,9 @@ def _start(argv: list[str]) -> int:
         "connect Claude Code and open the admin page",
     )
     parser.add_argument(
-        "--port", type=int, help=f"default: the port used last time, else {service.DEFAULT_PORT} (or the next free one)"
+        "--port",
+        type=int,
+        help=f"default: the port used last time, else {service.DEFAULT_PORT}; one in use is an error, not replaced",
     )
     parser.add_argument("--config", "-c", help="config file (default: the one found from here, else the user config)")
     parser.add_argument("--no-autostart", action="store_true", help="run now, but do not start at login")
@@ -779,12 +781,13 @@ def _start(argv: list[str]) -> int:
     running = service.probe(port)
     if not (running and running.get("admin")):  # not ours (ours is restarted below on this version)
         running = None
-        if not service.port_free(port):
-            if args.port:
-                print(f"  ! port {port} is used by another program; pass another --port", file=sys.stderr)
-                return 1
-            taken, port = port, service.free_port(port)
-            print(f"  port {taken} is used by another program: using {port}")
+        if not service.port_free(port):  # the port is the one every client is registered on: never moved silently
+            print(
+                f"  ! port {port} is used by another program: stop it, or pass another --port "
+                "(the registrations of your repositories move to it)",
+                file=sys.stderr,
+            )
+            return 1
     cmd = service.server_command(exe, port, config_file)
     service.save_settings(config=str(config_file), port=port)
 
