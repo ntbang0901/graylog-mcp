@@ -103,6 +103,10 @@ All notable changes to this project are documented here. The format follows
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
 
 ### Fixed
+- Windows: the `.mcp.json` written for a repository carries the repository folder itself in the `X-Graylog-MCP-Repo`
+  header (Claude Code has no `PWD` there, so `${PWD:-}` was empty and every tool failed with `no repository given
+  and no default configuration`); an earlier file is fixed in place. `start` also says why the config it serves
+  cannot be used (a token that is not set, a missing include) instead of leaving it to the server log.
 - Claude Code no longer reports `graylog` as defined in several scopes with different endpoints: `start` and Finish
   setup remove the registration for every project that an earlier version made (unless `--global`), and a
   `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
