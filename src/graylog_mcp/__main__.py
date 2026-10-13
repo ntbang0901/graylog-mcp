@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -880,19 +881,25 @@ def _update(argv: list[str]) -> int:
     have = service.installed()
     source = args.source or have.source or service.GIT_SOURCE
     print(f"graylog-mcp {have.label}: updating from {source}…")
+    print(
+        "  uv downloads and rebuilds it: about a minute, longer on a slow connection (nothing is shown until done)",
+        flush=True,
+    )
+    began = time.monotonic()
     try:
         exe = service.install_tool(source)
     except RuntimeError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
     new = service.run([*exe, "--version"]).stdout.strip()
-    print(f"✓ installed {new or 'the latest version'}")
+    print(f"✓ installed {new or 'the latest version'} ({time.monotonic() - began:.0f}s)")
     running = service.probe(args.port)
     if running is None or not running.get("admin"):
         print("  the background server is not running: 'graylog-mcp start' starts it")
         return 0
     saved = service.saved_settings()
     cmd = service.server_command(exe, args.port, Path(saved["config"]) if saved.get("config") else None)
+    print("  restarting the server (waits up to a minute for it to answer)…", flush=True)
     service.restart(cmd, args.port, service.Autostart())
     service.wait_down(args.port, timeout=3)
     body = service.wait_healthy(args.port)
