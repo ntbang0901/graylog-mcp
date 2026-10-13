@@ -642,7 +642,7 @@ def test_update_on_windows_leaves_the_install_to_a_copy_outside_uv_tools(monkeyp
     assert main(["update"]) == 0
     assert done[:2] == ["kill", "down"] and done[2][0] == "spawn"  # no install here
     cmd = done[2][1]
-    assert cmd[:6] == ["uv", "tool", "run", "--from", "git+https://x/y", "graylog-mcp"]
+    assert cmd[:7] == ["uv", "tool", "run", "--isolated", "--from", "git+https://x/y", "graylog-mcp"]
     assert "--restart" in cmd and "--after-pid" in cmd and cmd[cmd.index("--port") + 1] == str(service.DEFAULT_PORT)
     assert "updating in the background" in capsys.readouterr().out
 
@@ -682,3 +682,12 @@ def test_start_says_why_its_config_is_unusable(monkeypatch, tmp_path, capsys):
     _check_start_config(config)
     out = capsys.readouterr().out
     assert str(config) in out and "NO_SUCH_TOKEN_VAR" in out and "only answers repositories" in out
+
+
+def test_update_continuation_never_hands_over_again(monkeypatch):
+    """The background copy may itself end up in a uv tool environment: it installs, it does not spawn another."""
+    done = _windows_update(monkeypatch, "uv-tool", [["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert (
+        ("wait", 123) in done and "install" in done and not any(isinstance(d, tuple) and d[0] == "spawn" for d in done)
+    )

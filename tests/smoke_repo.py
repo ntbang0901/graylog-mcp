@@ -28,9 +28,13 @@ URL = f"http://127.0.0.1:{PORT}/mcp"
 CHECKOUT = Path.cwd().resolve()
 
 
-def run(*cmd: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    done = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    print(f"$ {' '.join(cmd)}  -> {done.returncode}\n{done.stdout}{done.stderr}", flush=True)
+def run(*cmd: str, check: bool = True, timeout: float = 240.0) -> subprocess.CompletedProcess[str]:
+    print(f"$ {' '.join(cmd)}", flush=True)  # before it runs: a hang shows which command it was
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"timed out after {timeout:.0f}s: {' '.join(cmd)}\n{exc.stdout}\n{exc.stderr}") from None
+    print(f"  -> {done.returncode}\n{done.stdout}{done.stderr}", flush=True)
     if check and done.returncode != 0:
         raise SystemExit(f"failed: {' '.join(cmd)}")
     return done

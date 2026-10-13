@@ -907,7 +907,7 @@ def _update(argv: list[str]) -> int:
     probed = service.probe(args.port)
     was_running = args.restart or bool(probed and probed.get("admin"))
     windows = service.is_windows()
-    if windows and have.via == "uv-tool":  # this very process runs from the directory uv replaces
+    if windows and have.via == "uv-tool" and not args.after_pid:  # this process runs from the directory uv replaces
         return _update_from_outside(args.port, source, was_running)
     if args.after_pid:
         service.wait_pid(args.after_pid)
@@ -960,7 +960,9 @@ def _update_from_outside(port: int, source: str, was_running: bool) -> int:
     if was_running:
         service.kill_server()
         service.wait_down(port)
-    cmd = [uv, "tool", "run", "--from", source, "graylog-mcp", "update", "--port", str(port), "--from", source]
+    # --isolated: never the installed tool (uv would reuse it, and it is the directory being replaced)
+    cmd = [uv, "tool", "run", "--isolated", "--from", source, "graylog-mcp", "update", "--port", str(port)]
+    cmd += ["--from", source]
     cmd += ["--after-pid", str(os.getpid())] + (["--restart"] if was_running else [])
     service.spawn_detached(cmd)
     print("✓ updating in the background (Windows cannot replace a program that is running); this takes a minute.")
