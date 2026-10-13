@@ -194,7 +194,7 @@ def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None
         entry = servers.get(clients.SERVER_NAME) if isinstance(servers, dict) else None
     except (OSError, ValueError, AttributeError):
         entry = None
-    if claude is not None and str(folder) in claude["stale_projects"]:
+    if claude is not None and str(folder) in [*claude["stale_projects"], *claude["stale_files"]]:
         return "stale"  # registered on another port
     if isinstance(entry, dict):
         if entry.get("url"):
@@ -231,6 +231,7 @@ async def _register_repo(state: AdminState, folder: Path, project: Path, names: 
     done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder], None, False)
     if done["errors"]:
         raise ValueError("; ".join(done["errors"]))
+    await asyncio.to_thread(clients.repoint_all, _shared_url(state), [folder])
     return "this repository (shared server)"
 
 
@@ -753,7 +754,8 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         if done["errors"]:
             return _err("; ".join(done["errors"]))
-        return JSONResponse({"ok": True, **done})
+        files = await asyncio.to_thread(clients.repoint_all, _shared_url(state), _folders())
+        return JSONResponse({"ok": True, **done, "files": [str(f) for f in files]})
 
     async def setup_autostart(request: Request) -> Response:
         from graylog_mcp.setup import service
