@@ -389,13 +389,25 @@ def register_claude_code(
     .mcp.json starts graylog-mcp itself, or whose private registration is on another port, are overridden
     privately: the committed file is untouched (its URL on another port is rewritten by ``repoint_all``)."""
     claude = claude_binary()
-    if claude is None:
-        raise ValueError(
-            f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
-        )
-    run = _claude_runner(runner)
     status = claude_code_status(url, folders)
     done: dict[str, Any] = {"user": False, "projects": [], "written": [], "errors": []}
+    if not user:  # a file: needs no claude command
+        for folder in status["missing_projects"]:
+            _write_mcp_json(folder, url, done)
+    hint = f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
+    needs_cli = bool(
+        (not status["registered"] and (user or status["user_stale"]))
+        or (not user and status["user_local"])
+        or status["stdio_projects"]
+        or status["stale_projects"]
+    )
+    if claude is None:
+        if needs_cli and user:
+            raise ValueError(hint)
+        if needs_cli:
+            done["errors"].append(hint)
+        return done
+    run = _claude_runner(runner)
     if not status["registered"] and (user or status["user_stale"]):
         _add_user(claude, run, url, status["user_entry"], done)
     if not user and status["user_local"]:  # per repository means no registration for every project
@@ -403,9 +415,6 @@ def register_claude_code(
         done["removed_user"] = True
     for folder in [*status["stdio_projects"], *status["stale_projects"]]:
         _add_local(claude, run, url, folder, done)
-    if not user:
-        for folder in status["missing_projects"]:
-            _write_mcp_json(folder, url, done)
     return done
 
 
