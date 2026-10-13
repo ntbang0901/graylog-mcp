@@ -107,6 +107,10 @@ All notable changes to this project are documented here. The format follows
   setup remove the registration for every project that an earlier version made (unless `--global`), and a
   `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
 - `graylog-mcp update` says what it is doing and how long it can take.
+- `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\\Scripts: Access is denied`:
+  that command and the server both run from the directory uv replaces, and Windows cannot delete a running
+  program. It stops the server and finishes in the background from a copy in uv's cache (progress in the
+  server log), retrying while the old files are let go, then restarts the server.
 - Admin page: the Dashboard and Activity pages use the width of a large screen (up to 1840 px instead of 1160 px)
   rather than leaving the right half empty; forms keep their readable width.
 - Ctrl+C, `graylog-mcp stop` and `update` no longer wait for requests still in flight (a check against an
