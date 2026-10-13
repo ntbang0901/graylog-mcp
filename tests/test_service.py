@@ -18,6 +18,7 @@ import pytest
 from graylog_mcp.__main__ import build_http_app, main, with_admin
 from graylog_mcp.setup import clients, service
 from tests import fake_claude
+from tests.test_repos import same_folder
 from tests.test_shared import _free_port, workspace
 
 
@@ -302,7 +303,8 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
         assert setup["claude"]["missing_projects"] == []
         written = json.loads((pay / ".mcp.json").read_text())["mcpServers"]["graylog"]
-        assert written["url"] == f"{base}/mcp" and written["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+        assert written["url"] == f"{base}/mcp"
+        assert same_folder(written["headers"]["X-Graylog-MCP-Repo"], pay)
         # ... and, when asked, one registration for every project
         done = httpx.post(
             f"{base}/admin/api/setup/claude", headers=token, json={"everywhere": True}, trust_env=False

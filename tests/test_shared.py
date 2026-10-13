@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import socket
 import threading
 import time
@@ -144,7 +145,8 @@ def test_install_shared_entries(tmp_path, monkeypatch):
     project.mkdir()
     res = clients.install("claude-code", "project", project, None, ["T"], source="shared")
     entry = json.loads(res.path.read_text())["mcpServers"]["graylog"]
-    assert entry == {"type": "http", "url": clients.SHARED_URL, "headers": {REPO_HEADER: "${PWD:-}"}}
+    where = str(project) if platform.system() == "Windows" else "${PWD:-}"  # Windows has no PWD: the folder itself
+    assert entry == {"type": "http", "url": clients.SHARED_URL, "headers": {REPO_HEADER: where}}
     vscode = clients.server_entry("vscode", "project", project, None, [], "shared", url="https://mcp.corp/mcp")
     assert vscode["type"] == "http" and vscode["headers"] == {
         REPO_HEADER: "${workspaceFolder}",
