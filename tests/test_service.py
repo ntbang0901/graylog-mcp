@@ -476,24 +476,23 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert config["projects"][str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
-def test_start_moves_off_a_port_used_by_another_program(monkeypatch, capsys):
+def test_start_keeps_its_port_and_fails_when_another_program_has_it(monkeypatch, capsys):
     monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
     monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
     monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
     spawned: list = []
     monkeypatch.setattr(service, "spawn_detached", spawned.append)
-    taken = {service.DEFAULT_PORT, service.DEFAULT_PORT + 1}
-    monkeypatch.setattr(service, "port_free", lambda port: port not in taken)
-    assert main(["start", "--no-browser", "--no-claude"]) == 0
-    out = capsys.readouterr().out
-    assert f"port {service.DEFAULT_PORT} is used by another program: using {service.DEFAULT_PORT + 2}" in out
-    assert spawned[0][spawned[0].index("--port") + 1] == str(service.DEFAULT_PORT + 2)
-    assert service.current_port() == service.DEFAULT_PORT + 2  # stop, status, update and the page follow it
-    assert service.shared_url() == f"http://127.0.0.1:{service.DEFAULT_PORT + 2}/mcp"
-    # a port asked for explicitly is not changed
-    assert main(["start", "--no-browser", "--no-claude", "--port", str(service.DEFAULT_PORT)]) == 1
-    assert f"port {service.DEFAULT_PORT} is used by another program" in capsys.readouterr().err
+    monkeypatch.setattr(service, "port_free", lambda port: False)
+    for extra in ([], ["--port", str(service.DEFAULT_PORT + 1)]):
+        assert main(["start", "--no-browser", "--no-claude", *extra]) == 1
+        assert "is used by another program" in capsys.readouterr().err
+    assert spawned == [] and service.current_port() == service.DEFAULT_PORT  # nothing started, nothing saved
+    monkeypatch.setattr(service, "port_free", lambda port: True)
+    assert main(["start", "--no-browser", "--no-claude", "--port", "6679"]) == 0
+    assert spawned[0][spawned[0].index("--port") + 1] == "6679"
+    assert service.current_port() == 6679  # later commands follow the port asked for
+    assert service.shared_url() == "http://127.0.0.1:6679/mcp"
 
 
 def test_ports(monkeypatch):
@@ -505,9 +504,6 @@ def test_ports(monkeypatch):
         busy.listen()
         port = busy.getsockname()[1]
         assert not service.port_free(port)
-        assert service.free_port(port - 1) != port
-    monkeypatch.setattr(service, "port_free", lambda port: False)
-    assert service.free_port(service.DEFAULT_PORT) > 0  # nothing free nearby: the system picks one
 
 
 def test_status_when_not_running(monkeypatch, capsys):

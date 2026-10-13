@@ -613,8 +613,9 @@ What `start` does, so you know what is on your machine:
 
 - **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
   `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
-- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (if another
-  program uses that port, the next free one; `--port` picks one, later commands follow it), started at
+- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (the port is fixed so
+  no client configuration goes stale: if another program uses it, `start` stops with an error; `--port` picks
+  another one, later commands follow it), started at
   login and started again if it crashes:
 
   | | Started at login by | Restarted after a crash by |
