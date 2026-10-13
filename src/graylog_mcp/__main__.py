@@ -688,8 +688,10 @@ def _connect_claude(port: int, config_file: Path) -> None:
     from graylog_mcp.setup import clients, service
 
     url = service.server_url(port)
+    folders = _group_folders(config_file)
+    stale = clients.claude_code_status(url, folders)["stale_projects"]
     try:
-        done = clients.register_claude_code(url, _group_folders(config_file))
+        done = clients.register_claude_code(url, folders)
     except ValueError as exc:
         print(f"  ! Claude Code: {exc}")
         return
@@ -697,7 +699,12 @@ def _connect_claude(port: int, config_file: Path) -> None:
     if done["user"] or status["registered"]:
         print("  ✓ Claude Code: connected in every project")
     for folder in done["projects"]:
-        print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+        if str(folder) in stale:
+            print(f"  ✓ {folder}: pointed to another port; now uses {url} (private override)")
+        else:
+            print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+    for path in clients.repoint_files(url, folders):
+        print(f"  ✓ {path}: now points to {url}")
     for error in done["errors"]:
         print(f"  ! Claude Code: {error}")
 
@@ -820,6 +827,8 @@ def _status(argv: list[str]) -> int:
     print(f"Claude Code: {'connected in every project' if claude['registered'] else 'not connected'}")
     for folder in claude["stdio_projects"]:
         print(f"             {folder} still starts its own process (.mcp.json)")
+    for folder in claude["stale_projects"]:
+        print(f"             {folder} points to another port: 'graylog-mcp start' moves it")
     if body:
         print(f"admin page:  {service.admin_url(args.port)}")
     else:

@@ -257,6 +257,14 @@ def _is_http_to(entry: Any, url: str) -> bool:
     return isinstance(entry, dict) and entry.get("url") == url
 
 
+def _is_local_mcp_url(url: Any) -> bool:
+    """A graylog-mcp URL on this machine (any port): what an earlier 'start' registered, now possibly stale."""
+    if not isinstance(url, str):
+        return False
+    parts = urlsplit(url)
+    return (parts.hostname or "") in ("127.0.0.1", "localhost", "::1") and parts.path.rstrip("/") == "/mcp"
+
+
 def _project_entry(folder: Path) -> Any:
     servers = _read_json(folder / ".mcp.json").get("mcpServers")
     return servers.get(SERVER_NAME) if isinstance(servers, dict) else None
@@ -274,26 +282,33 @@ def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None)
     raw_projects = config.get("projects")
     projects: dict[str, Any] = raw_projects if isinstance(raw_projects, dict) else {}
     candidates = {Path(p) for p in projects} | {Path(f) for f in folders or []}
-    stdio = []
+    stdio, stale = [], []
     for folder in sorted(candidates):
         entry = _project_entry(folder)
-        if not isinstance(entry, dict) or entry.get("url"):
-            continue
         local = ((projects.get(str(folder)) or {}).get("mcpServers") or {}).get(SERVER_NAME)
-        if not _is_http_to(local, url):
+        if _is_http_to(local, url):
+            continue
+        if isinstance(local, dict) and _is_local_mcp_url(local.get("url")):
+            stale.append(str(folder))  # a private override left by 'start' on another port
+        elif isinstance(entry, dict) and not entry.get("url"):
             stdio.append(str(folder))
+        elif isinstance(entry, dict) and _is_local_mcp_url(entry.get("url")) and entry["url"] != url:
+            stale.append(str(folder))  # the committed .mcp.json points to another local port
     return {
         "cli": claude_binary() is not None,
         "registered": _is_http_to(user, url),
+        "user_stale": _is_local_mcp_url(user.get("url")) if isinstance(user, dict) else False,
         "user_entry": bool(user),
         "stdio_projects": stdio,
+        "stale_projects": stale,  # registered on another port: moved by register_claude_code
         "command": claude_code_command([], "shared", url=url),
     }
 
 
 def register_claude_code(url: str = SHARED_URL, folders: list[Path] | None = None, runner: Any = None) -> dict:
     """Register the shared server in Claude Code for every project (user scope), and override the projects
-    whose .mcp.json still starts graylog-mcp itself, privately (local scope: the committed file is untouched)."""
+    whose .mcp.json still starts graylog-mcp itself or points to another port, privately (local scope: the
+    committed file is untouched). Registrations of an earlier port are replaced."""
     import subprocess
 
     claude = claude_binary()
@@ -312,7 +327,7 @@ def register_claude_code(url: str = SHARED_URL, folders: list[Path] | None = Non
         if added.returncode != 0:
             done["errors"].append(f"user: {(added.stderr or added.stdout).strip()}")
         done["user"] = added.returncode == 0
-    for folder in status["stdio_projects"]:
+    for folder in [*status["stdio_projects"], *status["stale_projects"]]:
         run([claude, "mcp", "remove", SERVER_NAME, "--scope", "local"], cwd=folder)
         added = run([claude, "mcp", "add", "--transport", "http", "--scope", "local", SERVER_NAME, url, *headers],
                     cwd=folder)  # fmt: skip
@@ -321,3 +336,30 @@ def register_claude_code(url: str = SHARED_URL, folders: list[Path] | None = Non
         else:
             done["errors"].append(f"{folder}: {(added.stderr or added.stdout).strip()}")
     return done
+
+
+# ----------------------------------------------------------------------------- port changed: other clients' files
+
+
+def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
+    """Point the Cursor and VS Code entries that connect to this machine on another port to ``url``.
+
+    Only the URL changes (headers and the rest stay); an entry that starts its own process or points to
+    another machine is left alone. Looks at the user-level Cursor file and, in each folder, its Cursor and
+    VS Code files.
+    """
+    paths = [config_path("cursor", "user", Path.home())]
+    for folder in folders or []:
+        paths += [config_path("cursor", "project", folder), config_path("vscode", "project", folder)]
+    changed: list[Path] = []
+    for path in dict.fromkeys(paths):
+        data = _read_json(path)
+        for key in ("mcpServers", "servers"):
+            servers = data.get(key)
+            entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+            if isinstance(entry, dict) and entry.get("url") != url and _is_local_mcp_url(entry.get("url")):
+                entry["url"] = url
+                shutil.copy2(path, path.with_name(path.name + ".bak"))
+                path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                changed.append(path)
+    return changed

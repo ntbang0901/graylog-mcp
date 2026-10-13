@@ -333,6 +333,47 @@ def test_claude_code_status_and_register(tmp_path, monkeypatch):
     assert [c["args"][:2] for c in fake_claude.calls(log)[count:]] == [["mcp", "remove"], ["mcp", "add"]]
 
 
+def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    override, committed, remote, cursor_repo = (tmp_path / n for n in ("a", "b", "c", "d"))
+    for folder in (override, committed, remote, cursor_repo):
+        folder.mkdir()
+    (committed / ".mcp.json").write_text(json.dumps({"mcpServers": {"graylog": {"type": "http", "url": old}}}))
+    (remote / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"graylog": {"type": "http", "url": "https://team/mcp"}}})
+    )
+    (cursor_repo / ".cursor").mkdir()
+    cursor = cursor_repo / ".cursor" / "mcp.json"
+    cursor.write_text(
+        json.dumps({"mcpServers": {"graylog": {"url": old, "headers": {"X": "1"}}, "other": {"url": old}}})
+    )
+    cfg_path = clients.claude_config_path()
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"graylog": {"type": "http", "url": old}},
+                "projects": {
+                    str(override): {"mcpServers": {"graylog": {"type": "http", "url": old}}},
+                    str(committed): {},
+                    str(remote): {},
+                },
+            }
+        )
+    )
+    status = clients.claude_code_status(url)
+    assert not status["registered"] and status["user_stale"]
+    assert status["stale_projects"] == [str(override), str(committed)] and status["stdio_projects"] == []
+    done = clients.register_claude_code(url)
+    assert done == {"user": True, "projects": [str(override), str(committed)], "errors": []}
+    assert [c["args"][:2] for c in fake_claude.calls(log)[:2]] == [["mcp", "remove"], ["mcp", "add"]]  # the user entry
+    assert clients.claude_code_status(url)["stale_projects"] == []
+    assert clients.repoint_files(url, [cursor_repo, remote]) == [cursor]
+    entry = json.loads(cursor.read_text())["mcpServers"]
+    assert entry["graylog"] == {"url": url, "headers": {"X": "1"}} and entry["other"] == {"url": old}
+    assert clients.repoint_files(url, [cursor_repo]) == []
+
+
 def test_register_without_claude_cli():
     with pytest.raises(ValueError, match="claude mcp add --transport http graylog --scope user"):
         clients.register_claude_code()

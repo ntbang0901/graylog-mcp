@@ -197,7 +197,11 @@ def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None
     if isinstance(entry, dict):
         if entry.get("url"):
             return "shared"
-        return "stdio" if claude is None or str(folder) in claude["stdio_projects"] else "shared"
+        return (
+            "stdio"
+            if claude is None or str(folder) in [*claude["stdio_projects"], *claude["stale_projects"]]
+            else "shared"
+        )
     return "shared" if claude and claude["registered"] else None
 
 
