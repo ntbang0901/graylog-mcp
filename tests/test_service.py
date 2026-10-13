@@ -300,7 +300,9 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         assert done["ok"] and not done["user"] and str(pay.resolve()) in done["projects"]
         assert "mcpServers" not in fake_claude.config()
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
-        assert str(pay.resolve()) in setup["claude"]["local_projects"] and setup["claude"]["missing_projects"] == []
+        assert setup["claude"]["missing_projects"] == []
+        written = json.loads((pay / ".mcp.json").read_text())["mcpServers"]["graylog"]
+        assert written["url"] == f"{base}/mcp" and written["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
         # ... and, when asked, one registration for every project
         done = httpx.post(
             f"{base}/admin/api/setup/claude", headers=token, json={"everywhere": True}, trust_env=False
@@ -328,11 +330,16 @@ def test_claude_code_status_and_register(tmp_path, monkeypatch):
     status = clients.claude_code_status(url)
     assert not status["registered"] and status["stdio_projects"] == [str(uvx_repo)] and status["cli"]
     done = clients.register_claude_code(url)
-    assert done == {"user": True, "projects": [str(uvx_repo)], "errors": []}
+    assert done == {"user": True, "projects": [str(uvx_repo)], "written": [], "errors": []}
     after = clients.claude_code_status(url)
     assert after["registered"] and after["stdio_projects"] == []
     count = len(fake_claude.calls(log))
-    assert clients.register_claude_code(url) == {"user": False, "projects": [], "errors": []}  # nothing left to do
+    assert clients.register_claude_code(url) == {
+        "user": False,
+        "projects": [],
+        "written": [],
+        "errors": [],
+    }  # nothing left to do
     assert len(fake_claude.calls(log)) == count
     # a user entry pointing elsewhere (an old uvx registration) is replaced
     data = json.loads(cfg_path.read_text())
@@ -375,7 +382,7 @@ def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
     assert status["stale_projects"] == [str(override)] and status["stdio_projects"] == []
     assert status["stale_files"] == [str(committed)]  # a committed file: its URL is rewritten, not overridden
     done = clients.register_claude_code(url)
-    assert done == {"user": True, "projects": [str(override)], "errors": []}
+    assert done == {"user": True, "projects": [str(override)], "written": [], "errors": []}
     assert [c["args"][:2] for c in fake_claude.calls(log)[:2]] == [["mcp", "remove"], ["mcp", "add"]]  # the user entry
     assert clients.claude_code_status(url)["stale_projects"] == []
     assert set(clients.repoint_all(url, [cursor_repo, remote])) == {committed / ".mcp.json", cursor}
@@ -395,14 +402,26 @@ def test_repair_moves_what_exists_and_creates_nothing(tmp_path, monkeypatch):
     clients.claude_config_path().write_text(
         json.dumps({"projects": {str(stale): {"mcpServers": {"graylog": {"type": "http", "url": old}}}}})
     )
-    assert clients.repair_registrations(url, [stale, fresh]) == {"user": False, "projects": [str(stale)], "errors": []}
+    assert clients.repair_registrations(url, [stale, fresh]) == {
+        "user": False,
+        "projects": [str(stale)],
+        "written": [],
+        "errors": [],
+    }
     assert clients.claude_code_status(url, [stale, fresh])["missing_projects"] == [str(fresh)]  # not created
     assert all(c["cwd"] == str(stale) for c in fake_claude.calls(log))
-    assert clients.repair_registrations(url, [stale, fresh]) == {"user": False, "projects": [], "errors": []}
-    # per repository: register_claude_code(user=False) connects the missing one, still no user entry
+    assert clients.repair_registrations(url, [stale, fresh]) == {
+        "user": False,
+        "projects": [],
+        "written": [],
+        "errors": [],
+    }
+    # per repository: register_claude_code(user=False) writes the missing one's .mcp.json, still no user entry
     done = clients.register_claude_code(url, [stale, fresh], user=False)
-    assert done == {"user": False, "projects": [str(fresh)], "errors": []}
+    assert done == {"user": False, "projects": [str(fresh)], "written": [str(fresh / ".mcp.json")], "errors": []}
+    assert json.loads((fresh / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == url
     assert "mcpServers" not in json.loads(clients.claude_config_path().read_text())
+    assert clients.claude_code_status(url, [stale, fresh])["missing_projects"] == []
 
 
 def test_per_repository_leaves_no_conflicting_scopes(tmp_path, monkeypatch):
