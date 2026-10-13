@@ -293,9 +293,17 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
         assert setup["server"]["embedded"] and setup["claude"]["registered"] is False and not setup["claude"]["cli"]
         assert setup["claude"]["command"].startswith("claude mcp add --transport http graylog --scope user")
-        # Connect: registers Claude Code for every project through the claude CLI
+        # Connect: the repositories of the groups, privately; nothing for every project
         fake_claude.install(tmp_path, monkeypatch)
         done = httpx.post(f"{base}/admin/api/setup/claude", headers=token, json={}, trust_env=False).json()
+        assert done["ok"] and not done["user"] and str(pay.resolve()) in done["projects"]
+        assert "mcpServers" not in fake_claude.config()
+        setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
+        assert str(pay.resolve()) in setup["claude"]["local_projects"] and setup["claude"]["missing_projects"] == []
+        # ... and, when asked, one registration for every project
+        done = httpx.post(
+            f"{base}/admin/api/setup/claude", headers=token, json={"everywhere": True}, trust_env=False
+        ).json()
         assert done["ok"] and done["user"]
         assert fake_claude.config()["mcpServers"]["graylog"]["url"] == f"{base}/mcp"
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
@@ -374,6 +382,25 @@ def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
     assert clients.repoint_files(url, [cursor_repo]) == []
 
 
+def test_repair_moves_what_exists_and_creates_nothing(tmp_path, monkeypatch):
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    stale, fresh = tmp_path / "a", tmp_path / "b"
+    stale.mkdir()
+    fresh.mkdir()
+    clients.claude_config_path().write_text(
+        json.dumps({"projects": {str(stale): {"mcpServers": {"graylog": {"type": "http", "url": old}}}}})
+    )
+    assert clients.repair_registrations(url, [stale, fresh]) == {"user": False, "projects": [str(stale)], "errors": []}
+    assert clients.claude_code_status(url, [stale, fresh])["missing_projects"] == [str(fresh)]  # not created
+    assert all(c["cwd"] == str(stale) for c in fake_claude.calls(log))
+    assert clients.repair_registrations(url, [stale, fresh]) == {"user": False, "projects": [], "errors": []}
+    # per repository: register_claude_code(user=False) connects the missing one, still no user entry
+    done = clients.register_claude_code(url, [stale, fresh], user=False)
+    assert done == {"user": False, "projects": [str(fresh)], "errors": []}
+    assert "mcpServers" not in json.loads(clients.claude_config_path().read_text())
+
+
 def test_register_without_claude_cli():
     with pytest.raises(ValueError, match="claude mcp add --transport http graylog --scope user"):
         clients.register_claude_code()
@@ -403,11 +430,12 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert started == [(["/tools/graylog-mcp", "serve", "--shared", "--admin", "--port", "8123", "--config",
                          str((tmp_path / ".graylog-mcp.toml").resolve())], True)]  # fmt: skip
     assert "installing a stable copy" in out and "starts at login (launchd)" in out
-    assert "Claude Code: connected in every project" in out and f"{pay.resolve()}: its .mcp.json" in out
+    assert f"{pay.resolve()}: its .mcp.json started its own process" in out and "connected in every project" not in out
     assert opened == [service.admin_url(8123)]
     assert service.saved_settings()["port"] == 8123
-    projects = fake_claude.config()["projects"]
-    assert projects[str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
+    config = fake_claude.config()
+    assert "mcpServers" not in config  # nothing for every project unless --global
+    assert config["projects"][str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
 def test_start_moves_off_a_port_used_by_another_program(monkeypatch, capsys):
@@ -448,7 +476,7 @@ def test_status_when_not_running(monkeypatch, capsys):
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
     assert main(["status"]) == 1
     out = capsys.readouterr().out
-    assert "not running" in out and "graylog-mcp start" in out and "Claude Code: not connected" in out
+    assert "not running" in out and "graylog-mcp start" in out and "Claude Code: per repository" in out
 
 
 def test_ui_opens_the_running_server(monkeypatch, capsys):

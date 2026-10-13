@@ -187,22 +187,22 @@ def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None:
     """How Claude Code reaches graylog-mcp in this repository: 'shared' (the shared server, through the
-    repository's .mcp.json, a private override or the registration for every project), 'stdio' (its
-    .mcp.json starts a process per session), or None (not registered)."""
+    repository's .mcp.json, a private registration or the registration for every project), 'stale' (registered on
+    another port), 'stdio' (its .mcp.json starts a process per session), or None (not registered)."""
     try:
         servers = json.loads((folder / ".mcp.json").read_text(encoding="utf-8")).get("mcpServers", {})
         entry = servers.get(clients.SERVER_NAME) if isinstance(servers, dict) else None
     except (OSError, ValueError, AttributeError):
         entry = None
+    if claude is not None and str(folder) in claude["stale_projects"]:
+        return "stale"  # registered on another port
     if isinstance(entry, dict):
         if entry.get("url"):
             return "shared"
-        return (
-            "stdio"
-            if claude is None or str(folder) in [*claude["stdio_projects"], *claude["stale_projects"]]
-            else "shared"
-        )
-    return "shared" if claude and claude["registered"] else None
+        return "stdio" if claude is None or str(folder) in claude["stdio_projects"] else "shared"
+    if claude and (claude["registered"] or str(folder) in claude["local_projects"]):
+        return "shared"
+    return None
 
 
 def _shared_url(state: AdminState) -> str:
@@ -228,10 +228,10 @@ async def _register_repo(state: AdminState, folder: Path, project: Path, names: 
     a private override when the repository's .mcp.json starts its own process (the committed file is kept)."""
     if source != "shared":
         return str(clients.install("claude-code", "project", folder, project, names, source).path)
-    done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder])
+    done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder], None, False)
     if done["errors"]:
         raise ValueError("; ".join(done["errors"]))
-    return "every project (shared server)"
+    return "this repository (shared server)"
 
 
 async def _shared_status(state: AdminState) -> dict[str, Any]:
@@ -741,11 +741,14 @@ def build_app(state: AdminState) -> Starlette:
             out["update"] = {"latest": latest, "available": bool(latest and running and latest != running)}
         return JSONResponse(out)
 
-    async def setup_claude(_request: Request) -> Response:
+    async def setup_claude(request: Request) -> Response:
+        body = await _body(request)
         if not await _shared_running(state):
             return _err("start the shared server first")
         try:
-            done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), _folders())
+            done = await asyncio.to_thread(
+                clients.register_claude_code, _shared_url(state), _folders(), None, bool(body.get("everywhere"))
+            )
         except ValueError as exc:
             return _err(str(exc))
         if done["errors"]:
