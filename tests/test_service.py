@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import httpx
@@ -371,12 +372,15 @@ def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
     )
     status = clients.claude_code_status(url)
     assert not status["registered"] and status["user_stale"]
-    assert status["stale_projects"] == [str(override), str(committed)] and status["stdio_projects"] == []
+    assert status["stale_projects"] == [str(override)] and status["stdio_projects"] == []
+    assert status["stale_files"] == [str(committed)]  # a committed file: its URL is rewritten, not overridden
     done = clients.register_claude_code(url)
-    assert done == {"user": True, "projects": [str(override), str(committed)], "errors": []}
+    assert done == {"user": True, "projects": [str(override)], "errors": []}
     assert [c["args"][:2] for c in fake_claude.calls(log)[:2]] == [["mcp", "remove"], ["mcp", "add"]]  # the user entry
     assert clients.claude_code_status(url)["stale_projects"] == []
-    assert clients.repoint_files(url, [cursor_repo, remote]) == [cursor]
+    assert set(clients.repoint_all(url, [cursor_repo, remote])) == {committed / ".mcp.json", cursor}
+    assert json.loads((committed / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == url
+    assert json.loads((remote / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "https://team/mcp"
     entry = json.loads(cursor.read_text())["mcpServers"]
     assert entry["graylog"] == {"url": url, "headers": {"X": "1"}} and entry["other"] == {"url": old}
     assert clients.repoint_files(url, [cursor_repo]) == []
@@ -399,6 +403,41 @@ def test_repair_moves_what_exists_and_creates_nothing(tmp_path, monkeypatch):
     done = clients.register_claude_code(url, [stale, fresh], user=False)
     assert done == {"user": False, "projects": [str(fresh)], "errors": []}
     assert "mcpServers" not in json.loads(clients.claude_config_path().read_text())
+
+
+def test_per_repository_leaves_no_conflicting_scopes(tmp_path, monkeypatch):
+    """user (new port) + project .mcp.json (old port) + local (new port): what Claude Code reports as conflicting."""
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    repo = tmp_path / "a"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"graylog": {"type": "http", "url": old, "headers": {"X": "1"}}}})
+    )
+    clients.claude_config_path().write_text(
+        json.dumps(
+            {
+                "mcpServers": {"graylog": {"type": "http", "url": url}},
+                "projects": {str(repo): {"mcpServers": {"graylog": {"type": "http", "url": url}}}},
+            }
+        )
+    )
+    status = clients.claude_code_status(url, [repo])
+    assert status["user_local"] and status["stale_files"] == [str(repo)]
+    done = clients.register_claude_code(url, [repo], user=False)
+    assert done["removed_user"]
+    assert "graylog" not in json.loads(clients.claude_config_path().read_text()).get("mcpServers", {})
+    assert clients.repoint_all(url, [repo]) == [repo / ".mcp.json"]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"] == {
+        "type": "http",
+        "url": url,
+        "headers": {"X": "1"},
+    }
+    status = clients.claude_code_status(url, [repo])
+    assert status["stale_files"] == [] and status["local_projects"] == [str(repo)] and not status["user_local"]
+    assert [c["args"][:2] for c in fake_claude.calls(log)] == [["mcp", "remove"]]  # only the user entry went
+    # ... and with --global the registration for every project stays
+    assert not clients.register_claude_code(url, [repo], user=True).get("removed_user")
 
 
 def test_register_without_claude_cli():
@@ -438,24 +477,23 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert config["projects"][str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
-def test_start_moves_off_a_port_used_by_another_program(monkeypatch, capsys):
+def test_start_keeps_its_port_and_fails_when_another_program_has_it(monkeypatch, capsys):
     monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
     monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
     monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
     spawned: list = []
     monkeypatch.setattr(service, "spawn_detached", spawned.append)
-    taken = {service.DEFAULT_PORT, service.DEFAULT_PORT + 1}
-    monkeypatch.setattr(service, "port_free", lambda port: port not in taken)
-    assert main(["start", "--no-browser", "--no-claude"]) == 0
-    out = capsys.readouterr().out
-    assert f"port {service.DEFAULT_PORT} is used by another program: using {service.DEFAULT_PORT + 2}" in out
-    assert spawned[0][spawned[0].index("--port") + 1] == str(service.DEFAULT_PORT + 2)
-    assert service.current_port() == service.DEFAULT_PORT + 2  # stop, status, update and the page follow it
-    assert service.shared_url() == f"http://127.0.0.1:{service.DEFAULT_PORT + 2}/mcp"
-    # a port asked for explicitly is not changed
-    assert main(["start", "--no-browser", "--no-claude", "--port", str(service.DEFAULT_PORT)]) == 1
-    assert f"port {service.DEFAULT_PORT} is used by another program" in capsys.readouterr().err
+    monkeypatch.setattr(service, "port_free", lambda port: False)
+    for extra in ([], ["--port", str(service.DEFAULT_PORT + 1)]):
+        assert main(["start", "--no-browser", "--no-claude", *extra]) == 1
+        assert "is used by another program" in capsys.readouterr().err
+    assert spawned == [] and service.current_port() == service.DEFAULT_PORT  # nothing started, nothing saved
+    monkeypatch.setattr(service, "port_free", lambda port: True)
+    assert main(["start", "--no-browser", "--no-claude", "--port", "6679"]) == 0
+    assert spawned[0][spawned[0].index("--port") + 1] == "6679"
+    assert service.current_port() == 6679  # later commands follow the port asked for
+    assert service.shared_url() == "http://127.0.0.1:6679/mcp"
 
 
 def test_ports(monkeypatch):
@@ -467,9 +505,6 @@ def test_ports(monkeypatch):
         busy.listen()
         port = busy.getsockname()[1]
         assert not service.port_free(port)
-        assert service.free_port(port - 1) != port
-    monkeypatch.setattr(service, "port_free", lambda port: False)
-    assert service.free_port(service.DEFAULT_PORT) > 0  # nothing free nearby: the system picks one
 
 
 def test_status_when_not_running(monkeypatch, capsys):
@@ -496,3 +531,65 @@ def test_output_that_cannot_show_a_character(monkeypatch):
     print("✓ started")
     out.flush()
     assert out.buffer.getvalue().strip() == b"? started"
+
+
+def _windows_update(monkeypatch, via, installs, running=True):
+    """What 'update' does on Windows, with the system calls replaced; returns the log of what it did."""
+    done: list = []
+    monkeypatch.setattr(service, "is_windows", lambda: True)
+    monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", "a" * 40, "git+https://x/y", via))
+    monkeypatch.setattr(service, "uv_binary", lambda: "uv")
+    probed = {"status": "ok", "admin": True} if running else None
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: probed)
+    monkeypatch.setattr(service, "kill_server", lambda: done.append("kill"))
+    monkeypatch.setattr(service, "wait_down", lambda port, timeout=10.0: done.append("down") or True)
+    monkeypatch.setattr(service, "wait_pid", lambda pid, timeout=30.0: done.append(("wait", pid)) or True)
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: done.append(("spawn", cmd)) or 1)
+    monkeypatch.setattr(service, "run", lambda cmd, **kw: types.SimpleNamespace(stdout="graylog-mcp 0.2.0\n"))
+    monkeypatch.setattr(service, "restart", lambda cmd, port, autostart: done.append(("restart", cmd[0])))
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=60.0, commit=None: {"version": "0.2.0"})
+    monkeypatch.setattr("graylog_mcp.__main__.time.sleep", lambda s: done.append("sleep"))
+    monkeypatch.setattr(service, "install_tool", lambda source: _next_install(installs, done))
+    return done
+
+
+def _next_install(installs, done):
+    result = installs.pop(0)
+    done.append("install")
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def test_update_on_windows_leaves_the_install_to_a_copy_outside_uv_tools(monkeypatch, capsys):
+    """This command and the server run from the directory uv replaces, and Windows cannot delete a running exe."""
+    done = _windows_update(monkeypatch, "uv-tool", [])
+    assert main(["update"]) == 0
+    assert done[:2] == ["kill", "down"] and done[2][0] == "spawn"  # no install here
+    cmd = done[2][1]
+    assert cmd[:6] == ["uv", "tool", "run", "--from", "git+https://x/y", "graylog-mcp"]
+    assert "--restart" in cmd and "--after-pid" in cmd and cmd[cmd.index("--port") + 1] == str(service.DEFAULT_PORT)
+    assert "updating in the background" in capsys.readouterr().out
+
+
+def test_update_finishes_from_the_copy_in_uvs_cache(monkeypatch, capsys):
+    locked = RuntimeError(
+        "uv tool install failed: failed to remove directory ...Scripts: Access is denied. (os error 5)"
+    )
+    done = _windows_update(monkeypatch, "uvx", [locked, locked, ["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert done == [
+        ("wait", 123),
+        "install",
+        "sleep",
+        "install",
+        "sleep",
+        "install",
+        ("restart", "C:/tools/graylog-mcp.exe"),
+        "down",
+    ]
+    assert "restarted: 0.2.0" in capsys.readouterr().out
+    # any other failure is reported at once
+    done = _windows_update(monkeypatch, "uvx", [RuntimeError("uv tool install failed: no network")], running=False)
+    assert main(["update"]) == 1
+    assert done == ["install"] and "no network" in capsys.readouterr().err

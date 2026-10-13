@@ -35,9 +35,9 @@ All notable changes to this project are documented here. The format follows
   their git commit. Where no service manager restarts a crashed server (XDG autostart, Task Scheduler), it runs
   under `graylog-mcp keepalive`, which starts it again (giving up after 5 quick crashes); on Windows through
   pythonw, so no console window opens. A Startup-folder entry from an earlier version is replaced.
-  The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); when another program
-  has the port, `start` takes the next free one, and `stop`, `status`, `update`, `ui` and `install --shared`
-  follow the port `start` used.
+  The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); the port is fixed so no
+  client configuration goes stale: when another program has it, `start` stops with an error instead of taking
+  another one (`--port` picks one, and `stop`, `status`, `update`, `ui` and `install --shared` follow it).
   Command output no longer fails on consoles that cannot show ✓ (a Windows pipe in cp1252).
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
@@ -103,6 +103,16 @@ All notable changes to this project are documented here. The format follows
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
 
 ### Fixed
+- Claude Code no longer reports `graylog` as defined in several scopes with different endpoints: `start` and Finish
+  setup remove the registration for every project that an earlier version made (unless `--global`), and a
+  `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
+- Setting up a repository on another drive than the shared config (Windows: `path is on mount 'C:', start on
+  mount 'D:'`) writes the include as an absolute path instead of failing.
+- `graylog-mcp update` says what it is doing and how long it can take.
+- `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\Scripts: Access is denied`:
+  that command and the server both run from the directory uv replaces, and Windows cannot delete a running
+  program. It stops the server and finishes in the background from a copy in uv's cache (progress in the
+  server log), retrying while the old files are let go, then restarts the server.
 - Admin page: the Dashboard and Activity pages use the width of a large screen (up to 1840 px instead of 1160 px)
   rather than leaving the right half empty; forms keep their readable width.
 - Ctrl+C, `graylog-mcp stop` and `update` no longer wait for requests still in flight (a check against an
