@@ -31,7 +31,7 @@ from graylog_mcp import __version__
 
 LABEL = "io.github.ntbang0901.graylog-mcp"
 TASK_NAME = "graylog-mcp"  # Windows Task Scheduler
-DEFAULT_PORT = 18742  # 'start': rarely taken (8000 is every dev server's), and 'start' moves on if it is
+DEFAULT_PORT = 18742  # 'start': rarely taken (8000 is every dev server's); fixed, so no client config goes stale
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 GITHUB_REPO = "ntbang0901/graylog-mcp"
 
@@ -126,16 +126,6 @@ def port_free(port: int) -> bool:
         except OSError:
             return False
     return True
-
-
-def free_port(after: int, tries: int = 20) -> int:
-    """The first free port after ``after``, else one the system picks."""
-    for port in range(after + 1, min(after + 1 + tries, 65536)):
-        if port_free(port):
-            return port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def server_url(port: int = DEFAULT_PORT) -> str:
@@ -562,6 +552,40 @@ def kill_server() -> bool:
         pid_path().unlink(missing_ok=True)
         return False
     return True
+
+
+def is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
+def pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":  # os.kill(pid, 0) would terminate it there
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_pid(pid: int, timeout: float = 30.0) -> bool:
+    """Wait for the process ``pid`` to end (True), at most ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def wait_down(port: int, timeout: float = 10.0) -> bool:

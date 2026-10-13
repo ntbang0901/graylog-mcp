@@ -613,8 +613,9 @@ What `start` does, so you know what is on your machine:
 
 - **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
   `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
-- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (if another
-  program uses that port, the next free one; `--port` picks one, later commands follow it), started at
+- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (the port is fixed so
+  no client configuration goes stale: if another program uses it, `start` stops with an error; `--port` picks
+  another one, later commands follow it), started at
   login and started again if it crashes:
 
   | | Started at login by | Restarted after a crash by |
@@ -634,11 +635,12 @@ What `start` does, so you know what is on your machine:
   `claude mcp add --transport http graylog --scope local http://127.0.0.1:18742/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
   Claude Code fills in the folder it runs in; the server walks up to the repository. A repository whose committed
   `.mcp.json` still starts graylog-mcp itself is overridden the same way: the file stays as it is for your
-  teammates. `graylog-mcp start --global` registers it once for every project (user scope) instead of, or as
-  well.
+  teammates. `graylog-mcp start --global` registers it once for every project (user scope) instead. Without it, `start`
+  removes a registration for every project that an earlier version made, so that Claude Code does not report
+  the server as defined in several scopes with different endpoints.
 - **A different port**: whenever the server starts (by `start`, at login, after `update`), what an earlier port
-  registered follows it: Claude Code's registrations and overrides, committed `.mcp.json` URLs (through an
-  override) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
+  registered follows it: Claude Code's registrations and overrides, the URL of a `.mcp.json` entry on
+  another local port (rewritten in place, `.bak` kept) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
   elsewhere.
 
 How the server picks the configuration of a session:

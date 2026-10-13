@@ -282,20 +282,20 @@ def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None)
     raw_projects = config.get("projects")
     projects: dict[str, Any] = raw_projects if isinstance(raw_projects, dict) else {}
     candidates = {Path(p) for p in projects} | {Path(f) for f in folders or []}
-    stdio, stale, local_ok, missing = [], [], [], []
+    stdio, stale, stale_files, local_ok, missing = [], [], [], [], []
     registered = _is_http_to(user, url)
     wanted = {str(Path(f)) for f in folders or []}
     for folder in sorted(candidates):
         entry = _project_entry(folder)
         local = ((projects.get(str(folder)) or {}).get("mcpServers") or {}).get(SERVER_NAME)
+        if isinstance(entry, dict) and _is_local_mcp_url(entry.get("url")) and entry["url"] != url:
+            stale_files.append(str(folder))  # the committed .mcp.json points to another local port
         if _is_http_to(local, url):
             local_ok.append(str(folder))
         elif isinstance(local, dict) and _is_local_mcp_url(local.get("url")):
             stale.append(str(folder))  # a private override left by 'start' on another port
         elif isinstance(entry, dict) and not entry.get("url"):
             stdio.append(str(folder))
-        elif isinstance(entry, dict) and _is_local_mcp_url(entry.get("url")) and entry["url"] != url:
-            stale.append(str(folder))  # the committed .mcp.json points to another local port
         elif str(folder) in wanted and entry is None and not registered:
             missing.append(str(folder))  # a repository of a group that Claude Code does not reach yet
     return {
@@ -304,7 +304,9 @@ def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None)
         "user_stale": _is_local_mcp_url(user.get("url")) and user["url"] != url if isinstance(user, dict) else False,
         "user_entry": bool(user),
         "stdio_projects": stdio,
-        "stale_projects": stale,  # registered on another port: moved by register_claude_code
+        "stale_projects": stale,  # private overrides on another port: moved by register_claude_code
+        "stale_files": stale_files,  # committed .mcp.json URLs on another port: rewritten by repoint_all
+        "user_local": _is_local_mcp_url(user.get("url")) if isinstance(user, dict) else False,
         "local_projects": local_ok,  # reached through their own private registration
         "missing_projects": missing,
         "repos": len(wanted),
@@ -347,10 +349,11 @@ def register_claude_code(
 ) -> dict:
     """Connect Claude Code to the shared server.
 
-    ``user=True``: one registration for every project (user scope). ``user=False``: per repository only, nothing
-    global is created (a user entry of an earlier port is still moved): each of ``folders`` gets a private
-    registration (local scope). Either way the projects whose .mcp.json starts graylog-mcp itself or points to
-    another port are overridden privately, and the committed file is untouched."""
+    ``user=True``: one registration for every project (user scope). ``user=False``: per repository only: each of
+    ``folders`` gets a private registration (local scope), and a registration for every project that graylog-mcp
+    made earlier is removed (``removed_user``), so the scopes do not disagree. Either way the projects whose
+    .mcp.json starts graylog-mcp itself, or whose private registration is on another port, are overridden
+    privately: the committed file is untouched (its URL on another port is rewritten by ``repoint_all``)."""
     claude = claude_binary()
     if claude is None:
         raise ValueError(
@@ -361,6 +364,9 @@ def register_claude_code(
     done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
     if not status["registered"] and (user or status["user_stale"]):
         _add_user(claude, run, url, status["user_entry"], done)
+    if not user and status["user_local"]:  # per repository means no registration for every project
+        run([claude, "mcp", "remove", SERVER_NAME, "--scope", "user"])
+        done["removed_user"] = True
     todo = [*status["stdio_projects"], *status["stale_projects"], *(status["missing_projects"] if not user else [])]
     for folder in todo:
         _add_local(claude, run, url, folder, done)
@@ -387,15 +393,15 @@ def repair_registrations(url: str, folders: list[Path] | None = None, runner: An
 
 
 def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
-    """Point the Cursor and VS Code entries that connect to this machine on another port to ``url``.
+    """Point the entries that connect to this machine on another port to ``url``.
 
     Only the URL changes (headers and the rest stay); an entry that starts its own process or points to
-    another machine is left alone. Looks at the user-level Cursor file and, in each folder, its Cursor and
-    VS Code files.
+    another machine is left alone. Looks at the user-level Cursor file and, in each folder, its .mcp.json
+    (Claude Code), Cursor and VS Code files.
     """
     paths = [config_path("cursor", "user", Path.home())]
     for folder in folders or []:
-        paths += [config_path("cursor", "project", folder), config_path("vscode", "project", folder)]
+        paths += [config_path(c, "project", folder) for c in ("claude-code", "cursor", "vscode")]
     changed: list[Path] = []
     for path in dict.fromkeys(paths):
         data = _read_json(path)
@@ -408,3 +414,9 @@ def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
                 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 changed.append(path)
     return changed
+
+
+def repoint_all(url: str, folders: list[Path] | None = None) -> list[Path]:
+    """``repoint_files`` for ``folders`` and for every project Claude Code knows whose .mcp.json is on another port."""
+    known = [Path(f) for f in claude_code_status(url, folders)["stale_files"]]
+    return repoint_files(url, [*(folders or []), *known])
