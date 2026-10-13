@@ -91,7 +91,8 @@ class AppPool:
             if self.default is None:
                 raise ConfigError(
                     f"no repository given and no default configuration: send the {REPO_HEADER} header "
-                    "(or ?repo=<folder> on the URL) with the repository folder, or start the server with --config"
+                    "(or ?repo=<folder> on the URL) with the repository folder (${PWD} is empty on Windows: "
+                    "write the folder itself), or start the server with --config"
                 )
             return self.default
         path = Path(repo).expanduser()

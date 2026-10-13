@@ -739,6 +739,18 @@ def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> N
         print(f"  ! Claude Code: {error}")
 
 
+def _check_start_config(config_file: Path) -> None:
+    """Say why the server cannot use its config (it then starts without a default one: only a repository that
+    names itself, with its own .graylog-mcp.toml, is served), instead of leaving it to a message in a log."""
+    if not config_file.is_file():
+        return
+    try:
+        load_config(str(config_file))
+    except ConfigError as exc:
+        print(f"  ! config {config_file}: {exc}")
+        print("    until that is fixed the server only answers repositories that send their folder")
+
+
 def _start(argv: list[str]) -> int:
     import webbrowser
 
@@ -812,6 +824,7 @@ def _start(argv: list[str]) -> int:
     print(f"  ✓ server: {service.server_url(port)} · {where}")
     if not args.no_claude:
         _connect_claude(port, config_file, args.everywhere)
+    _check_start_config(config_file)
     url = service.admin_url(port)
     print(f"  ✓ admin page: {url}")
     if not args.no_browser:
