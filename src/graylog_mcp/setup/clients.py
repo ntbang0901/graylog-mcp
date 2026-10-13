@@ -104,7 +104,7 @@ def server_entry(
 ) -> dict[str, Any]:
     spec = CLIENTS[client]
     if source == "shared":
-        return shared_entry(client, url)
+        return shared_entry(client, url, project_dir if scope == "project" else None)
     cmd, args = command(source)
     env: dict[str, str] = {}
     for name in secret_envs:
@@ -132,8 +132,15 @@ def _needs_token(url: str) -> bool:
     return bool(secrets.get(HTTP_TOKEN_ENV)) or host not in ("127.0.0.1", "localhost", "::1")
 
 
-def shared_entry(client: str, url: str = SHARED_URL) -> dict[str, Any]:
-    """An entry connecting to the shared server, telling it which repository this client works in."""
+def _windows() -> bool:
+    return platform.system() == "Windows"
+
+
+def shared_entry(client: str, url: str = SHARED_URL, folder: Path | str | None = None) -> dict[str, Any]:
+    """An entry connecting to the shared server, telling it which repository this client works in.
+
+    ``folder``: the repository itself, written out where ${PWD} cannot be relied on (Claude Code on Windows, whose
+    environment has no PWD: the header would be empty and the server would not know the repository)."""
     spec = CLIENTS[client]
     if spec.env_style == "none":
         raise ValueError(
@@ -142,8 +149,10 @@ def shared_entry(client: str, url: str = SHARED_URL) -> dict[str, Any]:
         )
     # Claude Code expands ${PWD} (the folder it runs in; the server walks up to the repository root),
     # Cursor and VS Code ${workspaceFolder}. The token stays a reference to the developer's variable.
-    folder = "${PWD:-}" if spec.env_style == "dollar" else "${workspaceFolder}"
-    headers = {REPO_HEADER: folder}
+    where = "${PWD:-}" if spec.env_style == "dollar" else "${workspaceFolder}"
+    if spec.env_style == "dollar" and folder is not None and _windows():
+        where = str(Path(folder))
+    headers = {REPO_HEADER: where}
     if _needs_token(url):
         ref = "${" + HTTP_TOKEN_ENV + ":-}" if spec.env_style == "dollar" else "${env:" + HTTP_TOKEN_ENV + "}"
         headers["Authorization"] = "Bearer " + ref
@@ -320,8 +329,9 @@ def _claude_runner(runner: Any) -> Any:
     return runner or (lambda cmd, **kw: subprocess.run(cmd, capture_output=True, text=True, check=False, **kw))
 
 
-def _headers(url: str) -> list[str]:
-    return [h for k, v in shared_entry("claude-code", url)["headers"].items() for h in ("--header", f"{k}: {v}")]
+def _headers(url: str, folder: Path | str | None = None) -> list[str]:
+    entry = shared_entry("claude-code", url, folder)
+    return [h for k, v in entry["headers"].items() for h in ("--header", f"{k}: {v}")]
 
 
 def _add_user(claude: str, run: Any, url: str, replace: bool, done: dict[str, Any]) -> None:
@@ -336,8 +346,19 @@ def _add_user(claude: str, run: Any, url: str, replace: bool, done: dict[str, An
 def _add_local(claude: str, run: Any, url: str, folder: str, done: dict[str, Any]) -> None:
     """A private registration for one project (Claude Code's local scope): nothing is written in the repository."""
     run([claude, "mcp", "remove", SERVER_NAME, "--scope", "local"], cwd=folder)
-    added = run([claude, "mcp", "add", "--transport", "http", "--scope", "local", SERVER_NAME, url, *_headers(url)],
-                cwd=folder)  # fmt: skip
+    command = [
+        claude,
+        "mcp",
+        "add",
+        "--transport",
+        "http",
+        "--scope",
+        "local",
+        SERVER_NAME,
+        url,
+        *_headers(url, folder),
+    ]
+    added = run(command, cwd=folder)
     if added.returncode == 0:
         done["projects"].append(folder)
     else:
@@ -368,13 +389,25 @@ def register_claude_code(
     .mcp.json starts graylog-mcp itself, or whose private registration is on another port, are overridden
     privately: the committed file is untouched (its URL on another port is rewritten by ``repoint_all``)."""
     claude = claude_binary()
-    if claude is None:
-        raise ValueError(
-            f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
-        )
-    run = _claude_runner(runner)
     status = claude_code_status(url, folders)
     done: dict[str, Any] = {"user": False, "projects": [], "written": [], "errors": []}
+    if not user:  # a file: needs no claude command
+        for folder in status["missing_projects"]:
+            _write_mcp_json(folder, url, done)
+    hint = f"the claude command is not on PATH; run this instead: {claude_code_command([], 'shared', url=url)}"
+    needs_cli = bool(
+        (not status["registered"] and (user or status["user_stale"]))
+        or (not user and status["user_local"])
+        or status["stdio_projects"]
+        or status["stale_projects"]
+    )
+    if claude is None:
+        if needs_cli and user:
+            raise ValueError(hint)
+        if needs_cli:
+            done["errors"].append(hint)
+        return done
+    run = _claude_runner(runner)
     if not status["registered"] and (user or status["user_stale"]):
         _add_user(claude, run, url, status["user_entry"], done)
     if not user and status["user_local"]:  # per repository means no registration for every project
@@ -382,9 +415,6 @@ def register_claude_code(
         done["removed_user"] = True
     for folder in [*status["stdio_projects"], *status["stale_projects"]]:
         _add_local(claude, run, url, folder, done)
-    if not user:
-        for folder in status["missing_projects"]:
-            _write_mcp_json(folder, url, done)
     return done
 
 
@@ -412,22 +442,36 @@ def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
 
     Only the URL changes (headers and the rest stay); an entry that starts its own process or points to
     another machine is left alone. Looks at the user-level Cursor file and, in each folder, its .mcp.json
-    (Claude Code), Cursor and VS Code files.
+    (Claude Code), Cursor and VS Code files. On Windows a Claude Code ``.mcp.json`` whose repository header is
+    ${PWD:-} (empty there) gets the folder itself.
     """
-    paths = [config_path("cursor", "user", Path.home())]
+    pairs: list[tuple[Path, Path | None]] = [(config_path("cursor", "user", Path.home()), None)]
     for folder in folders or []:
-        paths += [config_path(c, "project", folder) for c in ("claude-code", "cursor", "vscode")]
+        pairs += [
+            (config_path(c, "project", folder), folder if c == "claude-code" else None)
+            for c in CLIENTS
+            if c != "claude-desktop"
+        ]
     changed: list[Path] = []
-    for path in dict.fromkeys(paths):
+    for path, repo in dict.fromkeys(pairs):
         data = _read_json(path)
+        touched = False
         for key in ("mcpServers", "servers"):
             servers = data.get(key)
             entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
-            if isinstance(entry, dict) and entry.get("url") != url and _is_local_mcp_url(entry.get("url")):
+            if not (isinstance(entry, dict) and _is_local_mcp_url(entry.get("url"))):
+                continue
+            if entry.get("url") != url:
                 entry["url"] = url
-                shutil.copy2(path, path.with_name(path.name + ".bak"))
-                path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                changed.append(path)
+                touched = True
+            headers = entry.get("headers")
+            if repo is not None and _windows() and isinstance(headers, dict) and headers.get(REPO_HEADER) == "${PWD:-}":
+                headers[REPO_HEADER] = str(repo)
+                touched = True
+        if touched:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            changed.append(path)
     return changed
 
 
