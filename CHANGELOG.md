@@ -107,7 +107,7 @@ All notable changes to this project are documented here. The format follows
   setup remove the registration for every project that an earlier version made (unless `--global`), and a
   `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
 - `graylog-mcp update` says what it is doing and how long it can take.
-- `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\\Scripts: Access is denied`:
+- `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\Scripts: Access is denied`:
   that command and the server both run from the directory uv replaces, and Windows cannot delete a running
   program. It stops the server and finishes in the background from a copy in uv's cache (progress in the
   server log), retrying while the old files are let go, then restarts the server.
