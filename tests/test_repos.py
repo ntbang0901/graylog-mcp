@@ -225,17 +225,16 @@ async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp
     cfg = fake_claude.config()
     assert "graylog" not in cfg.get("mcpServers", {})  # nothing global: only this repository
     assert cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
-    # a new repository gets its own private registration; nothing is written in it
+    # a new repository gets the shared server in its own .mcp.json, created as it has none
     new = make_repo(root, "payment-api")
     added = await client.post(
         "/api/repos", json={"group": "payment", "repo": str(new), "project_config": True, "claude_code": True}
     )
-    assert added.json()["source"] == "shared" and not (new / ".mcp.json").exists()
+    assert added.json()["source"] == "shared"
+    assert json.loads((new / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == clients.SHARED_URL
     groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
     assert [r["claude_code"] for g in groups.values() for r in g["repos"]] == ["shared", "shared"]
-    assert (
-        len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 2
-    )  # one private registration per repository
+    assert len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 1  # only the uvx one: an override
 
 
 def test_repo_cli(tmp_path, monkeypatch, capsys):
