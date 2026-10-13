@@ -505,9 +505,17 @@ def test_windows_writes_the_repository_folder_where_pwd_is_empty(tmp_path, monke
     assert unix["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
 
 
-def test_register_without_claude_cli():
+def test_register_without_claude_cli(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="claude mcp add --transport http graylog --scope user"):
         clients.register_claude_code()
+    # per repository the .mcp.json is a file: written without the claude command
+    monkeypatch.setattr(clients, "claude_binary", lambda: None)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    done = clients.register_claude_code("http://127.0.0.1:18742/mcp", [repo], user=False)
+    assert done["errors"] == [] and done["written"] == [str(repo / ".mcp.json")]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:18742/mcp"
 
 
 def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
