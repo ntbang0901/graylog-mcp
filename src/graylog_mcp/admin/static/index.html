@@ -76,6 +76,8 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .kbar:hover { border-color: var(--line-strong); color: var(--muted); }
 .kbar .kbd { margin-left: auto; }
 .content { padding: var(--sp-5) var(--sp-6) 96px; max-width: 1160px; width: 100%; }
+/* dashboards use the width of a large screen; forms stay readable at 1160px */
+.content:has(#home.active, #activity.active) { max-width: 1840px; }
 .page { display: none; }
 .page.active { display: block; animation: fade var(--dur) var(--ease); }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
