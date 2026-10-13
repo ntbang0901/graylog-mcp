@@ -638,8 +638,8 @@ What `start` does, so you know what is on your machine:
   removes a registration for every project that an earlier version made, so that Claude Code does not report
   the server as defined in several scopes with different endpoints.
 - **A different port**: whenever the server starts (by `start`, at login, after `update`), what an earlier port
-  registered follows it: Claude Code's registrations and overrides, committed `.mcp.json` URLs (through an
-  override) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
+  registered follows it: Claude Code's registrations and overrides, the URL of a `.mcp.json` entry on
+  another local port (rewritten in place, `.bak` kept) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
   elsewhere.
 
 How the server picks the configuration of a session:
