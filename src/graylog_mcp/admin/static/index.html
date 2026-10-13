@@ -534,7 +534,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const show = (v) => Array.isArray(v) ? v.join(", ") : (v === null || v === undefined ? "" : String(v));
 const splitList = (v) => v.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const plural = (n, word, many = word + "s") => `${n} ${n === 1 ? word : many}`;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || "");
 const MOD = MAC ? "⌘" : "Ctrl";
@@ -682,9 +682,11 @@ function setupSteps() {
   if (s.autostart.kind) steps.push(s.autostart.enabled
     ? {ok: true, what: "Starts when you log in", why: `Managed by ${esc(s.autostart.kind)}, restarted if it crashes`, action: '<button class="btn sm ghost" data-setup="autostart-off">Turn off</button>'}
     : {ok: false, auto: true, what: "Start it when you log in", why: "So you never have to start it again after a restart."});
-  if (cl.registered && !cl.stdio_projects.length) steps.push({ok: true, what: "Claude Code connected", why: "In every project. Open a new Claude session to use it."});
-  else if (cl.registered) steps.push({ok: false, auto: true, what: `Switch ${plural(cl.stdio_projects.length, "project")} to the shared server`,
-    why: `Their .mcp.json starts their own process: ${cl.stdio_projects.map((p) => `<span class="mono">${esc(p)}</span>`).join(", ")}. Only your own Claude settings change.`});
+  const moving = [...cl.stdio_projects, ...(cl.stale_projects || []), ...(cl.missing_projects || [])];
+  if (!moving.length && (cl.registered || cl.repos)) steps.push({ok: true, what: "Claude Code connected", why: cl.registered ? "In every project. Open a new Claude session to use it." : "In the repositories of your groups. Open a new Claude session to use it."});
+  else if (moving.length && cl.cli) steps.push({ok: false, auto: true, what: `Connect ${plural(moving.length, "repository", "repositories")} to the shared server`,
+    why: `They start their own process, still use another port or are not connected yet: ${moving.map((p) => `<span class="mono">${esc(p)}</span>`).join(", ")}. Only your own Claude settings change; nothing is written in the repositories.`});
+  else if (!moving.length) steps.push({ok: true, what: "Claude Code", why: "Add a repository to a group and it is connected there; no registration for every project."});
   else if (cl.cli) steps.push({ok: false, auto: true, what: "Connect Claude Code", why: "Registers graylog for every project; nothing is written into your repositories."});
   else steps.push({ok: false, what: "Connect Claude Code", why: `The <span class="mono">claude</span> command was not found. Run once in a terminal: <span class="mono">${esc(cl.command)}</span>`,
     action: `<button class="btn sm" data-copy-text="${esc(cl.command)}">Copy command</button>`});
@@ -741,7 +743,7 @@ async function finishSetup(btn) {
       await loadSetup(); s = SETUP;
     }
     if (s.autostart.kind && !s.autostart.enabled) await api("/api/setup/autostart", "POST", {on: true});
-    if (s.claude.cli && (!s.claude.registered || s.claude.stdio_projects.length)) await api("/api/setup/claude", "POST", {});
+    if (s.claude.cli && [...s.claude.stdio_projects, ...(s.claude.stale_projects || []), ...(s.claude.missing_projects || [])].length) await api("/api/setup/claude", "POST", {});
     await loadSetup(); await loadState();
     const envs = STATE.instances, missing = envs.find((e) => !e.secret_set && e.local);
     if (!envs.length) openDrawer(null);
@@ -1097,15 +1099,16 @@ function repoRows(g, sharedUp) {
       : [r.remote ? `<span class="badge mono">${esc(r.remote)}</span>` : '<span class="badge">no git remote</span>',
          r.project_config ? '<span class="badge ok">.graylog-mcp.toml</span>' : '<span class="badge warn">not set up</span>',
          r.claude_code === "shared" ? '<span class="badge ok">Claude Code · shared server</span>'
+           : r.claude_code === "stale" ? '<span class="badge warn">Claude Code · old port</span>'
            : r.claude_code ? `<span class="badge${sharedUp ? " warn" : " ok"}">Claude Code · own process</span>` : "",
          r.project_config ? focusBadge(r.focus) : ""].join(" ");
-    const toShared = sharedUp && r.claude_code === "stdio";
+    const toShared = sharedUp && (r.claude_code === "stdio" || r.claude_code === "stale");
     const canSetup = r.kind === "path" && r.exists && (!(r.project_config && r.claude_code) || toShared);
     const canFocus = r.kind === "path" && r.exists;
     const f = r.focus || {};
     const svc = f.service === false ? "" : Array.isArray(f.service) ? f.service.join(", ") : (f.service || "");
     return `<div class="repo"><div><span class="mono">${esc(r.entry)}</span><div class="meta">${meta}</div></div>
-      <div class="actions">${canSetup ? `<button class="btn sm${toShared || !r.project_config ? " primary" : ""}" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">${toShared ? "Use shared server" : "Set up"}</button>` : ""}
+      <div class="actions">${canSetup ? `<button class="btn sm${toShared || !r.project_config ? " primary" : ""}" data-setuprepo="${esc(r.entry)}" data-group="${esc(g.name)}">${toShared ? (r.claude_code === "stale" ? "Update port" : "Use shared server") : "Set up"}</button>` : ""}
         ${canFocus ? `<button class="btn sm" data-focusrepo="${esc(r.entry)}" aria-expanded="false">Focus</button>` : ""}
         <button class="btn sm ghost icon danger" data-rmrepo="${esc(r.entry)}" data-group="${esc(g.name)}" aria-label="Remove ${esc(r.entry)}" title="Remove">${ICON.trash}</button></div>
       ${canFocus ? `<div class="focus-form hidden" data-focusform="${esc(r.entry)}">
