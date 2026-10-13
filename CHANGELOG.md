@@ -106,6 +106,8 @@ All notable changes to this project are documented here. The format follows
 - Claude Code no longer reports `graylog` as defined in several scopes with different endpoints: `start` and Finish
   setup remove the registration for every project that an earlier version made (unless `--global`), and a
   `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
+- Setting up a repository on another drive than the shared config (Windows: `path is on mount 'C:', start on
+  mount 'D:'`) writes the include as an absolute path instead of failing.
 - `graylog-mcp update` says what it is doing and how long it can take.
 - `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\Scripts: Access is denied`:
   that command and the server both run from the directory uv replaces, and Windows cannot delete a running

@@ -279,3 +279,23 @@ async def test_admin_setup_existing_repo(admin):
     res = await client.post("/api/repos/setup", json={"group": "payment", "repo": "../payment-worker"})
     assert res.json()["ok"] and (repo / ".graylog-mcp.toml").exists() and (repo / ".mcp.json").exists()
     assert (await client.post("/api/repos/setup", json={"group": "payment", "repo": "f88/x"})).status_code == 400
+
+
+def test_setup_repo_on_another_drive_includes_the_config_by_its_absolute_path(tmp_path, monkeypatch):
+    """Windows: os.path.relpath raises 'path is on mount C:, start on mount D:' when the drives differ."""
+    from graylog_mcp.setup import configfile
+
+    shared = tmp_path / "platform" / "graylog-org.toml"
+    shared.parent.mkdir()
+    shared.write_text(
+        '[groups.payment.environments.prod]\nurl = "https://gl.test"\ntoken_env = "T"\n', encoding="utf-8"
+    )
+    repo = make_repo(tmp_path, "payment-api")
+
+    def other_drive(path, start=None):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    monkeypatch.setattr("os.path.relpath", other_drive)
+    target = configfile.setup_repo(repo, shared, "payment")
+    assert configfile.load_raw(target)["include"] == shared.resolve().as_posix()
+    assert configfile.load_raw(target)["default_group"] == "payment"
