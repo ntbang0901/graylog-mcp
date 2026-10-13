@@ -108,6 +108,10 @@ All notable changes to this project are documented here. The format follows
 - The server no longer waits for every Graylog's version to be detected before it answers: detection runs in the
   background, so an unreachable Graylog (VPN off) does not make `graylog-mcp start` report that it did not start.
   `start` also waits up to a minute (was 20 seconds) for a slow first start.
+- Changing the port (`graylog-mcp start --port N`) now moves the registrations of the earlier port: Claude Code's
+  private per-project overrides and committed `.mcp.json` entries that point to another local port are
+  re-registered (the files are untouched), and Cursor and VS Code entries get their URL rewritten (`.bak` kept).
+  `status` and the admin page list the projects still on the old port.
 
 ## [0.1.0] - 2026-10-06
 
