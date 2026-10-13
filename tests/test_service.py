@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import httpx
@@ -530,3 +531,65 @@ def test_output_that_cannot_show_a_character(monkeypatch):
     print("✓ started")
     out.flush()
     assert out.buffer.getvalue().strip() == b"? started"
+
+
+def _windows_update(monkeypatch, via, installs, running=True):
+    """What 'update' does on Windows, with the system calls replaced; returns the log of what it did."""
+    done: list = []
+    monkeypatch.setattr(service, "is_windows", lambda: True)
+    monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", "a" * 40, "git+https://x/y", via))
+    monkeypatch.setattr(service, "uv_binary", lambda: "uv")
+    probed = {"status": "ok", "admin": True} if running else None
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: probed)
+    monkeypatch.setattr(service, "kill_server", lambda: done.append("kill"))
+    monkeypatch.setattr(service, "wait_down", lambda port, timeout=10.0: done.append("down") or True)
+    monkeypatch.setattr(service, "wait_pid", lambda pid, timeout=30.0: done.append(("wait", pid)) or True)
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: done.append(("spawn", cmd)) or 1)
+    monkeypatch.setattr(service, "run", lambda cmd, **kw: types.SimpleNamespace(stdout="graylog-mcp 0.2.0\n"))
+    monkeypatch.setattr(service, "restart", lambda cmd, port, autostart: done.append(("restart", cmd[0])))
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=60.0, commit=None: {"version": "0.2.0"})
+    monkeypatch.setattr("graylog_mcp.__main__.time.sleep", lambda s: done.append("sleep"))
+    monkeypatch.setattr(service, "install_tool", lambda source: _next_install(installs, done))
+    return done
+
+
+def _next_install(installs, done):
+    result = installs.pop(0)
+    done.append("install")
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def test_update_on_windows_leaves_the_install_to_a_copy_outside_uv_tools(monkeypatch, capsys):
+    """This command and the server run from the directory uv replaces, and Windows cannot delete a running exe."""
+    done = _windows_update(monkeypatch, "uv-tool", [])
+    assert main(["update"]) == 0
+    assert done[:2] == ["kill", "down"] and done[2][0] == "spawn"  # no install here
+    cmd = done[2][1]
+    assert cmd[:6] == ["uv", "tool", "run", "--from", "git+https://x/y", "graylog-mcp"]
+    assert "--restart" in cmd and "--after-pid" in cmd and cmd[cmd.index("--port") + 1] == str(service.DEFAULT_PORT)
+    assert "updating in the background" in capsys.readouterr().out
+
+
+def test_update_finishes_from_the_copy_in_uvs_cache(monkeypatch, capsys):
+    locked = RuntimeError(
+        "uv tool install failed: failed to remove directory ...Scripts: Access is denied. (os error 5)"
+    )
+    done = _windows_update(monkeypatch, "uvx", [locked, locked, ["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert done == [
+        ("wait", 123),
+        "install",
+        "sleep",
+        "install",
+        "sleep",
+        "install",
+        ("restart", "C:/tools/graylog-mcp.exe"),
+        "down",
+    ]
+    assert "restarted: 0.2.0" in capsys.readouterr().out
+    # any other failure is reported at once
+    done = _windows_update(monkeypatch, "uvx", [RuntimeError("uv tool install failed: no network")], running=False)
+    assert main(["update"]) == 1
+    assert done == ["install"] and "no network" in capsys.readouterr().err

@@ -9,6 +9,7 @@ import io
 import ipaddress
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -880,26 +881,42 @@ def _update(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="graylog-mcp update", description="Install the latest version and restart")
     parser.add_argument("--port", type=int, help="default: the port 'graylog-mcp start' used")
     parser.add_argument("--from", dest="source", help="what to install (default: where this copy came from)")
+    parser.add_argument("--after-pid", type=int, help=argparse.SUPPRESS)  # Windows: finish once this process is gone
+    parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)  # the server was stopped for this
     args = parser.parse_args(argv)
     args.port = args.port or service.current_port()
     _setup_logging("WARNING")
     have = service.installed()
     source = args.source or have.source or service.GIT_SOURCE
+    probed = service.probe(args.port)
+    was_running = args.restart or bool(probed and probed.get("admin"))
+    windows = service.is_windows()
+    if windows and have.via == "uv-tool":  # this very process runs from the directory uv replaces
+        return _update_from_outside(args.port, source, was_running)
+    if args.after_pid:
+        service.wait_pid(args.after_pid)
     print(f"graylog-mcp {have.label}: updating from {source}…")
     print(
         "  uv downloads and rebuilds it: about a minute, longer on a slow connection (nothing is shown until done)",
         flush=True,
     )
+    if windows and probed:  # a running server holds its files: Windows cannot replace them
+        service.kill_server()
+        service.wait_down(args.port)
     began = time.monotonic()
-    try:
-        exe = service.install_tool(source)
-    except RuntimeError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
-        return 1
+    for attempt in range(1, 6):
+        try:
+            exe = service.install_tool(source)
+            break
+        except RuntimeError as exc:
+            if windows and attempt < 5 and ("os error 5" in str(exc) or "Access is denied" in str(exc)):
+                time.sleep(3)  # the stopped server (or its keepalive) is still letting go of its files
+                continue
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
     new = service.run([*exe, "--version"]).stdout.strip()
     print(f"✓ installed {new or 'the latest version'} ({time.monotonic() - began:.0f}s)")
-    running = service.probe(args.port)
-    if running is None or not running.get("admin"):
+    if not was_running:
         print("  the background server is not running: 'graylog-mcp start' starts it")
         return 0
     saved = service.saved_settings()
@@ -913,6 +930,26 @@ def _update(argv: list[str]) -> int:
     else:
         print(f"✗ did not restart; see {service.log_path()}")
     return 0 if body else 1
+
+
+def _update_from_outside(port: int, source: str, was_running: bool) -> int:
+    """Windows cannot replace the files of a program that is running, and this command and the server both run
+    from the copy uv replaces: stop the server, then let a copy run from uv's cache do the install and restart."""
+    from graylog_mcp.setup import service
+
+    uv = service.uv_binary()
+    if uv is None:
+        print("✗ uv is not installed: see https://docs.astral.sh/uv/", file=sys.stderr)
+        return 1
+    if was_running:
+        service.kill_server()
+        service.wait_down(port)
+    cmd = [uv, "tool", "run", "--from", source, "graylog-mcp", "update", "--port", str(port), "--from", source]
+    cmd += ["--after-pid", str(os.getpid())] + (["--restart"] if was_running else [])
+    service.spawn_detached(cmd)
+    print("✓ updating in the background (Windows cannot replace a program that is running); this takes a minute.")
+    print(f"  see the progress in {service.log_path()}; 'graylog-mcp status' shows the new version when it is done")
+    return 0
 
 
 def _ui(argv: list[str]) -> int:
