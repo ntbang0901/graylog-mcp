@@ -704,8 +704,9 @@ def _group_folders(config_file: Path) -> list[Path]:
 
 
 def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> None:
-    """Connect Claude Code to the server on ``port``: each repository of the groups (a private registration), or
-    with ``everywhere`` one registration for every project too. What an earlier port registered is moved."""
+    """Connect Claude Code to the server on ``port``: each repository of the groups gets the server in its own
+    .mcp.json (created when missing), or with ``everywhere`` one registration for every project instead. What an
+    earlier port registered is moved."""
     from graylog_mcp.setup import clients, service
 
     url = service.server_url(port)
@@ -720,14 +721,16 @@ def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> N
     if status["registered"]:
         print("  ✓ Claude Code: connected in every project")
     elif not folders:
-        print("  - Claude Code: add repositories to a group to connect them (or start with --global)")
+        print("  - Claude Code: add repositories to a group and each gets the server in its .mcp.json (or --global)")
     for folder in done["projects"]:
         if str(folder) in before["stale_projects"]:
             print(f"  ✓ {folder}: pointed to another port; now uses {url} (private override)")
+        elif str(folder) in before["missing_projects"]:
+            print(f"  ✓ {folder}: wrote the shared server into its .mcp.json")
         elif str(folder) in before["stdio_projects"]:
             print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
         else:
-            print(f"  ✓ {folder}: connected to the shared server (private registration, nothing written in it)")
+            print(f"  ✓ {folder}: connected to the shared server")
     if done.get("removed_user"):
         print("  ✓ Claude Code: removed the registration for every project (each repository has its own)")
     for path in clients.repoint_all(url, folders):

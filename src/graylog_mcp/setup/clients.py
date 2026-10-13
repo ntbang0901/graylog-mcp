@@ -296,8 +296,8 @@ def claude_code_status(url: str = SHARED_URL, folders: list[Path] | None = None)
             stale.append(str(folder))  # a private override left by 'start' on another port
         elif isinstance(entry, dict) and not entry.get("url"):
             stdio.append(str(folder))
-        elif str(folder) in wanted and entry is None and not registered:
-            missing.append(str(folder))  # a repository of a group that Claude Code does not reach yet
+        elif str(folder) in wanted and entry is None:
+            missing.append(str(folder))  # a repository of a group without graylog in its .mcp.json
     return {
         "cli": claude_binary() is not None,
         "registered": registered,
@@ -344,14 +344,27 @@ def _add_local(claude: str, run: Any, url: str, folder: str, done: dict[str, Any
         done["errors"].append(f"{folder}: {(added.stderr or added.stdout).strip()}")
 
 
+def _write_mcp_json(folder: str, url: str, done: dict[str, Any]) -> None:
+    """The repository's own .mcp.json gets the entry for the shared server (created when there is none; the other
+    servers in it stay, the previous file is kept as .mcp.json.bak)."""
+    try:
+        install("claude-code", "project", Path(folder), None, [], "shared", url=url)
+    except (ValueError, OSError) as exc:
+        done["errors"].append(f"{folder}: {exc}")
+        return
+    done["projects"].append(folder)
+    done["written"].append(str(Path(folder) / ".mcp.json"))
+
+
 def register_claude_code(
     url: str = SHARED_URL, folders: list[Path] | None = None, runner: Any = None, user: bool = True
 ) -> dict:
     """Connect Claude Code to the shared server.
 
     ``user=True``: one registration for every project (user scope). ``user=False``: per repository only: each of
-    ``folders`` gets a private registration (local scope), and a registration for every project that graylog-mcp
-    made earlier is removed (``removed_user``), so the scopes do not disagree. Either way the projects whose
+    ``folders`` gets the shared server in its own .mcp.json (created when it has none; ``written``), and a
+    registration for every project that graylog-mcp made earlier is removed (``removed_user``), so the scopes
+    do not disagree. Either way the projects whose
     .mcp.json starts graylog-mcp itself, or whose private registration is on another port, are overridden
     privately: the committed file is untouched (its URL on another port is rewritten by ``repoint_all``)."""
     claude = claude_binary()
@@ -361,22 +374,24 @@ def register_claude_code(
         )
     run = _claude_runner(runner)
     status = claude_code_status(url, folders)
-    done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
+    done: dict[str, Any] = {"user": False, "projects": [], "written": [], "errors": []}
     if not status["registered"] and (user or status["user_stale"]):
         _add_user(claude, run, url, status["user_entry"], done)
     if not user and status["user_local"]:  # per repository means no registration for every project
         run([claude, "mcp", "remove", SERVER_NAME, "--scope", "user"])
         done["removed_user"] = True
-    todo = [*status["stdio_projects"], *status["stale_projects"], *(status["missing_projects"] if not user else [])]
-    for folder in todo:
+    for folder in [*status["stdio_projects"], *status["stale_projects"]]:
         _add_local(claude, run, url, folder, done)
+    if not user:
+        for folder in status["missing_projects"]:
+            _write_mcp_json(folder, url, done)
     return done
 
 
 def repair_registrations(url: str, folders: list[Path] | None = None, runner: Any = None) -> dict:
     """Move what an earlier port registered (user entry, private overrides, committed .mcp.json URLs) to ``url``.
     Creates nothing new; does nothing without the claude command."""
-    done: dict[str, Any] = {"user": False, "projects": [], "errors": []}
+    done: dict[str, Any] = {"user": False, "projects": [], "written": [], "errors": []}
     claude = claude_binary()
     if claude is None:
         return done
