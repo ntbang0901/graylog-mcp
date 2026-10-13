@@ -103,6 +103,10 @@ All notable changes to this project are documented here. The format follows
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
 
 ### Fixed
+- Claude Code no longer reports `graylog` as defined in several scopes with different endpoints: `start` and Finish
+  setup remove the registration for every project that an earlier version made (unless `--global`), and a
+  `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
+- `graylog-mcp update` says what it is doing and how long it can take.
 - Admin page: the Dashboard and Activity pages use the width of a large screen (up to 1840 px instead of 1160 px)
   rather than leaving the right half empty; forms keep their readable width.
 - Ctrl+C, `graylog-mcp stop` and `update` no longer wait for requests still in flight (a check against an

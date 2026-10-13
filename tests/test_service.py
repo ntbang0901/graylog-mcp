@@ -371,12 +371,15 @@ def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
     )
     status = clients.claude_code_status(url)
     assert not status["registered"] and status["user_stale"]
-    assert status["stale_projects"] == [str(override), str(committed)] and status["stdio_projects"] == []
+    assert status["stale_projects"] == [str(override)] and status["stdio_projects"] == []
+    assert status["stale_files"] == [str(committed)]  # a committed file: its URL is rewritten, not overridden
     done = clients.register_claude_code(url)
-    assert done == {"user": True, "projects": [str(override), str(committed)], "errors": []}
+    assert done == {"user": True, "projects": [str(override)], "errors": []}
     assert [c["args"][:2] for c in fake_claude.calls(log)[:2]] == [["mcp", "remove"], ["mcp", "add"]]  # the user entry
     assert clients.claude_code_status(url)["stale_projects"] == []
-    assert clients.repoint_files(url, [cursor_repo, remote]) == [cursor]
+    assert set(clients.repoint_all(url, [cursor_repo, remote])) == {committed / ".mcp.json", cursor}
+    assert json.loads((committed / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == url
+    assert json.loads((remote / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "https://team/mcp"
     entry = json.loads(cursor.read_text())["mcpServers"]
     assert entry["graylog"] == {"url": url, "headers": {"X": "1"}} and entry["other"] == {"url": old}
     assert clients.repoint_files(url, [cursor_repo]) == []
@@ -399,6 +402,41 @@ def test_repair_moves_what_exists_and_creates_nothing(tmp_path, monkeypatch):
     done = clients.register_claude_code(url, [stale, fresh], user=False)
     assert done == {"user": False, "projects": [str(fresh)], "errors": []}
     assert "mcpServers" not in json.loads(clients.claude_config_path().read_text())
+
+
+def test_per_repository_leaves_no_conflicting_scopes(tmp_path, monkeypatch):
+    """user (new port) + project .mcp.json (old port) + local (new port): what Claude Code reports as conflicting."""
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    repo = tmp_path / "a"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"graylog": {"type": "http", "url": old, "headers": {"X": "1"}}}})
+    )
+    clients.claude_config_path().write_text(
+        json.dumps(
+            {
+                "mcpServers": {"graylog": {"type": "http", "url": url}},
+                "projects": {str(repo): {"mcpServers": {"graylog": {"type": "http", "url": url}}}},
+            }
+        )
+    )
+    status = clients.claude_code_status(url, [repo])
+    assert status["user_local"] and status["stale_files"] == [str(repo)]
+    done = clients.register_claude_code(url, [repo], user=False)
+    assert done["removed_user"]
+    assert "graylog" not in json.loads(clients.claude_config_path().read_text()).get("mcpServers", {})
+    assert clients.repoint_all(url, [repo]) == [repo / ".mcp.json"]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"] == {
+        "type": "http",
+        "url": url,
+        "headers": {"X": "1"},
+    }
+    status = clients.claude_code_status(url, [repo])
+    assert status["stale_files"] == [] and status["local_projects"] == [str(repo)] and not status["user_local"]
+    assert [c["args"][:2] for c in fake_claude.calls(log)] == [["mcp", "remove"]]  # only the user entry went
+    # ... and with --global the registration for every project stays
+    assert not clients.register_claude_code(url, [repo], user=True).get("removed_user")
 
 
 def test_register_without_claude_cli():

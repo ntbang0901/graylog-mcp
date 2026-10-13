@@ -684,7 +684,7 @@ function setupSteps() {
   if (s.autostart.kind) steps.push(s.autostart.enabled
     ? {ok: true, what: "Starts when you log in", why: `Managed by ${esc(s.autostart.kind)}, restarted if it crashes`, action: '<button class="btn sm ghost" data-setup="autostart-off">Turn off</button>'}
     : {ok: false, auto: true, what: "Start it when you log in", why: "So you never have to start it again after a restart."});
-  const moving = [...cl.stdio_projects, ...(cl.stale_projects || []), ...(cl.missing_projects || [])];
+  const moving = [...cl.stdio_projects, ...(cl.stale_projects || []), ...(cl.stale_files || []), ...(cl.missing_projects || [])];
   if (!moving.length && (cl.registered || cl.repos)) steps.push({ok: true, what: "Claude Code connected", why: cl.registered ? "In every project. Open a new Claude session to use it." : "In the repositories of your groups. Open a new Claude session to use it."});
   else if (moving.length && cl.cli) steps.push({ok: false, auto: true, what: `Connect ${plural(moving.length, "repository", "repositories")} to the shared server`,
     why: `They start their own process, still use another port or are not connected yet: ${moving.map((p) => `<span class="mono">${esc(p)}</span>`).join(", ")}. Only your own Claude settings change; nothing is written in the repositories.`});
@@ -745,7 +745,7 @@ async function finishSetup(btn) {
       await loadSetup(); s = SETUP;
     }
     if (s.autostart.kind && !s.autostart.enabled) await api("/api/setup/autostart", "POST", {on: true});
-    if (s.claude.cli && [...s.claude.stdio_projects, ...(s.claude.stale_projects || []), ...(s.claude.missing_projects || [])].length) await api("/api/setup/claude", "POST", {});
+    if (s.claude.cli && [...s.claude.stdio_projects, ...(s.claude.stale_projects || []), ...(s.claude.stale_files || []), ...(s.claude.missing_projects || [])].length) await api("/api/setup/claude", "POST", {});
     await loadSetup(); await loadState();
     const envs = STATE.instances, missing = envs.find((e) => !e.secret_set && e.local);
     if (!envs.length) openDrawer(null);

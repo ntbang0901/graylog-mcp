@@ -154,7 +154,7 @@ def _repair_registrations(config_path: str | None, port: int) -> None:
         path = Path(config_path).expanduser() if config_path else service.user_config_path()
         url, folders = service.server_url(port), _group_folders(path)
         done = clients.repair_registrations(url, folders)
-        moved = [*done["projects"], *clients.repoint_files(url, folders)]
+        moved = [*done["projects"], *clients.repoint_all(url, folders)]
         if done["user"] or moved or done["errors"]:
             log.info("moved to %s: %s%s; errors: %s", url, "user, " if done["user"] else "", moved, done["errors"])
     except Exception:  # a courtesy at startup must never stop the server
@@ -727,7 +727,9 @@ def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> N
             print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
         else:
             print(f"  ✓ {folder}: connected to the shared server (private registration, nothing written in it)")
-    for path in clients.repoint_files(url, folders):
+    if done.get("removed_user"):
+        print("  ✓ Claude Code: removed the registration for every project (each repository has its own)")
+    for path in clients.repoint_all(url, folders):
         print(f"  ✓ {path}: now points to {url}")
     for error in done["errors"]:
         print(f"  ! Claude Code: {error}")
@@ -860,7 +862,7 @@ def _status(argv: list[str]) -> int:
         print(f"             {folder} connected")
     for folder in claude["stdio_projects"]:
         print(f"             {folder} still starts its own process (.mcp.json)")
-    for folder in claude["stale_projects"]:
+    for folder in [*claude["stale_projects"], *claude["stale_files"]]:
         print(f"             {folder} points to another port: 'graylog-mcp start' moves it")
     if body:
         print(f"admin page:  {service.admin_url(args.port)}")
