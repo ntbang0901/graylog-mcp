@@ -10,6 +10,7 @@ import ipaddress
 import json
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,21 @@ def admin_for_server(config_path: str | None, port: int) -> Any:
     return build_app(state)
 
 
+def _repair_registrations(config_path: str | None, port: int) -> None:
+    """On every start: what an earlier port registered (Claude Code, Cursor, VS Code) follows the server to ``port``."""
+    from graylog_mcp.setup import clients, service
+
+    try:
+        path = Path(config_path).expanduser() if config_path else service.user_config_path()
+        url, folders = service.server_url(port), _group_folders(path)
+        done = clients.repair_registrations(url, folders)
+        moved = [*done["projects"], *clients.repoint_files(url, folders)]
+        if done["user"] or moved or done["errors"]:
+            log.info("moved to %s: %s%s; errors: %s", url, "user, " if done["user"] else "", moved, done["errors"])
+    except Exception:  # a courtesy at startup must never stop the server
+        log.exception("could not update the registrations of an earlier port")
+
+
 def run_http(
     config: Config | None,
     host: str,
@@ -173,6 +189,7 @@ def run_http(
     if admin:
         log.info("admin page: http://127.0.0.1:%s/admin/ (token in %s)", port, service.home_dir() / "admin-token")
         service.write_pid()
+        threading.Thread(target=_repair_registrations, args=(config_path, port), daemon=True).start()
     try:
         # Claude sessions keep event streams open: give them a few seconds, not forever, on Ctrl+C or stop
         uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True, timeout_graceful_shutdown=3)
@@ -684,20 +701,33 @@ def _group_folders(config_file: Path) -> list[Path]:
     return [p for p in (resolve_repo_path(e, config_file.parent) for e in entries) if p.is_dir()]
 
 
-def _connect_claude(port: int, config_file: Path) -> None:
+def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> None:
+    """Connect Claude Code to the server on ``port``: each repository of the groups (a private registration), or
+    with ``everywhere`` one registration for every project too. What an earlier port registered is moved."""
     from graylog_mcp.setup import clients, service
 
     url = service.server_url(port)
+    folders = _group_folders(config_file)
+    before = clients.claude_code_status(url, folders)
     try:
-        done = clients.register_claude_code(url, _group_folders(config_file))
+        done = clients.register_claude_code(url, folders, user=everywhere)
     except ValueError as exc:
         print(f"  ! Claude Code: {exc}")
         return
-    status = clients.claude_code_status(url)
-    if done["user"] or status["registered"]:
+    status = clients.claude_code_status(url, folders)
+    if status["registered"]:
         print("  ✓ Claude Code: connected in every project")
+    elif not folders:
+        print("  - Claude Code: add repositories to a group to connect them (or start with --global)")
     for folder in done["projects"]:
-        print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+        if str(folder) in before["stale_projects"]:
+            print(f"  ✓ {folder}: pointed to another port; now uses {url} (private override)")
+        elif str(folder) in before["stdio_projects"]:
+            print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+        else:
+            print(f"  ✓ {folder}: connected to the shared server (private registration, nothing written in it)")
+    for path in clients.repoint_files(url, folders):
+        print(f"  ✓ {path}: now points to {url}")
     for error in done["errors"]:
         print(f"  ! Claude Code: {error}")
 
@@ -718,6 +748,12 @@ def _start(argv: list[str]) -> int:
     parser.add_argument("--config", "-c", help="config file (default: the one found from here, else the user config)")
     parser.add_argument("--no-autostart", action="store_true", help="run now, but do not start at login")
     parser.add_argument("--no-claude", action="store_true", help="do not register Claude Code")
+    parser.add_argument(
+        "--global",
+        dest="everywhere",
+        action="store_true",
+        help="also register Claude Code once for every project (default: only the repositories of your groups)",
+    )
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
         "--from", dest="source", help=f"what to install (default: where this copy came from, else {service.GIT_SOURCE})"
@@ -765,7 +801,7 @@ def _start(argv: list[str]) -> int:
     where = f"starts at login ({autostart.kind})" if autostart.enabled else "running until you log out"
     print(f"  ✓ server: {service.server_url(port)} · {where}")
     if not args.no_claude:
-        _connect_claude(port, config_file)
+        _connect_claude(port, config_file, args.everywhere)
     url = service.admin_url(port)
     print(f"  ✓ admin page: {url}")
     if not args.no_browser:
@@ -817,9 +853,14 @@ def _status(argv: list[str]) -> int:
     print(f"server:      {'running ' + running if running else 'not running'} on {service.server_url(args.port)}")
     print(f"this copy:   {have.label} ({have.via})")
     print(f"at login:    {'yes (' + str(autostart.kind) + ')' if autostart.enabled else 'no'}")
-    print(f"Claude Code: {'connected in every project' if claude['registered'] else 'not connected'}")
+    mode = "connected in every project" if claude["registered"] else "per repository (not registered globally)"
+    print(f"Claude Code: {mode}")
+    for folder in claude["local_projects"]:
+        print(f"             {folder} connected")
     for folder in claude["stdio_projects"]:
         print(f"             {folder} still starts its own process (.mcp.json)")
+    for folder in claude["stale_projects"]:
+        print(f"             {folder} points to another port: 'graylog-mcp start' moves it")
     if body:
         print(f"admin page:  {service.admin_url(args.port)}")
     else:
