@@ -945,8 +945,9 @@ def _connect(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(
         prog="graylog-mcp connect",
-        description="Use a graylog-mcp server running on another machine (a VM for the team): save its token on "
-        "this machine, check how it identifies your repository, and register it in Claude Code",
+        description="Use a graylog-mcp server running on another machine (a VM for the team): check how it "
+        "identifies your repository and register it in Claude Code, which sends the token from "
+        "GRAYLOG_MCP_HTTP_TOKEN",
     )
     parser.add_argument("url", help="the server, e.g. https://graylog-mcp.example.com/mcp")
     parser.add_argument(
@@ -976,14 +977,18 @@ def _connect(argv: list[str]) -> int:
     if not _print_remote(url, identity, result):
         return 1
     service.save_settings(remote=url)
+    if secrets.source(clients.HTTP_TOKEN_ENV) == "saved":
+        name = clients.HTTP_TOKEN_ENV
+        print(f"! Claude Code sends the token from the environment: set {name} to it where Claude Code starts "
+              f"(e.g. in your shell profile; on Windows: setx {name} <token>)")  # fmt: skip
     if args.no_claude:
         return 0
-    exe = _stable_exe()
     if args.project is not None:
+        _stable_exe()  # its headersHelper runs 'graylog-mcp headers' from PATH
         path = remote.write_project(folder, remote.project_entry(url, folder))
         print(f"✓ Claude Code: {path} (no secret in it: commit it; each teammate runs 'graylog-mcp connect {url}')")
         return 0
-    entry = remote.user_entry(url, exe)
+    entry = remote.user_entry(url)
     claude = clients.claude_binary()
     if claude is None:
         print(
@@ -1004,16 +1009,11 @@ def _headers(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(
         prog="graylog-mcp headers",
-        description="Print the HTTP headers Claude Code sends to a graylog-mcp server on another machine "
-        "(its headersHelper): the saved token and this repository's identity",
+        description="Print the repository header Claude Code sends to a graylog-mcp server on another machine "
+        "(its headersHelper): this repository's git remote, else its folder name",
     )
-    parser.add_argument("--token-only", action="store_true", help="only the token (helper run outside the project)")
-    args = parser.parse_args(argv)
-    sent = remote.headers(Path.cwd(), args.token_only)
-    if sys.stdout.isatty() and "Authorization" in sent:
-        # Claude Code reads the token through a pipe; on a terminal it would stay on screen and in scrollback
-        sent["Authorization"] = "Bearer [hidden on a terminal; given only to the program that runs this]"
-    print(json.dumps(sent))
+    parser.parse_args(argv)
+    print(json.dumps(remote.headers(Path.cwd())))
     return 0
 
 

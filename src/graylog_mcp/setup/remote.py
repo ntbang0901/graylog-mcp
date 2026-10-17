@@ -1,26 +1,25 @@
 """Use a graylog-mcp server running on another machine (a VM for the team) from this one.
 
-Nothing runs here but Claude Code. ``graylog-mcp connect <url>`` saves the server's token on this machine and
-registers the server in Claude Code. Each connection then names its repository by identity (its git remote, else
-its folder name), never by a path the server cannot read:
+Nothing runs here but Claude Code. ``graylog-mcp connect <url>`` checks the server, shows how it identifies the
+repository and registers it in Claude Code. Claude Code sends the server's token from the developer's
+``GRAYLOG_MCP_HTTP_TOKEN`` (``Authorization: Bearer ${GRAYLOG_MCP_HTTP_TOKEN}``): no command prints it. Each
+connection names its repository by identity (its git remote, else its folder name), never by a path the server
+cannot read:
 
 - in a project (``.mcp.json``, the same file for the whole team): Claude Code runs ``graylog-mcp headers`` in the
-  project folder when it connects; it prints the repository's identity and the saved token. The static headers
-  are the fallback when graylog-mcp is not installed: the identity written by ``connect`` and the token from
-  ``GRAYLOG_MCP_HTTP_TOKEN``.
-- for every project (user scope): the helper runs outside the project, so it only gives the token; the repository
-  is the folder Claude Code runs in (``${PWD}``), which the server identifies by its name.
+  project folder when it connects, which prints the repository's git remote. The identity written by ``connect``
+  is the static fallback when graylog-mcp is not installed.
+- for every project (user scope): the repository is the folder Claude Code runs in (``${PWD}``), which the
+  server identifies by its name.
 """
 
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from graylog_mcp import secrets
 from graylog_mcp.config import detect_repo
 from graylog_mcp.setup.clients import HTTP_TOKEN_ENV, REPO_HEADER, SERVER_NAME
 
@@ -49,22 +48,13 @@ def repo_identity(folder: Path) -> str | None:
     return repo.remote or repo.root.name
 
 
-def headers(folder: Path, token_only: bool = False) -> dict[str, str]:
-    """What ``graylog-mcp headers`` prints for Claude Code (headersHelper)."""
-    out: dict[str, str] = {}
-    token = secrets.get(HTTP_TOKEN_ENV)
-    if token:
-        out["Authorization"] = f"Bearer {token}"
-    identity = None if token_only else repo_identity(folder)
-    if identity:
-        out[REPO_HEADER] = identity
-    return out
+def headers(folder: Path) -> dict[str, str]:
+    """What ``graylog-mcp headers`` prints for Claude Code (headersHelper): the repository's identity only."""
+    identity = repo_identity(folder)
+    return {REPO_HEADER: identity} if identity else {}
 
 
-def helper(exe: list[str] | None, token_only: bool = False) -> str:
-    """The headersHelper command: ``graylog-mcp`` from PATH in a shared file, this copy's path otherwise."""
-    cmd = [*(exe or ["graylog-mcp"]), "headers"]
-    return shlex.join([*cmd, "--token-only"] if token_only else cmd)
+HELPER = "graylog-mcp headers"  # from PATH: the .mcp.json is shared by the team
 
 
 def project_entry(url: str, folder: Path) -> dict[str, Any]:
@@ -75,18 +65,13 @@ def project_entry(url: str, folder: Path) -> dict[str, Any]:
         "type": "http",
         "url": url,
         "headers": {**static, "Authorization": TOKEN_REF},
-        "headersHelper": helper(None),
+        "headersHelper": HELPER,
     }
 
 
-def user_entry(url: str, exe: list[str] | None) -> dict[str, Any]:
-    """The entry for every project (user scope)."""
-    return {
-        "type": "http",
-        "url": url,
-        "headers": {REPO_HEADER: "${PWD:-}", "Authorization": TOKEN_REF},
-        "headersHelper": helper(exe, token_only=True),
-    }
+def user_entry(url: str) -> dict[str, Any]:
+    """The entry for every project (user scope). No helper: it would run outside any project."""
+    return {"type": "http", "url": url, "headers": {REPO_HEADER: "${PWD:-}", "Authorization": TOKEN_REF}}
 
 
 def write_project(folder: Path, entry: dict[str, Any]) -> Path:
