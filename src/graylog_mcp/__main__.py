@@ -927,7 +927,11 @@ def _headers(argv: list[str]) -> int:
     )
     parser.add_argument("--token-only", action="store_true", help="only the token (helper run outside the project)")
     args = parser.parse_args(argv)
-    print(json.dumps(remote.headers(Path.cwd(), args.token_only)))
+    sent = remote.headers(Path.cwd(), args.token_only)
+    if sys.stdout.isatty() and "Authorization" in sent:
+        # Claude Code reads the token through a pipe; on a terminal it would stay on screen and in scrollback
+        sent["Authorization"] = "Bearer [hidden on a terminal; given only to the program that runs this]"
+    print(json.dumps(sent))
     return 0
 
 

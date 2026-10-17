@@ -73,6 +73,9 @@ def test_headers_helper(tmp_path, monkeypatch, capsys):
     secrets.save(clients.HTTP_TOKEN_ENV, "s3cret")
     assert main(["headers", "--token-only"]) == 0
     assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer s3cret"}
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)  # a person typing it: the token stays hidden
+    assert main(["headers", "--token-only"]) == 0
+    assert "s3cret" not in capsys.readouterr().out
 
 
 def test_entries_hold_no_secret_and_no_path(tmp_path):

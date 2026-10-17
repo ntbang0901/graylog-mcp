@@ -46,7 +46,8 @@ log = logging.getLogger(__name__)
 REPO_HEADER = "X-Graylog-MCP-Repo"
 RELOAD_SECONDS = 5.0  # how often a repository's config is read again (edits apply without a restart)
 
-_WINDOWS_ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")  # C:\ or \\server\share, from a Windows client
+# an absolute folder whatever the server's system: /x from macOS or Linux, C:\ or \\server\share from Windows
+_ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
 
 current_repo: ContextVar[str | None] = ContextVar("graylog_mcp_repo", default=None)
 
@@ -138,7 +139,7 @@ class AppPool:
         repo = repo.strip()
         if is_repo_path(repo):
             path = Path(repo).expanduser()
-            if not (path.is_absolute() or _WINDOWS_ABSOLUTE.match(repo)):
+            if not (path.is_absolute() or _ABSOLUTE.match(repo)):
                 raise ConfigError(f"{REPO_HEADER}: expected an absolute folder or a git remote, got {repo!r}")
             if self.repo_paths and path.is_dir():
                 return path.resolve(), None
