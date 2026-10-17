@@ -225,6 +225,8 @@ class HttpConfig:
     path: str = "/mcp"
     auth_token: str | None = None
     allowed_hosts: tuple[str, ...] = ()
+    # whether a shared server may read a repository folder named by a client; None: only on a loopback address
+    repo_paths: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -361,7 +363,10 @@ _TOP_KEYS = {
     "presets",
     "scan",
     "http",
+    "repos",
 }
+# what [repos."<repository>"] may set for one repository (a central config naming repositories it cannot read)
+_REPO_KEYS = {"focus", "default_group", "default_environment", "default_instance", "only_groups", "scan", "presets"}
 _INVESTIGATION_KEYS = {
     "trace_fields",
     "service_fields",
@@ -396,7 +401,7 @@ _INSTANCE_KEYS = {
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
 _REDACTION_KEYS = {"packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
-_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts"}
+_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
 MAX_BASELINE_PERIODS = 10
@@ -864,12 +869,16 @@ def _parse_http(data: Any) -> HttpConfig:
     path = data.get("path", "/mcp")
     if not isinstance(path, str) or not path.startswith("/"):
         raise ConfigError("http.path: must start with '/'")
+    repo_paths = data.get("repo_paths")
+    if repo_paths is not None and not isinstance(repo_paths, bool):
+        raise ConfigError("http.repo_paths: expected true or false")
     return HttpConfig(
         host=str(data.get("host", "127.0.0.1")),
         port=_port(data.get("port", 8000)),
         path=path,
         auth_token=token,
         allowed_hosts=_str_list("http.allowed_hosts", data.get("allowed_hosts", [])),
+        repo_paths=repo_paths,
     )
 
 
@@ -960,13 +969,37 @@ def normalize_repo(value: str) -> str:
 
 @dataclass(frozen=True)
 class RepoInfo:
-    cwd: Path
+    cwd: Path | None = None  # None: a repository known by its identity only (on another machine)
     root: Path | None = None  # git work tree root
     remote: str | None = None  # normalized 'origin' URL
+    name: str | None = None  # folder name, when neither the folder nor the remote is known
 
     @property
     def label(self) -> str:
-        return self.remote or str(self.root or self.cwd)
+        return self.remote or str(self.root or self.cwd or self.name)
+
+    @property
+    def folder_name(self) -> str | None:
+        if self.root is not None:
+            return self.root.name
+        if self.name:
+            return self.name
+        return self.remote.rsplit("/", 1)[-1] if self.remote else None
+
+
+_IDENTITY = re.compile(r"\w(?:[\w .@:~/+-]{0,198}[\w.~/-])?")  # letters of any script; never used as a path
+
+
+def repo_from_identity(value: str) -> RepoInfo:
+    """A repository a client names without the server reading its folder: a git remote ('github.com/org/repo',
+    'org/repo', any git URL) or a bare repository name."""
+    text = value.strip()
+    if not _IDENTITY.fullmatch(text):
+        raise ConfigError(f"invalid repository {value!r}: expected a git remote such as github.com/org/repo or a name")
+    if "/" in text or ":" in text:
+        remote = normalize_repo(text)
+        return RepoInfo(remote=remote, name=remote.rsplit("/", 1)[-1])
+    return RepoInfo(name=text)
 
 
 def detect_repo(start: Path | None = None) -> RepoInfo:
@@ -1013,22 +1046,50 @@ def resolve_repo_path(entry: str, base_dir: Path) -> Path:
     return (path if path.is_absolute() else base_dir / path).resolve()
 
 
+def repo_matches(entry: str, repo: RepoInfo, base_dir: Path) -> bool:
+    """Whether a repository entry names this repository: a local path (this folder or a parent of it), a git
+    URL, an 'org/repo' suffix of the remote, or the bare repository name."""
+    if is_repo_path(entry):
+        if repo.cwd is None:
+            return False
+        target = resolve_repo_path(entry, base_dir)
+        return repo.cwd == target or target in repo.cwd.parents
+    want = normalize_repo(entry)
+    if repo.remote and (repo.remote == want or repo.remote.endswith("/" + want)):
+        return True
+    return "/" not in want and (repo.folder_name or "").lower() == want
+
+
 def match_repo(groups: dict[str, GroupInfo], repo: RepoInfo, base_dir: Path) -> str | None:
-    """The group whose ``repos`` lists this repository: a local path (this folder or a parent of it), a git URL,
-    an 'org/repo' suffix of the remote, or the bare repository name."""
+    """The group whose ``repos`` lists this repository (see ``repo_matches``)."""
     for group in groups.values():
-        for entry in group.repos:
-            if is_repo_path(entry):
-                target = resolve_repo_path(entry, base_dir)
-                if repo.cwd == target or target in repo.cwd.parents:
-                    return group.name
-                continue
-            want = normalize_repo(entry)
-            if repo.remote and (repo.remote == want or repo.remote.endswith("/" + want)):
-                return group.name
-            if "/" not in want and repo.root is not None and repo.root.name.lower() == want:
-                return group.name
+        if any(repo_matches(entry, repo, base_dir) for entry in group.repos):
+            return group.name
     return None
+
+
+def _repo_settings(
+    data: dict[str, Any], repo: RepoInfo | None, base_dir: Path, own_file: bool
+) -> tuple[dict[str, Any], str | None]:
+    """``data`` with the settings of the [repos."<repository>"] entry naming this repository, and that entry's
+    name. The most specific entry wins (the longest name). The entry overrides the rest of a shared config, but
+    a repository's own file (``own_file``) overrides the entry."""
+    raw = data.get("repos")
+    if raw is None:
+        return data, None
+    if not isinstance(raw, dict):
+        raise ConfigError('repos: expected tables such as [repos."github.com/org/payment-api"]')
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            raise ConfigError(f"repos.{key}: expected a table")
+        _check_keys(f'repos."{key}"', value, _REPO_KEYS)
+    if repo is None:
+        return data, None
+    found = sorted((k for k in raw if repo_matches(k, repo, base_dir)), key=len, reverse=True)
+    if not found:
+        return data, None
+    entry = raw[found[0]]
+    return (_deep_merge(entry, data) if own_file else _deep_merge(data, entry)), found[0]
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -1151,9 +1212,13 @@ def default_config_path(start: Path | None = None) -> Path | None:
 
 
 def load_config(
-    path: str | os.PathLike[str] | None = None, require_usable: bool = True, repo_dir: Path | None = None
+    path: str | os.PathLike[str] | None = None,
+    require_usable: bool = True,
+    repo_dir: Path | None = None,
+    repo: RepoInfo | None = None,
 ) -> Config:
-    """Load and validate the configuration. Raises ``ConfigError`` on any problem."""
+    """Load and validate the configuration. Raises ``ConfigError`` on any problem. ``repo``: a repository
+    known by its identity only (its folder is not read)."""
     file_path = Path(path).expanduser() if path else default_config_path(repo_dir)
     data: dict[str, Any] = {}
     source = "env"
@@ -1162,13 +1227,15 @@ def load_config(
             raise ConfigError(f"config file not found: {file_path}")
         data = read_config_file(file_path)
         source = str(file_path)
+    if repo is not None:
+        return parse_config(data, source=source, require_usable=require_usable, repo=repo)
     return parse_config(data, source=source, require_usable=require_usable, repo_dir=repo_dir or Path.cwd())
 
 
 def _repo_names(repo: RepoInfo | None) -> tuple[str, ...]:
-    if repo is None or repo.root is None:
+    if repo is None or repo.folder_name is None:
         return ()
-    names = [repo.root.name]
+    names = [repo.folder_name]
     if repo.remote:
         names.append(repo.remote.rsplit("/", 1)[-1])
     return tuple(dict.fromkeys(n for n in names if n))
@@ -1224,14 +1291,22 @@ def parse_config(
     require_usable: bool = True,
     repo_dir: Path | None = None,
     scoped: bool = True,
+    repo: RepoInfo | None = None,
 ) -> Config:
     """Validate configuration data. ``require_usable=False`` accepts a config whose secrets are not set
     in this environment (used when editing a config file for others). ``scoped=False`` keeps every group
-    even when ``only_groups`` or the current repository would narrow them (used by the editors)."""
+    even when ``only_groups`` or the current repository would narrow them (used by the editors). The
+    repository is ``repo`` (known by its identity, on another machine) or the one holding ``repo_dir``."""
     data = _env_overrides(data)
     _check_keys("config", data, _TOP_KEYS)
     if "include" in data:
         raise ConfigError("include only works in a config file (paths are relative to that file)")
+    if repo is None and repo_dir is not None:
+        repo = detect_repo(repo_dir)
+    from_file = source not in ("env", "test", "editor") and Path(source).is_file()
+    base_dir = (Path(source).parent if from_file else repo_dir or Path.cwd()).resolve()
+    own_file = from_file and repo is not None and repo.root is not None and base_dir.is_relative_to(repo.root)
+    data, repo_entry = _repo_settings(data, repo, base_dir, own_file)
 
     timezone = _check_timezone("timezone", data.get("timezone", "UTC"))
     inv_data = data.get("investigation", {})
@@ -1285,13 +1360,9 @@ def parse_config(
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
     current_repo = repo_group = None
-    repo = detect_repo(repo_dir) if repo_dir is not None else None
-    if repo is not None and repo_dir is not None and any(g.repos for g in groups.values()):
-        base_dir = (
-            Path(source).parent if source not in ("env", "test", "editor") and Path(source).is_file() else repo_dir
-        )
+    if repo is not None and (any(g.repos for g in groups.values()) or repo_entry or repo.cwd is None):
         current_repo = repo.label
-        repo_group = match_repo(groups, repo, base_dir.resolve())
+        repo_group = match_repo(groups, repo, base_dir)
         if default_group is None and not data.get("default_instance"):
             default_group = repo_group  # run inside a listed repository: its group is the default
     if default_group is not None and default_group not in groups:

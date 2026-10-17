@@ -623,6 +623,53 @@ docker run -p 8000:8000 \
   -e GRAYLOG_MCP_HTTP_TOKEN=... graylog-mcp
 ```
 
+## A server for the team on a VM
+
+One `serve --shared` process on a VM can serve every developer and every repository. The VM cannot read the
+developers' folders, so a client names its repository by **identity**: its git remote
+(`github.com/acme/payment-api`, `acme/payment-api`, any git URL) or, failing that, its folder name. Groups list
+their repositories by remote or name, and `[repos."<repository>"]` holds each one's settings (what a
+repository's own `.graylog-mcp.toml` holds on a developer's machine):
+
+```toml
+# /etc/graylog-mcp/org.toml on the VM, kept in a git repository and deployed by the platform team
+[groups.payment]
+repos = ["acme/payment-api", "acme/payment-worker"]
+[groups.payment.environments.prod]
+url = "https://graylog-pay.example.com"
+token_env = "GRAYLOG_PAYMENT_PROD_TOKEN"
+
+[repos."acme/payment-api"]                  # focus, default_group/environment/instance, only_groups, scan, presets
+focus = { service = "payment" }
+
+[http]
+auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"   # every developer sends it
+# repo_paths = false                        # default off a loopback address: folders clients name are never read
+```
+
+```bash
+graylog-mcp serve --shared --host 0.0.0.0 --port 8000 --config /etc/graylog-mcp/org.toml
+```
+
+The config is read again within seconds of a change: deploy the file, no restart. The admin page writes files
+on the machine it runs on, so it only listens on the loopback address; reach it with an SSH tunnel
+(`ssh -L 8000:127.0.0.1:8000 vm`, then `http://127.0.0.1:8000/admin/` with `serve --admin`).
+
+On each developer's machine, nothing runs but Claude Code:
+
+| | |
+|---|---|
+| `graylog-mcp connect https://graylog-mcp.example.com` | asks for the server's token once and saves it on this machine (outside any repository), shows how the server identifies the current repository, and registers the server in Claude Code for every project |
+| `graylog-mcp connect URL --project` | writes the repository's `.mcp.json` instead. It holds no secret and no path: commit it, and each teammate only runs `connect` once for the token |
+| `graylog-mcp status` | is the server reachable, which version, and how it identifies this repository: group, focus, default environment, each Graylog instance |
+
+How a connection names its repository: in a project's `.mcp.json`, Claude Code runs `graylog-mcp headers`
+(its `headersHelper`) in the project folder when it connects; it prints the saved token and the repository's
+git remote. Without graylog-mcp installed, the static headers apply: the remote written by `connect` and the
+token from `GRAYLOG_MCP_HTTP_TOKEN`. Registered for every project, the helper runs outside the project, so it
+only gives the token and the server identifies the repository by the name of the folder Claude Code runs in
+(`${PWD}`): list repositories by name in `repos`, or use `connect --project` for the ones listed by remote.
+
 ## Testing
 
 ```bash
