@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A shared server on a VM for the team: clients name their repository by identity (git remote such as
+  `github.com/acme/payment-api`, or the folder name) instead of a folder the server cannot read; groups list
+  repositories by remote or name and `[repos."<repository>"]` holds each one's focus and defaults. `http.repo_paths`
+  (default: only on a loopback address) decides whether folders named by clients are read at all. `GET /status`
+  says how the server identified the caller.
+- `graylog-mcp connect URL [--project]`: use the team's server from a developer's machine. Saves its token here,
+  shows how the server identifies the repository, and registers it in Claude Code with `graylog-mcp headers` as
+  the headersHelper (saved token and git remote); `--project` writes a `.mcp.json` with no secret and no path, to
+  commit. `graylog-mcp status` checks the saved server when none runs locally (`--url` for any).
 - Smarter `search_logs` / `count_logs`: obvious query mistakes are fixed before running and listed in
   `rewrites` (field names that do not exist but clearly mean one that does, lower-case `and`/`or`, a bare id also
   searched in the trace fields; `exact=true` turns this off). A search that matches nothing returns a

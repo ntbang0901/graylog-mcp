@@ -1079,7 +1079,8 @@ async def list_instances(app: App) -> dict[str, Any]:
             out["focus"] = {"configured": cfg.focus.services or cfg.focus.streams, "status": "not resolved"}
         else:
             out["focus"] = {"status": f"no service matches the repository name {cfg.focus.repo_names[0]!r}; "
-                            "set [focus] service in .graylog-mcp.toml"}  # fmt: skip
+                            "set [focus] service in .graylog-mcp.toml, or in the shared "
+                            "server's config under [repos.\"<repository>\"]"}  # fmt: skip
     out["redaction"] = app.redactor.active_rules
     return out
 

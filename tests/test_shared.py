@@ -70,7 +70,9 @@ def test_pool_errors(tmp_path):
     with pytest.raises(ConfigError, match=REPO_HEADER):
         pool.get(None)
     with pytest.raises(ConfigError, match="absolute"):
-        pool.get("relative/dir")
+        pool.get("./relative/dir")
+    with pytest.raises(ConfigError, match="invalid repository"):
+        pool.get("not a repo!")
     bare = make_repo(tmp_path, "no-config")
     with pytest.raises(ConfigError, match=r"no-config.*no Graylog instance"):
         pool.get(str(bare))

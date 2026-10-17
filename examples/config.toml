@@ -123,3 +123,9 @@ port = 8000
 path = "/mcp"
 auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"
 # allowed_hosts = ["mcp.example.com"]  # enables Host header (DNS rebinding) checks
+
+# A shared server on a VM serving the team: settings of repositories it knows by identity (git remote or name),
+# since it cannot read their .graylog-mcp.toml. See "A server for the team on a VM" in the README.
+# [repos."acme/payment-api"]
+# focus = { service = "payment" }
+# default_instance = "prod"
