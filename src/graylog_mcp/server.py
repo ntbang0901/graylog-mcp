@@ -52,7 +52,8 @@ asks about another group, say it is not loaded here and how to enable it, as the
 
 Searches that find nothing: search_logs and count_logs try the likely fixes and return 'suggestions', each
 with its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,
-outside the focus, a wider range). Run the one that fits the question rather than guessing again. When a
+outside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'
+says which AND clause matches nothing and the values its field really has ('did_you_mean'). When a
 result carries 'rewritten', the query you sent could not match as written (a field this Graylog does not
 have, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,
 for the reasons in 'why'; tell the user when that changes the meaning of their question.

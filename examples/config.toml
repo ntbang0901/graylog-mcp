@@ -59,6 +59,8 @@ description = "Production"
 token_env = "GRAYLOG_PROD_TOKEN"     # access token of a read-only user (Reader role + stream permissions)
 ca_bundle = "/etc/ssl/certs/internal-ca.pem"
 timeout = 30
+max_concurrency = 16                 # requests in flight to this Graylog, across every call and session
+retries = 2                          # after connection errors, 429 and 502/503/504
 
 [instances.staging]
 url = "https://graylog-staging.example.com"
@@ -121,3 +123,9 @@ port = 8000
 path = "/mcp"
 auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"
 # allowed_hosts = ["mcp.example.com"]  # enables Host header (DNS rebinding) checks
+
+# A shared server on a VM serving the team: settings of repositories it knows by identity (git remote or name),
+# since it cannot read their .graylog-mcp.toml. See "A server for the team on a VM" in the README.
+# [repos."acme/payment-api"]
+# focus = { service = "payment" }
+# default_instance = "prod"

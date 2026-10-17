@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from graylog_mcp import recover, tools
+from tests.test_tools_contract import assert_clean, assert_read_only
 
 
 @pytest.fixture(autouse=True)
@@ -122,3 +123,95 @@ async def test_admin_lists_and_forgets_rules(make_app, tmp_path):
         assert (await client.post("/api/learned/forget", json={"key": rule["key"]})).json() == {"ok": True}
         assert (await client.post("/api/learned/forget", json={"key": rule["key"]})).status_code == 400
         assert (await client.get("/api/learned")).json()["rules"] == []
+
+
+# --------------------------------------------------------------------------- configured names, operators, ids
+
+
+@pytest.mark.parametrize(
+    ("query", "clauses"),
+    [
+        ("a AND (b AND c) AND NOT d", ["a", "b", "c", "NOT d"]),
+        ("(x:1) AND (y:2)", ["x:1", "y:2"]),
+        ('"a AND b" AND c', ['"a AND b"', "c"]),
+        ("a OR b AND c", ["a OR b AND c"]),
+        ("(a OR b) AND c", ["a OR b", "c"]),
+        ("ssh login", ["ssh login"]),
+    ],
+)
+def test_split_and(query, clauses):
+    assert recover.split_and(query) == clauses
+
+
+def test_operators_ids_and_values():
+    assert recover.lower_operators('"x and y" and status:500 or a') == '"x and y" AND status:500 OR a'
+    assert recover.lower_operators("and then") is None  # not between two terms
+    assert recover.bare_id("req-7f3a9c") == "req-7f3a9c" and recover.bare_id('"0123456789abcdef0"')
+    assert recover.bare_id("timeout") is None and recover.bare_id("user123") is None
+    assert recover.close_values("paymnt", ["gateway", "payment"]) == ["payment"]
+    assert recover.close_values("500", ["200"]) == []  # numbers are never guessed
+
+
+def test_known_field_from_config_or_the_one_field_ending_in_the_word():
+    info = dict.fromkeys(["level", "http_status", "exception_class", "service"])
+    configured = {"exception": "exception_class"}
+    assert recover._known_field("status", info, "main", {}, configured) == "http_status"
+    assert recover._known_field("exception", info, "main", {}, configured) == "exception_class"
+    assert recover._known_field("status", {**info, "response_status": None}, "main", {}, configured) is None
+    assert recover._known_field("nothing", info, "main", {}, configured) is None
+
+
+async def test_configured_and_unique_fields_are_fixed_before_they_run(make_app):
+    app, _ = make_app("6.1.2")
+    out = await tools.count_logs(app, query="Service:gateway AND status:200", range="2h")
+    assert out["rewritten"]["ran"] == "service:gateway AND http_status:200" and out["count"] > 0
+    out = await tools.count_logs(app, query='exception:"java.net.SocketTimeoutException"', range="1h")
+    assert out["rewritten"]["ran"].startswith("exception_class:") and out["count"] == 25
+
+
+async def test_lower_case_operators_and_bare_ids_are_suggested(make_app):
+    app, _ = make_app("6.1.2")
+    out = await tools.count_logs(app, query="level:3 and service:payment", range="2h")
+    assert out["count"] == 0 and "rewritten" not in out  # it could have matched: suggested, never applied
+    assert out["suggestions"][0]["query"] == "level:3 AND service:payment" and out["suggestions"][0]["count"] > 0
+    out = await tools.search_logs(app, query="req-7f3a9c", range="1h")
+    best = out["suggestions"][0]
+    assert best["count"] == 6 and "trace_id:" in best["query"] and "looks like an id" in best["why"]
+
+
+async def test_wider_range_says_when_the_last_match_was(make_app):
+    app, _ = make_app("6.1.2")
+    out = await tools.count_logs(app, query='"deadlock detected"', range="5m")
+    wider = next(s for s in out["suggestions"] if s.get("range"))
+    assert wider["count"] > 0 and wider["last_seen"]
+
+
+async def test_diagnosis_names_the_clause_and_its_values(make_app, version):
+    app, fake = make_app(version)
+    out = await tools.search_logs(app, query="service:paymnt AND level:3", range="2h")
+    diag = out["diagnosis"]
+    assert diag["matches_nothing"] == ["service:paymnt"]
+    assert diag["clauses"][1] == {"clause": "level:3", "count": 32}
+    assert diag["values"][0]["did_you_mean"] == ["payment"] and "did you mean payment" in out["hint"]
+    assert_clean(out)
+    assert_read_only(fake)
+
+
+async def test_diagnosis_when_clauses_only_fail_together_or_further_back(make_app):
+    app, _ = make_app("6.1.2")
+    out = await tools.count_logs(app, query="service:gateway AND level:3", range="2h")
+    assert "no message matches all of them together" in out["diagnosis"]["note"]
+    out = await tools.count_logs(app, query='"deadlock detected" and status:500', range="5m")
+    diag = out["diagnosis"]
+    assert out["rewritten"]["ran"] == '"deadlock detected" and http_status:500'
+    assert diag["values"][0] == {"field": "http_status", "value": "500", "values_in_range": ["200"]}
+    further = diag["clauses_further_back"]
+    assert further["range"] == "1h" and further["clauses"][0]["clause"] == '"deadlock detected"'
+
+
+async def test_diagnosis_masks_values_and_skips_pages_past_the_end(make_app):
+    app, _ = make_app("6.1.2")
+    out = await tools.count_logs(app, query="password:hunter AND level:3", range="2h")
+    assert_clean(out)
+    out = await tools.search_logs(app, query="level:3", range="2h", offset=10_000)
+    assert out["messages"] == [] and "diagnosis" not in out

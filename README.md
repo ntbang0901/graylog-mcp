@@ -236,22 +236,30 @@ Writing rules that are fast and accurate:
 
 ## Searches that find nothing
 
-`search_logs` and `count_logs` do not stop at "no matches". Three decisions, each explained in the result:
+`search_logs` and `count_logs` do not stop at "no matches". Four decisions, each explained in the result:
 
 1. **Safe rewrite, before the search runs**, only for a query that cannot match as written: a field this Graylog
-   does not have but with one clear counterpart (`Service:payment` -> `service:payment`, or an alias learned
-   below), or a level word on a numeric level field (`level:ERROR` -> `level:3`). The result carries
-   `rewritten: {from, ran, why}`.
+   does not have but with one clear counterpart (`Service:payment` -> `service:payment`; the instance's configured
+   name for it, `exception:` -> `exception_class:` from `group_fields`; the one field ending in that word,
+   `status:500` -> `http_status:500`; or an alias learned below), or a level word on a numeric level field
+   (`level:ERROR` -> `level:3`). The result carries `rewritten: {from, ran, why}`.
 2. **Counted suggestions, after a search found nothing**: a misspelled field (close names and known synonyms
    such as `app` -> `service`), the level in the other form, another letter case (keyword fields are
-   case-sensitive), a prefix wildcard (`OrderNotFound` -> `OrderNotFound*`), outside the repository's focus,
-   a wider range. Each is counted exactly by Graylog (in parallel, bounded); the ones that find something come
-   back in `suggestions` with their count and reason, best first, and the hint names the one to run.
+   case-sensitive), a prefix wildcard (`OrderNotFound` -> `OrderNotFound*`), lower-case `and` / `or` (Lucene
+   searches them as words), a bare id (`req-7f3a9c`, a UUID) also looked for in the `trace_fields`, outside the
+   repository's focus, a wider range (with `last_seen`, the time of the newest match). Each is counted exactly by
+   Graylog (in parallel, bounded); the ones that find something come back in `suggestions` with their count and
+   reason, best first, and the hint names the one to run.
 3. **Learning from use.** A suggestion counts as offered; it counts as used when the model then runs it and
    finds something. A fix's weight is the mean of Beta(1 + used, 1 + offered - used), so it needs evidence and
    loses weight when it is ignored. A fix used at least twice with weight >= 0.75 applies by itself on that
    instance: a field alias becomes a safe rewrite, and a case or prefix fix reruns the empty search. Focus and
    range are only ever suggested, since they change the question.
+
+4. **Diagnosis, after a search found nothing**, in `diagnosis`: the counts of each top-level `AND` clause, the
+   ones that match nothing on their own (or that each matches but not together), the values the field of such a
+   clause really has in the range with the close ones (`service:paymnt` -> did you mean `payment`; numbers are
+   never guessed), and the dead clauses that match on their own further back.
 
 Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > What
 graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
@@ -338,6 +346,9 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
   follow-up calls.
 - **Errors**: clear messages for 401, 403, query syntax errors (with position), timeouts, unknown streams
   (with suggestions) and unsupported versions.
+- **Load on Graylog**: each instance takes at most `max_concurrency` requests at a time (default 16), shared
+  by every tool call and, with the shared server, every session. Connection errors, 429 and 502/503/504 are
+  retried `retries` times (default 2) with exponential backoff, honouring `Retry-After`.
 
 ## Configuration
 
@@ -673,6 +684,54 @@ docker run -p 8000:8000 \
   -e GRAYLOG_URL=https://graylog.example.com -e GRAYLOG_TOKEN=... \
   -e GRAYLOG_MCP_HTTP_TOKEN=... graylog-mcp
 ```
+
+## A server for the team on a VM
+
+One `serve --shared` process on a VM can serve every developer and every repository. The VM cannot read the
+developers' folders, so a client names its repository by **identity**: its git remote
+(`github.com/acme/payment-api`, `acme/payment-api`, any git URL) or, failing that, its folder name. Groups list
+their repositories by remote or name, and `[repos."<repository>"]` holds each one's settings (what a
+repository's own `.graylog-mcp.toml` holds on a developer's machine):
+
+```toml
+# /etc/graylog-mcp/org.toml on the VM, kept in a git repository and deployed by the platform team
+[groups.payment]
+repos = ["acme/payment-api", "acme/payment-worker"]
+[groups.payment.environments.prod]
+url = "https://graylog-pay.example.com"
+token_env = "GRAYLOG_PAYMENT_PROD_TOKEN"
+
+[repos."acme/payment-api"]                  # focus, default_group/environment/instance, only_groups, scan, presets
+focus = { service = "payment" }
+
+[http]
+auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"   # every developer sends it
+# repo_paths = false                        # default off a loopback address: folders clients name are never read
+```
+
+```bash
+graylog-mcp serve --shared --host 0.0.0.0 --port 8000 --config /etc/graylog-mcp/org.toml
+```
+
+The config is read again within seconds of a change: deploy the file, no restart. The admin page writes files
+on the machine it runs on, so it only listens on the loopback address; reach it with an SSH tunnel
+(`ssh -L 8000:127.0.0.1:8000 vm`, then `http://127.0.0.1:8000/admin/` with `serve --admin`).
+
+On each developer's machine, nothing runs but Claude Code:
+
+| | |
+|---|---|
+| `GRAYLOG_MCP_HTTP_TOKEN=<token>` | the server's token, in the environment Claude Code starts in (shell profile; `setx` on Windows). Claude Code sends it as `Authorization: Bearer ${GRAYLOG_MCP_HTTP_TOKEN}`; no graylog-mcp command prints it |
+| `graylog-mcp connect https://graylog-mcp.example.com` | shows how the server identifies the current repository and registers the server in Claude Code for every project (asks for the token when the variable is not set, to check the connection) |
+| `graylog-mcp connect URL --project` | writes the repository's `.mcp.json` instead. It holds no secret and no path: commit it; each teammate only sets the variable |
+| `graylog-mcp status` | is the server reachable, which version, and how it identifies this repository: group, focus, default environment, each Graylog instance |
+
+How a connection names its repository: in a project's `.mcp.json`, Claude Code runs `graylog-mcp headers`
+(its `headersHelper`) in the project folder when it connects; it prints the repository's git remote. Without
+graylog-mcp installed, the remote written by `connect` applies. Registered for every project, there is no helper
+(it would run outside the project): the server identifies the repository by the name of the folder Claude Code
+runs in (`${PWD}`), so list repositories by name in `repos`, or use `connect --project` for the ones listed by
+remote.
 
 ## Testing
 

@@ -346,10 +346,20 @@ async def search_logs(
     out["truncated"] = budget.truncated
     out["next_offset"] = next_offset
     if not page.messages:
-        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions)
+        diagnosis = await _diagnose(app, gl, effective, tr, stream_ids) if offset == 0 else None
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions, diagnosis)
         if suggestions:
             out["suggestions"] = suggestions
+        if diagnosis:
+            out["diagnosis"] = diagnosis
     return out
+
+
+async def _diagnose(
+    app: App, gl: Graylog, effective: str, tr: TimeRange, streams: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Why a search found nothing (see ``recover.diagnose``); None when there is nothing to tell."""
+    return await recover.diagnose(gl, effective, tr, streams, app.redact_key) or None
 
 
 async def _safe_rewrite(gl: Graylog, query: str, effective: str) -> tuple[str, dict[str, Any] | None]:
@@ -376,6 +386,7 @@ async def _empty_hint(
     streams: tuple[str, ...],
     focus: dict[str, Any] | None = None,
     suggestions: list[dict[str, Any]] | None = None,
+    diagnosis: dict[str, Any] | None = None,
 ) -> str:
     problems = await gl.validate(query, tr, streams)
     if suggestions:
@@ -389,6 +400,10 @@ async def _empty_hint(
         )
         hint = (f"no matches; {best['query']!r}{where} finds {best['count']} ({best['why']}). "
                 "See suggestions (exact counts) and run the one that fits")  # fmt: skip
+        return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
+    found = recover.summarize(diagnosis) if diagnosis else ""
+    if found:
+        hint = f"no matches: {found}. See diagnosis"
         return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
     hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
     if focus:
@@ -421,9 +436,12 @@ async def count_logs(
     recover.LEARNED.observe(gl.cfg.name, query or "*", count)
     out = _header(gl, tr, query=query or "*", focus=focus, count=count, rewritten=rewritten)
     if count == 0:
-        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions)
+        diagnosis = await _diagnose(app, gl, effective, tr, stream_ids)
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions, diagnosis)
         if suggestions:
             out["suggestions"] = suggestions
+        if diagnosis:
+            out["diagnosis"] = diagnosis
     return out
 
 

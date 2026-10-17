@@ -73,10 +73,12 @@ def build_http_app(
     with the configuration of the repository it names (see graylog_mcp.shared); ``config`` is then the default
     for clients naming none, and may be None. ``admin``: the admin UI's ASGI app, served under /admin."""
     from mcp.server.transport_security import TransportSecuritySettings
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response
 
+    from graylog_mcp import tools
     from graylog_mcp.server import build_server
-    from graylog_mcp.shared import AppPool, RepoContext
+    from graylog_mcp.shaping import dumps
+    from graylog_mcp.shared import AppPool, RepoContext, current_repo
     from graylog_mcp.tools import App
 
     if config is None and not shared:
@@ -88,11 +90,15 @@ def build_http_app(
             f"refusing to serve on {host} without authentication: set GRAYLOG_MCP_HTTP_TOKEN "
             "(or http.auth_token_env), or pass --allow-no-auth behind a trusted proxy"
         )
+    # read the repository folders clients name only when they are on this machine
+    repo_paths = http.repo_paths if http.repo_paths is not None else _is_loopback(host)
+    target: App | AppPool
     if shared:
-        server = build_server(AppPool(config_path, default=config, transport=transport))
+        target = AppPool(config_path, default=config, transport=transport, repo_paths=repo_paths)
     else:
         assert config is not None
-        server = build_server(App.create(config, transport))
+        target = App.create(config, transport)
+    server = build_server(target)
 
     from graylog_mcp.setup.service import installed
 
@@ -101,6 +107,21 @@ def build_http_app(
     @server.custom_route("/healthz", methods=["GET"])
     async def healthz(_request: Any) -> JSONResponse:
         return JSONResponse({"status": "ok", "version": __version__, "commit": commit, "admin": admin is not None})
+
+    @server.custom_route("/status", methods=["GET"])
+    async def status(_request: Any) -> Response:
+        """What a client gets: the repository it was identified as, its group and focus, and the instances
+        (``graylog-mcp status --url``). Behind the bearer token, like the MCP endpoint."""
+        head: dict[str, Any] = {"version": __version__, "commit": commit, "shared": shared}
+        if shared:
+            head["repo_header"] = current_repo.get()
+            head["repo_paths"] = repo_paths
+        try:
+            app = target.current() if isinstance(target, AppPool) else target
+        except ConfigError as exc:
+            return JSONResponse({"status": "error", "error": str(exc), **head}, status_code=400)
+        listing = await tools.list_instances(app)
+        return Response(dumps({"status": "ok", **head, **listing}), media_type="application/json")
 
     security = None
     if http.allowed_hosts:
@@ -220,12 +241,17 @@ async def _check(config: Config) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "keepalive",  # keepalive is internal: what the login item runs on Windows and XDG desktops
+    "ui", "connect", "headers",
+    "keepalive",  # internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
 Getting started (one command, then everything happens in the browser):
        graylog-mcp start                      run in the background for every session, start at login,
                                               connect Claude Code, open the admin page
+
+A server for the team on another machine (a VM)? On each developer's machine:
+       graylog-mcp connect URL [--project]    save its token here and register it in Claude Code
+       graylog-mcp status                     is it reachable, and how does it identify this repository
 
 usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp ui                         open the admin page
@@ -259,8 +285,8 @@ def _serve(argv: list[str]) -> int:
     parser.add_argument(
         "--shared",
         action="store_true",
-        help="one HTTP server for every session and repository: each client sends its repository folder "
-        "(X-Graylog-MCP-Repo header) and gets that repository's config; implies --transport streamable-http",
+        help="one HTTP server for every session and repository: each client names its repository (folder or git "
+        "remote, X-Graylog-MCP-Repo header) and gets that repository's config; implies --transport streamable-http",
     )
     parser.add_argument(
         "--admin", action="store_true", help="with --shared: serve the admin page at /admin (what 'start' runs)"
@@ -859,15 +885,169 @@ def _stop(argv: list[str]) -> int:
     return 0
 
 
+def _stable_exe() -> list[str]:
+    """This copy's command; a temporary uvx copy is first installed for good (``uv tool install``)."""
+    from graylog_mcp.setup import service
+
+    have = service.installed()
+    if have.via != "uvx":
+        return service.current_command()
+    print("  installing a stable copy (uv tool install)…")
+    try:
+        return service.install_tool(have.source or service.GIT_SOURCE)
+    except RuntimeError as exc:
+        print(f"  ! {exc}; using this copy", file=sys.stderr)
+        return service.current_command()
+
+
+def _print_remote(url: str, identity: str | None, result: dict[str, Any]) -> bool:
+    """Print what a server on another machine says about this client; whether it answered."""
+    if not result.get("reachable"):
+        print(f"server:      ✗ cannot reach {url}: {result.get('error')}")
+        return False
+    health = result["health"]
+    commit = f" ({str(health['commit'])[:7]})" if health.get("commit") else ""
+    print(f"server:      ✓ {url} · graylog-mcp {health.get('version')}{commit}")
+    if "error" in result:
+        print(f"             ✗ {result['error']}")
+        return False
+    status = result["status"]
+    if status.get("status") == "error":
+        if identity is None:  # fine for every project: each one names itself when Claude Code connects
+            print("repository:  none here (not in a git repository); the server needs one: run inside a repository")
+            return True
+        print(f"repository:  ✗ sent as {identity!r}: {status.get('error')}")
+        return False
+    repo = status.get("current_repo") or {}
+    if identity is None:
+        print("repository:  none (not in a git repository): the server's default configuration")
+    elif repo.get("group"):
+        print(f"repository:  {repo.get('repo')} → group {repo['group']}")
+    else:
+        print(f"repository:  {identity} → in no group: ask the server's admin to list it in [groups.<g>] repos")
+    focus = status.get("focus") or {}
+    if focus.get("service") or focus.get("streams"):
+        print(f"focus:       {focus.get('service') or ''} {focus.get('streams') or ''}".rstrip())
+    elif focus.get("status"):
+        print(f"focus:       {focus['status']}")
+    print(f"default:     {status.get('default')}")
+    for inst in status.get("instances") or []:
+        mark = "✓" if inst.get("status") == "ok" else "✗"
+        print(f"  {mark} {inst.get('name')}: {inst.get('version') or inst.get('status')}")
+    return True
+
+
+def _connect(argv: list[str]) -> int:
+    import getpass
+
+    from graylog_mcp import secrets
+    from graylog_mcp.setup import clients, remote, service
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp connect",
+        description="Use a graylog-mcp server running on another machine (a VM for the team): check how it "
+        "identifies your repository and register it in Claude Code, which sends the token from "
+        "GRAYLOG_MCP_HTTP_TOKEN",
+    )
+    parser.add_argument("url", help="the server, e.g. https://graylog-mcp.example.com/mcp")
+    parser.add_argument(
+        "--project",
+        nargs="?",
+        const=".",
+        metavar="DIR",
+        help="register it in this repository's .mcp.json, to commit for the whole team (default: every project)",
+    )
+    parser.add_argument("--token-stdin", action="store_true", help="read the server's access token from stdin")
+    parser.add_argument("--no-claude", action="store_true", help="do not register Claude Code")
+    args = parser.parse_args(argv)
+    _setup_logging("WARNING")
+    try:
+        url = remote.mcp_url(args.url)
+    except ValueError as exc:
+        print(f"graylog-mcp connect: {exc}", file=sys.stderr)
+        return 2
+    token = sys.stdin.readline().strip() if args.token_stdin else None
+    if token is None and not secrets.get(clients.HTTP_TOKEN_ENV) and sys.stdin.isatty():
+        token = getpass.getpass("access token of the server (empty if it has none): ").strip()
+    if token:
+        print(f"✓ token saved in {secrets.save(clients.HTTP_TOKEN_ENV, token)}")
+    folder = Path(args.project or ".").expanduser().resolve()
+    identity = remote.repo_identity(folder)
+    result = asyncio.run(remote.status(url, identity, secrets.get(clients.HTTP_TOKEN_ENV)))
+    if not _print_remote(url, identity, result):
+        return 1
+    service.save_settings(remote=url)
+    if secrets.source(clients.HTTP_TOKEN_ENV) == "saved":
+        name = clients.HTTP_TOKEN_ENV
+        print(f"! Claude Code sends the token from the environment: set {name} to it where Claude Code starts "
+              f"(e.g. in your shell profile; on Windows: setx {name} <token>)")  # fmt: skip
+    if args.no_claude:
+        return 0
+    if args.project is not None:
+        _stable_exe()  # its headersHelper runs 'graylog-mcp headers' from PATH
+        path = remote.write_project(folder, remote.project_entry(url, folder))
+        print(f"✓ Claude Code: {path} (no secret in it: commit it; each teammate runs 'graylog-mcp connect {url}')")
+        return 0
+    entry = remote.user_entry(url)
+    claude = clients.claude_binary()
+    if claude is None:
+        print(
+            f"claude is not on PATH; run: claude mcp add-json {clients.SERVER_NAME} '{json.dumps(entry)}' --scope user"
+        )
+        return 1
+    error = remote.register_user(entry, claude, service.run)
+    if error:
+        print(f"✗ Claude Code: {error}", file=sys.stderr)
+        return 1
+    print("✓ Claude Code: connected in every project (repositories identified by folder name; for a repository "
+          "listed by its git remote, run 'graylog-mcp connect --project' in it)")  # fmt: skip
+    return 0
+
+
+def _headers(argv: list[str]) -> int:
+    from graylog_mcp.setup import remote
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp headers",
+        description="Print the repository header Claude Code sends to a graylog-mcp server on another machine "
+        "(its headersHelper): this repository's git remote, else its folder name",
+    )
+    parser.parse_args(argv)
+    print(json.dumps(remote.headers(Path.cwd())))
+    return 0
+
+
+def _remote_status(url: str, folder: Path) -> int:
+    from graylog_mcp import secrets
+    from graylog_mcp.setup import clients, remote
+
+    identity = remote.repo_identity(folder)
+    result = asyncio.run(remote.status(url, identity, secrets.get(clients.HTTP_TOKEN_ENV)))
+    return 0 if _print_remote(url, identity, result) else 1
+
+
 def _status(argv: list[str]) -> int:
-    from graylog_mcp.setup import clients, service
+    from graylog_mcp.setup import clients, remote, service
 
     parser = argparse.ArgumentParser(prog="graylog-mcp status", description="Is the background server running?")
     parser.add_argument("--port", type=int, help="default: the port 'graylog-mcp start' used")
+    parser.add_argument(
+        "--url", help="a server on another machine (default: the one 'connect' saved, when none runs here)"
+    )
+    parser.add_argument("--repo", default=".", help="repository whose identification to check (with a remote server)")
     args = parser.parse_args(argv)
+    if args.url:
+        try:
+            return _remote_status(remote.mcp_url(args.url), Path(args.repo).resolve())
+        except ValueError as exc:
+            print(f"graylog-mcp status: {exc}", file=sys.stderr)
+            return 2
     args.port = args.port or service.current_port()
     have = service.installed()
     body = service.probe(args.port)
+    saved_remote = service.saved_settings().get("remote")
+    if body is None and saved_remote:
+        return _remote_status(str(saved_remote), Path(args.repo).resolve())
     autostart = service.Autostart()
     claude = clients.claude_code_status(service.server_url(args.port))
     running = None
@@ -1042,6 +1222,8 @@ def main(argv: list[str] | None = None) -> int:
         "detect": _detect,
         "install": _install,
         "ui": _ui,
+        "connect": _connect,
+        "headers": _headers,
         "keepalive": _keepalive,
     }
     return handlers[command](argv)

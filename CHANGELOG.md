@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- A shared server on a VM for the team: clients name their repository by identity (git remote such as
+  `github.com/acme/payment-api`, or the folder name) instead of a folder the server cannot read; groups list
+  repositories by remote or name and `[repos."<repository>"]` holds each one's focus and defaults. `http.repo_paths`
+  (default: only on a loopback address) decides whether folders named by clients are read at all. `GET /status`
+  says how the server identified the caller.
+- `graylog-mcp connect URL [--project]`: use the team's server from a developer's machine. Shows how the server
+  identifies the repository and registers it in Claude Code, which sends the token from `GRAYLOG_MCP_HTTP_TOKEN`;
+  in a project, `graylog-mcp headers` (the headersHelper) gives the repository's git remote. `--project` writes a
+  `.mcp.json` with no secret and no path, to commit. `graylog-mcp status` checks the saved server when none runs
+  locally (`--url` for any).
+- Searches that find nothing, more fixes: the safe rewrite also uses the instance's configured name for a field
+  (`exception` -> `exception_class` from `group_fields`) and the one field ending in that word (`status` ->
+  `http_status`); suggestions add lower-case `and`/`or` and a bare id looked for in the trace fields, and a wider
+  range says when the newest match was (`last_seen`); `diagnosis` gives the counts of each `AND` clause, the values
+  the field of a dead clause really has with the close ones, and the dead clauses matching further back.
+- Per-instance `max_concurrency` (default 16): requests in flight to one Graylog, shared by every tool call and
+  session. `retries` (default 2): connection errors, 429 and 502/503/504 are retried with exponential backoff
+  and `Retry-After`. Both can be set per instance, group or environment, and in the admin page.
 - Searches that find nothing: `search_logs` and `count_logs` fix queries that cannot match before they run (a
   field that does not exist but has one clear counterpart, a level word on a numeric level field) and report it
   in `rewritten`; after an empty search they count likely fixes (misspelled field or synonym, level form, letter

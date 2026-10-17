@@ -3,13 +3,21 @@
 Only read requests leave this module: GET anywhere, POST only to the search
 endpoints that execute a query without persisting anything. Any other method or
 path is refused before a request is built.
+
+Every request to one instance shares its ``max_concurrency`` slots, whichever tool call or session sends
+it, so concurrent scans cannot flood Graylog. Requests are read-only, hence safe to repeat: connection
+errors, 429 and 502/503/504 are retried ``retries`` times with exponential backoff (``Retry-After`` honoured).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import re
 import ssl
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -24,6 +32,9 @@ log = logging.getLogger(__name__)
 #  - search/messages, search/aggregate: the 5.2+ Scripting API, stateless by design.
 #  - search/validate: query validation used for precise syntax errors and unknown-field hints.
 READ_ONLY_POSTS = frozenset({"views/search/sync", "search/messages", "search/aggregate", "search/validate"})
+RETRY_STATUSES = frozenset({429, 502, 503, 504})
+RETRY_BASE_SECONDS = 0.5
+RETRY_MAX_SECONDS = 10.0
 
 
 class GraylogError(Exception):
@@ -93,11 +104,36 @@ def describe_query_error(payload: Any, fallback: str) -> str:
     return text
 
 
+class _Retryable(Exception):
+    def __init__(self, error: GraylogError):
+        self.error = error
+
+
+def _backoff(attempt: int) -> float:
+    return min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2**attempt) * random.uniform(0.5, 1.0)
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    value = resp.headers.get("retry-after", "").strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    return min(RETRY_MAX_SECONDS, max(0.0, seconds))
+
+
 class GraylogClient:
     def __init__(self, cfg: InstanceConfig, transport: httpx.AsyncBaseTransport | None = None):
         self.cfg = cfg
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
+        self._slots = asyncio.Semaphore(cfg.max_concurrency)
 
     def _build(self) -> httpx.AsyncClient:
         cfg = self.cfg
@@ -162,8 +198,28 @@ class GraylogClient:
         elif method != "GET":
             raise GraylogError(f"refusing {method} {path}: this server only reads from Graylog")
         clean = {k: v for k, v in (params or {}).items() if v is not None}
+        attempt = 0
+        while True:
+            try:
+                async with self._slots:
+                    resp = await self._send(method, path, clean, json)
+            except _Retryable as exc:
+                if attempt >= self.cfg.retries:
+                    raise exc.error from None
+                delay = _backoff(attempt)
+            else:
+                if resp.status_code not in RETRY_STATUSES or attempt >= self.cfg.retries:
+                    return self._handle(resp, path)
+                delay = _retry_after(resp) or _backoff(attempt)
+            attempt += 1
+            log.info("instance %s: retrying %s %s in %.1fs (attempt %d)", self.cfg.name, method, path, delay, attempt)
+            await asyncio.sleep(delay)
+
+    async def _send(
+        self, method: str, path: str, params: dict[str, Any], json: dict[str, Any] | None
+    ) -> httpx.Response:
         try:
-            resp = await self.http.request(method, path, params=clean, json=json)
+            return await self.http.request(method, path, params=params, json=json)
         except httpx.TimeoutException:
             raise GraylogError(
                 f"timeout after {self.cfg.timeout:.0f}s calling {path} on instance '{self.cfg.name}'; "
@@ -173,10 +229,14 @@ class GraylogClient:
             hint = ""
             if "CERTIFICATE" in str(exc).upper() or "SSL" in str(exc).upper():
                 hint = " (TLS verification failed: set ca_bundle, or verify_tls = false for testing)"
-            raise GraylogError(f"cannot connect to {self.cfg.url}: {exc}{hint}") from None
+            error = GraylogError(f"cannot connect to {self.cfg.url}: {exc}{hint}")
+            if hint:
+                raise error from None  # a certificate problem does not go away by retrying
+            raise _Retryable(error) from None
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as exc:
+            raise _Retryable(GraylogError(f"connection to {self.cfg.url} dropped calling {path}: {exc}")) from None
         except httpx.HTTPError as exc:
             raise GraylogError(f"HTTP error calling {path}: {exc}") from None
-        return self._handle(resp, path)
 
     def _handle(self, resp: httpx.Response, path: str) -> Any:
         status = resp.status_code

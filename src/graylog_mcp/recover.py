@@ -3,17 +3,24 @@
 Three decisions, each explained in the tool result:
 
 1. **Safe rewrite, before the search runs.** Only for a query that cannot match: a field this Graylog does not
-   have, with one clear counterpart (same name in another case, or an alias learned below), or a level word on a
-   numeric level field (``level:ERROR`` -> ``level:3``). Nothing that could have matched is ever changed.
+   have, with one clear counterpart (same name in another case, the instance's configured name for it such as
+   ``exception`` -> ``exception_class``, the one field ending in that word such as ``status`` -> ``http_status``,
+   or an alias learned below), or a level word on a numeric level field (``level:ERROR`` -> ``level:3``).
+   Nothing that could have matched is ever changed.
 2. **Candidates, after a search found nothing.** A misspelled field, a level in the other form, another letter
-   case, a prefix wildcard, outside the repository's focus, a wider range. Each is counted exactly by Graylog,
-   and the ones that find something are ranked and returned with their counts.
+   case, a prefix wildcard, lower-case ``and``/``or`` (searched as words), a bare id also looked for in the trace
+   fields, outside the repository's focus, a wider range (with the time of the last match). Each is counted
+   exactly by Graylog, and the ones that find something are ranked and returned with their counts.
 3. **Learning.** Every suggestion counts as offered; it counts as used when the model then runs it and finds
    something. A rule's weight is the mean of Beta(1 + used, 1 + offered - used), so one lucky use does not make
    a rule. Once a rule passes ``AUTO_WEIGHT`` with ``AUTO_MIN_USES`` uses, it is applied by itself: a field alias
    becomes a safe rewrite, and the other kinds rerun the empty search with the fix. Rules are kept per instance
    in ``learned.json`` next to the server's state; the admin page lists them and forgets one on request.
    ``GRAYLOG_MCP_LEARN=off`` stops learning and applying learned rules (the deterministic fixes stay).
+4. **Diagnosis, after a search found nothing.** Which top-level ``AND`` clause matches nothing on its own (or that
+   each matches but not together), the values the field of such a clause really has in the range with the close
+   ones (``service:paymnt`` -> ``payment``; numbers are never guessed), and whether a dead clause matches on its
+   own further back.
 """
 
 from __future__ import annotations
@@ -31,8 +38,10 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from graylog_mcp.backends.base import COUNT, MessageQuery
 from graylog_mcp.client import GraylogError
-from graylog_mcp.timerange import TimeRange
+from graylog_mcp.shaping import is_internal
+from graylog_mcp.timerange import TimeRange, format_ts
 
 AUTO_WEIGHT = 0.75
 AUTO_MIN_USES = 2
@@ -59,8 +68,12 @@ SYNONYMS = [
     {"logger", "logger_name", "loggerName", "category"},
     {"took_ms", "duration_ms", "elapsed_ms", "latency_ms", "response_time_ms"},
 ]
-KIND_PRIOR = {"field": 0.9, "level": 0.9, "focus": 0.75, "case": 0.6, "prefix": 0.55, "range": 0.4}
-AUTO_KINDS = {"field", "level", "case", "prefix"}  # focus and range widen the question: always only suggested
+KIND_PRIOR = {
+    "field": 0.9, "level": 0.9, "operator": 0.85, "trace": 0.8, "focus": 0.75, "case": 0.6, "prefix": 0.55,
+    "range": 0.4,
+}  # fmt: skip
+# focus and range widen the question: always only suggested
+AUTO_KINDS = {"field", "level", "operator", "trace", "case", "prefix"}
 OPERATORS = {"AND", "OR", "NOT", "TO"}
 
 _TERM = re.compile(
@@ -68,6 +81,9 @@ _TERM = re.compile(
     r'(?P<value>"(?:[^"\\]|\\.)*"|\[[^\]]*\]|\{[^}]*\}|[^\s()"]+)'
 )
 _WORD = re.compile(r'(?<![\w:."*?\\/-])(?P<word>[A-Za-z][\w-]{3,})(?![\w:*?~"-])')
+# a whitespace-separated token; a quoted phrase or a range is one token with what touches it
+_TOKEN = re.compile(r'(?:[^\s"\[\]{}]|"(?:[^"\\]|\\.)*"|[\[{][^\]}]*[\]}])+')
+_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-fA-F]{16,}|[A-Za-z0-9][\w.-]{5,}")
 
 
 def enabled() -> bool:
@@ -118,6 +134,34 @@ def bare_words(query: str) -> list[tuple[int, int, str]]:
             continue
         out.append((m.start(), m.end(), word))
     return out
+
+
+def tokens(query: str) -> list[tuple[int, int, str]]:
+    return [(m.start(), m.end(), m.group()) for m in _TOKEN.finditer(query or "")]
+
+
+def lower_operators(query: str) -> str | None:
+    """The query with lower-case and/or between two tokens in upper case; None when there are none."""
+    toks = tokens(query)
+    out = query
+    for k in range(len(toks) - 2, 0, -1):  # right to left: earlier spans stay valid
+        start, end, word = toks[k]
+        if word in ("and", "or"):
+            out = splice(out, start, end, word.upper())
+    return out if out != query else None
+
+
+def bare_id(query: str) -> str | None:
+    """The id when the whole query is one: a UUID, long hex, or a token mixing letters, digits and - or _."""
+    text = (query or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    if ":" in text or not _ID.fullmatch(text):
+        return None
+    if re.fullmatch(r"[0-9a-fA-F]{16,}", text):
+        return text
+    has_both = any(c.isdigit() for c in text) and any(c.isalpha() for c in text)
+    return text if has_both and re.search(r"[-_]", text) else None
 
 
 def splice(query: str, start: int, end: int, text: str) -> str:
@@ -265,11 +309,41 @@ class Rewrite:
     why: list[str]
 
 
-def _known_field(name: str, info: dict[str, str | None], instance: str, rules: dict[str, dict[str, Any]]) -> str | None:
-    """The one field a missing field clearly means: same name in another case, or a trusted learned alias."""
+def name_words(name: str) -> list[str]:
+    """http_status -> [http, status]; exceptionClass -> [exception, class]."""
+    return [w.lower() for w in re.split(r"[_.\-@]|(?<=[a-z])(?=[A-Z])", name) if w]
+
+
+def configured_names(gl: Any, info: dict[str, str | None]) -> dict[str, str]:
+    """The instance's own names for generic fields: group_fields (exception, logger), its service and trace field."""
+    out = {k: v for k, v in gl.cfg.group_fields.items() if v in info}
+    service = next((f for f in gl.cfg.service_fields if f in info and f != "source"), None)
+    trace = next((f for f in gl.cfg.trace_fields if f in info), None)
+    if service:
+        out.setdefault("service", service)
+    if trace:
+        out.setdefault("trace", trace)
+    return out
+
+
+def _known_field(
+    name: str,
+    info: dict[str, str | None],
+    instance: str,
+    rules: dict[str, dict[str, Any]],
+    configured: dict[str, str] | None = None,
+) -> str | None:
+    """The one field a missing field clearly means: same name in another case, the instance's configured name for
+    it, the one field ending in that word, or a trusted learned alias."""
     same = [n for n in info if n.lower() == name.lower()]
     if len(same) == 1:
         return same[0]
+    alias = (configured or {}).get(name.lower())
+    if alias:
+        return alias
+    ending = [n for n in info if not is_internal(n) and name_words(n)[-1:] == [name.lower()]]
+    if len(ending) == 1 and len(name_words(ending[0])) > 1:
+        return ending[0]
     if enabled():
         for key, rule in rules.items():
             if key.startswith(f"{instance}|field|{name}|") and Learned.trusted(rule) and rule.get("to") in info:
@@ -285,18 +359,19 @@ async def safe_rewrite(gl: Any, query: str) -> Rewrite | None:
     if not info:
         return None
     rules = LEARNED.load() if enabled() else {}
+    configured = configured_names(gl, info)
     out, why = query, []
     for t in reversed(terms(query)):  # right to left: earlier spans stay valid
         if t.field in ("_exists_", "_missing_"):
             target = t.bare_value
-            fix = None if target in info else _known_field(target, info, gl.cfg.name, rules)
+            fix = None if target in info else _known_field(target, info, gl.cfg.name, rules, configured)
             if fix:
                 out = splice(out, t.value_start, t.end, fix)
                 why.append(f"field {target} does not exist here; {fix} does")
             continue
         name, value, notes = t.field, t.value, []
         if name not in info:
-            fix = _known_field(name, info, gl.cfg.name, rules)
+            fix = _known_field(name, info, gl.cfg.name, rules, configured)
             if fix:
                 notes.append(f"field {name} does not exist here; {fix} does")
                 name = fix
@@ -324,6 +399,7 @@ class Candidate:
     timerange: TimeRange | None = None
     count: int | None = None
     key: str = field(default="", compare=False)
+    last_seen: str | None = None  # wider ranges: when the newest match was logged
 
     def score(self, rules: dict[str, dict[str, Any]]) -> float:
         learned = Learned.weight(rules.get(self.key)) if self.key and enabled() else 0.5
@@ -335,6 +411,8 @@ class Candidate:
             out["streams"] = ["*"]
         if self.timerange is not None:
             out["range"] = self.timerange.label.replace("last ", "")
+        if self.last_seen:
+            out["last_seen"] = self.last_seen
         return out
 
 
@@ -388,6 +466,16 @@ def candidates(
     for start, end, word in bare_words(effective):
         add(splice(effective, start, end, f"{word}*"), f"{word} may start a longer word (e.g. {word}Exception)",
             "prefix", "word", "prefix")  # fmt: skip
+    upper = lower_operators(effective)
+    if upper:
+        add(upper, "lower-case and/or are searched as words; AND/OR combine terms", "operator", "and/or", "AND/OR")
+    id_value = bare_id(query)
+    fields = [f for f in gl.cfg.trace_fields if not info or f in info]
+    if id_value and fields and query.strip() in effective:
+        value = '"' + id_value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        wanted = " OR ".join([value, *(f"{_escape(f)}:{value}" for f in fields)])
+        add(effective.replace(query.strip(), f"({wanted})", 1), f"{id_value} looks like an id: also in trace fields",
+            "trace", "id", "trace_fields")  # fmt: skip
     if focused:
         add(query or "*", "outside this repository's service (focus): every stream", "focus", "focus", "off",
             every_stream=True)  # fmt: skip
@@ -430,6 +518,15 @@ async def recover(
 
     await asyncio.gather(*(count(c) for c in cands))
     found = [c for c in cands if c.count]
+
+    async def last_seen(c: Candidate) -> None:
+        with contextlib.suppress(GraylogError, asyncio.TimeoutError):
+            mq = MessageQuery(query=c.query, timerange=c.timerange or tr, streams=streams, limit=1)
+            page = await asyncio.wait_for(gl.search(mq), COUNT_TIMEOUT)
+            if page.messages:
+                c.last_seen = format_ts(page.messages[0].fields.get("timestamp"), gl.cfg.tz)
+
+    await asyncio.gather(*(last_seen(c) for c in found if c.timerange is not None))
     found.sort(key=lambda c: (-c.score(rules), -(c.count or 0)))
     auto = next((c for c in found if c.kind in AUTO_KINDS and Learned.trusted(rules.get(c.key))), None)
     top = found[:3]
@@ -440,3 +537,162 @@ async def recover(
 def learned_note(c: Candidate, rules: dict[str, dict[str, Any]] | None = None) -> str:
     rule = (rules if rules is not None else LEARNED.load()).get(c.key) or {}
     return f"{c.why} (learned: used {rule.get('used', 0)} of {rule.get('offered', 0)} times)"
+
+
+def _escape(name: str) -> str:
+    return re.sub(r'([+\-=&|><!(){}\[\]^"~*?:\\/ ])', r"\\\1", name)
+
+
+# ----------------------------------------------------------------------------- 4. diagnosis after an empty search
+
+MAX_CLAUSES = 6
+MAX_VALUE_LOOKUPS = 2
+_SIMPLE_VALUE = re.compile(r'^"(?:[^"\\]|\\.)*"$|^[^\s*?\[\]{}()<>"~]+$')
+
+
+def _depths(query: str) -> list[int]:
+    """Parenthesis depth at each character, outside quoted phrases."""
+    out, depth, quoted, escaped = [], 0, False, False
+    for ch in query:
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+        elif not quoted and ch == "(":
+            depth += 1
+        elif not quoted and ch == ")":
+            depth -= 1
+        out.append(depth if ch != ")" or quoted else depth + 1)
+    return out
+
+
+def _strip_parens(clause: str) -> str:
+    clause = clause.strip()
+    while clause.startswith("(") and clause.endswith(")"):
+        inner = clause[1:-1]
+        if inner and min(_depths(inner)) < 0:
+            break  # "(a) AND (b)": the outer parentheses are not one pair
+        clause = inner.strip()
+    return clause
+
+
+def split_and(query: str) -> list[str]:
+    """The top-level AND clauses of a query, nested ones flattened; the query itself when it has a top-level OR
+    (or relies on the default operator), which cannot be split without changing what it means."""
+    query = _strip_parens(query)
+    depth = _depths(query)
+    cuts = []
+    for start, end, word in tokens(query):
+        if depth[start] != 0:
+            continue
+        if word in ("OR", "||"):
+            return [query]
+        if word in ("AND", "&&"):
+            cuts.append((start, end))
+    if not cuts:
+        return [query] if query else []
+    parts, pos = [], 0
+    for start, end in cuts:
+        parts.append(query[pos:start])
+        pos = end
+    parts.append(query[pos:])
+    out: list[str] = []
+    for part in (p.strip() for p in parts):
+        if part:
+            out.extend([part] if part.startswith("NOT ") else split_and(part))
+    return out
+
+
+def _simple_term(clause: str) -> tuple[str, str] | None:
+    found = terms(clause)
+    if len(found) != 1 or found[0].start != 0 or found[0].end != len(clause):
+        return None
+    t = found[0]
+    if t.field in ("_exists_", "_missing_", "_id") or not _SIMPLE_VALUE.match(t.value):
+        return None
+    return t.field, t.bare_value
+
+
+def close_values(value: str, values: list[str]) -> list[str]:
+    """Values the model probably meant; none for a number (500 is not a typo of 200)."""
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
+        return []
+    low = value.lower()
+    same = [v for v in values if v.lower() == low]
+    contains = [v for v in values if v and (low in v.lower() or v.lower() in low)]
+    close = difflib.get_close_matches(value, values, 3, 0.6)
+    return list(dict.fromkeys(same + contains + close))[:5]
+
+
+async def diagnose(gl: Any, effective: str, tr: TimeRange, streams: tuple[str, ...], redact: Any) -> dict[str, Any]:
+    """Why ``effective`` matched nothing, from exact counts. ``redact(field, value)`` masks the values shown.
+    Lower-case and/or are read as the operators they were probably meant as (see the 'operator' candidate)."""
+    effective = lower_operators(effective) or effective
+    clauses = split_and(effective)[:MAX_CLAUSES]
+    if len(clauses) < 2 and _simple_term(effective) is None:
+        return {}
+
+    async def count(q: str, r: TimeRange) -> int | None:
+        with contextlib.suppress(GraylogError, asyncio.TimeoutError):
+            return int(await asyncio.wait_for(gl.count(q, r, streams), COUNT_TIMEOUT))
+        return None
+
+    out: dict[str, Any] = {}
+    dead = [effective]
+    if len(clauses) > 1:
+        counts = await asyncio.gather(*(count(c, tr) for c in clauses))
+        out["clauses"] = [{"clause": c, "count": n} for c, n in zip(clauses, counts, strict=True)]
+        dead = [c for c, n in zip(clauses, counts, strict=True) if n == 0]
+        if dead:
+            out["matches_nothing"] = dead
+        elif all(counts):
+            out["note"] = "every clause matches on its own, but no message matches all of them together"
+    info = await field_info(gl)
+    lookups = [t for t in (_simple_term(c) for c in dead) if t and (not info or t[0] in info)][:MAX_VALUE_LOOKUPS]
+
+    async def values_of(name: str) -> list[str]:
+        with contextlib.suppress(GraylogError, asyncio.TimeoutError):
+            agg = await asyncio.wait_for(gl.aggregate("*", tr, streams, [name], 50, [COUNT]), COUNT_TIMEOUT)
+            present, _ = agg.split_missing()
+            return [str(redact(name, r.keys[0])) for r in present]
+        return []
+
+    for (name, value), seen in zip(lookups, await asyncio.gather(*(values_of(n) for n, _ in lookups)), strict=True):
+        entry: dict[str, Any] = {"field": name, "value": value, "values_in_range": seen[:10]}
+        close = close_values(value, seen)
+        if close:
+            entry["did_you_mean"] = close
+        elif not seen:
+            entry["problem"] = f"no message in this range has field {name!r}"
+        out.setdefault("values", []).append(entry)
+    wider = _wider(tr)
+    if wider is not None and len(clauses) > 1 and dead:
+        found = await asyncio.gather(*(count(c, wider) for c in dead[:MAX_VALUE_LOOKUPS]))
+        further = [{"clause": c, "count": n} for c, n in zip(dead, found, strict=False) if n]
+        if further:
+            out["clauses_further_back"] = {"range": wider.label.replace("last ", ""), "clauses": further}
+    return out
+
+
+def summarize(diagnosis: dict[str, Any]) -> str:
+    """One sentence for the model, from the diagnosis."""
+    parts = []
+    for entry in diagnosis.get("values", []):
+        if entry.get("did_you_mean"):
+            parts.append(f"{entry['field']} has no value {entry['value']!r}; did you mean "
+                         f"{', '.join(entry['did_you_mean'])}?")  # fmt: skip
+        elif entry.get("problem"):
+            parts.append(entry["problem"])
+        elif entry.get("values_in_range"):
+            parts.append(f"{entry['field']} values here are {', '.join(entry['values_in_range'][:5])}")
+    if diagnosis.get("matches_nothing") and not parts:
+        parts.append("matches nothing on its own: " + "; ".join(diagnosis["matches_nothing"]))
+    if diagnosis.get("note"):
+        parts.append(diagnosis["note"])
+    if "clauses_further_back" in diagnosis:
+        o = diagnosis["clauses_further_back"]
+        found = ", ".join(f"{c['clause']} ({c['count']})" for c in o["clauses"])
+        parts.append(f"in the last {o['range']} these match on their own: {found}")
+    return ". ".join(parts)
