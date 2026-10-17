@@ -35,8 +35,9 @@ uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp start
 ```
 
 It installs graylog-mcp, runs it in the background as **one process for every Claude session**, starts it
-again when you log in, connects Claude Code in every project and opens the admin page. The page's **Setup**
-checklist shows what is left (usually: add your Graylog URL and a token) with a button for each step.
+again when you log in, connects Claude Code in the repositories of your groups and opens the admin page. Its **Get set up** card
+shows what is left; **Finish setup** does every step that needs no input in one click and then opens the form
+for what does (usually: your Graylog URL and a token).
 
 Afterwards:
 
@@ -117,15 +118,6 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
 - `count_logs` — exact number of matching messages.
-
-Both fix obvious query mistakes before running and list them in `rewrites` (`exact=true` runs the query as
-written): a field name that does not exist but clearly means one that does (`Level:3` → `level:3`,
-`status:500` → `http_status:500`, `exception:` → the configured exception field, a typo), lower-case `and` /
-`or` (Lucene searches them as words), and a bare id (`req-7f3a9c`, a UUID), searched in the `trace_fields` as
-well as the message text. When nothing matches, `diagnosis` says why, from a few exact counts: the clause
-that matches nothing on its own and the values its field really has (`service:paymnt` → did you mean
-`payment`?), matches just outside the range with the time of the last one, clauses that match on their own
-further back, and matches outside the repository's focus.
 - `get_message` — one message with all fields, by `index/id` ref.
 
 **Investigate**
@@ -241,6 +233,37 @@ Writing rules that are fast and accurate:
   that depend on a field only some systems log.
 - Give each rule a severity that matches who should be woken up, and tags that match how people ask
   ("payment", "security", "dependencies").
+
+## Searches that find nothing
+
+`search_logs` and `count_logs` do not stop at "no matches". Four decisions, each explained in the result:
+
+1. **Safe rewrite, before the search runs**, only for a query that cannot match as written: a field this Graylog
+   does not have but with one clear counterpart (`Service:payment` -> `service:payment`; the instance's configured
+   name for it, `exception:` -> `exception_class:` from `group_fields`; the one field ending in that word,
+   `status:500` -> `http_status:500`; or an alias learned below), or a level word on a numeric level field
+   (`level:ERROR` -> `level:3`). The result carries `rewritten: {from, ran, why}`.
+2. **Counted suggestions, after a search found nothing**: a misspelled field (close names and known synonyms
+   such as `app` -> `service`), the level in the other form, another letter case (keyword fields are
+   case-sensitive), a prefix wildcard (`OrderNotFound` -> `OrderNotFound*`), lower-case `and` / `or` (Lucene
+   searches them as words), a bare id (`req-7f3a9c`, a UUID) also looked for in the `trace_fields`, outside the
+   repository's focus, a wider range (with `last_seen`, the time of the newest match). Each is counted exactly by
+   Graylog (in parallel, bounded); the ones that find something come back in `suggestions` with their count and
+   reason, best first, and the hint names the one to run.
+3. **Learning from use.** A suggestion counts as offered; it counts as used when the model then runs it and
+   finds something. A fix's weight is the mean of Beta(1 + used, 1 + offered - used), so it needs evidence and
+   loses weight when it is ignored. A fix used at least twice with weight >= 0.75 applies by itself on that
+   instance: a field alias becomes a safe rewrite, and a case or prefix fix reruns the empty search. Focus and
+   range are only ever suggested, since they change the question.
+
+4. **Diagnosis, after a search found nothing**, in `diagnosis`: the counts of each top-level `AND` clause, the
+   ones that match nothing on their own (or that each matches but not together), the values the field of such a
+   clause really has in the range with the close ones (`service:paymnt` -> did you mean `payment`; numbers are
+   never guessed), and the dead clauses that match on their own further back.
+
+Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > What
+graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
+request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
 ## Root cause analysis
 
@@ -428,16 +451,34 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
-- **Overview**: environment cards and the doctor checks with fixes;
-- **Environments**: add, edit, delete, set default; type the token or password once, test the connection, and
-  save (the secret goes to your per-user secrets file, the variable name is chosen for you);
-- **Field mapping**: run detection on an environment, review the evidence, apply the selected settings;
+- **Dashboard**: the setup steps (one **Finish setup** button), log volume and errors over the last 24 hours or
+  7 days (read from Graylog when the page opens, nothing stored), every environment's health with a sparkline or
+  its problem and a button to fix it (*Add token*, *Fix*), the tools the model used, and the searches that found
+  nothing;
+- **Activity**: every tool call the model made, per hour: found something / found nothing / error, per-tool
+  counts and latency (median, p95), and the recent calls with what was asked; *Re-run* opens one in the
+  Playground;
+- **Environments**: one card per group with its environments, default environment, repositories and their
+  focus; descriptions and defaults save as you change them. The environment form tests the connection and saves
+  in one click (*Save anyway* if Graylog cannot be reached), names the environment from the URL
+  (`graylog-uat.acme.com` gives `uat`) and saves the token or password to your per-user secrets file;
+- **Log fields**: settings per scope, with detection from your logs in the same page: suggestions next to the
+  value in effect, applied to the scope you are editing;
 - **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
   mask your sample text;
 - **Playground**: run any tool against any environment and see the exact output, its size and an
   approximate token count;
-- **Connect clients**: ready-to-copy snippets and one-click install for each client;
+- **Other clients**: snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file**: edit the TOML with validation and an automatic backup.
+
+Tool calls are recorded by the MCP server (stdio or shared) in `~/.config/graylog-mcp/usage.jsonl`: tool,
+environment, duration, number of results, size, and the query or id asked for, **redacted with your redaction
+rules before it is written**. It stays on your machine, is trimmed past 4 MB, and `GRAYLOG_MCP_USAGE=off` in the
+server's environment turns it off.
+
+<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
+save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Dark by default, with a
+light theme and a phone layout; neutral grays with one blue for data, red and green only for state.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password
@@ -532,7 +573,7 @@ To reach more groups from a repository, set `only_groups = ["payment", "erp"]` (
 `.graylog-mcp.toml`, or `GRAYLOG_MCP_GROUPS=payment,erp` in the MCP client's environment. `only_groups` also
 works without repositories, e.g. in a personal config. The admin UI always shows every group.
 
-Manage them in the admin UI (Environments > Groups > Repositories: add a local folder, see its git remote and
+Manage them in the admin UI (Environments, in each group's card: add a local folder, see its git remote and
 whether it is set up, "Set up" writes `.graylog-mcp.toml` with an `include` of the shared file and
 `only_groups`, so the scope holds on every machine whatever its folder layout, and registers
 Claude Code there) or from the command line:
@@ -563,12 +604,12 @@ streams = ["MDM"]               # optional: streams searched by default
 Without `[focus]`, the service is guessed from the repository name (folder or git remote) by matching it against
 the values of the service fields (`service`, `application`, ...) over the last 24 hours: `cobra-mdm` finds
 `cobra-mdm-service`. No clear match, no filter; `list_instances` shows what was picked. Set it from the admin UI
-(Groups & repositories > Focus), with `graylog-mcp repo focus cobra-mdm-service --streams MDM` inside the
+(Environments > the repository's Focus), with `graylog-mcp repo focus cobra-mdm-service --streams MDM` inside the
 repository, or for one MCP client with `GRAYLOG_MCP_SERVICE=<name>` (`off` disables it).
 
 ### Settings by scope
 
-The admin UI's **Settings** page edits field names, queries and connection options for a chosen scope: global,
+The admin UI's **Log fields** page edits field names, queries and connection options for a chosen scope: global,
 one environment (for every group), one group, or a single instance. Each field shows the value currently in
 effect; leaving it empty inherits it.
 
@@ -583,16 +624,37 @@ What `start` does, so you know what is on your machine:
 
 - **A stable copy**: `uv tool install` (in `~/.local/share/uv/tools`), not uvx's temporary cache.
   `update` reinstalls it from the same source; the version shown everywhere includes the git commit.
-- **The server**: `graylog-mcp serve --shared --admin --port 8000 --config <file>` on 127.0.0.1, started at
-  login by a LaunchAgent (macOS), a systemd user unit (Linux) or the Startup folder (Windows); elsewhere it
-  runs until you log out. Log: `~/Library/Logs/graylog-mcp.log` or `~/.config/graylog-mcp/server.log`.
-- **The admin page** at `http://127.0.0.1:8000/admin/`, with the access token kept in
+- **The server**: `graylog-mcp serve --shared --admin --port 18742 --config <file>` on 127.0.0.1 (the port is fixed so
+  no client configuration goes stale: if another program uses it, `start` stops with an error; `--port` picks
+  another one, later commands follow it), started at
+  login and started again if it crashes:
+
+  | | Started at login by | Restarted after a crash by |
+  |---|---|---|
+  | macOS | a LaunchAgent (`~/Library/LaunchAgents/io.github.ntbang0901.graylog-mcp.plist`) | launchd |
+  | Linux with systemd | a user unit (`~/.config/systemd/user/graylog-mcp.service`) | systemd |
+  | Linux desktop without systemd | XDG autostart (`~/.config/autostart/graylog-mcp.desktop`) | `graylog-mcp keepalive` |
+  | Windows | a Task Scheduler task `graylog-mcp`, no console window | `graylog-mcp keepalive` |
+
+  Elsewhere (WSL or a server without systemd, no desktop session) it runs until you log out; on WSL, turning
+  on systemd (`[boot] systemd=true` in `/etc/wsl.conf`) is enough. Log: `~/Library/Logs/graylog-mcp.log` or
+  `~/.config/graylog-mcp/server.log`.
+- **The admin page** at `http://127.0.0.1:18742/admin/`, with the access token kept in
   `~/.config/graylog-mcp/admin-token` (owner only); `graylog-mcp ui` opens it.
-- **Claude Code**, registered once for every project (user scope):
-  `claude mcp add --transport http graylog --scope user http://127.0.0.1:8000/mcp --header 'X-Graylog-MCP-Repo: ${PWD:-}'`.
-  Claude Code fills in the folder it runs in; the server walks up to the repository. A project whose committed
-  `.mcp.json` still starts graylog-mcp itself gets a private override (local scope) instead: the file stays as
-  it is for your teammates.
+- **Claude Code**, connected repository by repository: `start` writes the shared server into the `.mcp.json` of
+  each repository of your groups, creating the file when it has none (the other servers in it stay, the previous
+  file is kept as `.mcp.json.bak`):
+  `{"mcpServers": {"graylog": {"type": "http", "url": "http://127.0.0.1:18742/mcp", "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}`.
+  Claude Code fills in the folder it runs in; the server walks up to the repository, and asks you once to approve
+  a project's server. A repository whose `.mcp.json` still starts graylog-mcp itself gets a private override
+  (Claude Code's local scope) instead: the file stays as it is for your teammates. `graylog-mcp start --global`
+  registers it once for every project (user scope) instead. Without it, `start` removes a registration for every
+  project that an earlier version made, so that Claude Code does not report the server as defined in several
+  scopes with different endpoints.
+- **A different port**: whenever the server starts (by `start`, at login, after `update`), what an earlier port
+  registered follows it: Claude Code's registrations and overrides, the URL of a `.mcp.json` entry on
+  another local port (rewritten in place, `.bak` kept) and the Cursor and VS Code entries of your groups' repositories. `status` lists what still points
+  elsewhere.
 
 How the server picks the configuration of a session:
 

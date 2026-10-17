@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,13 @@ from graylog_mcp.setup import clients, connect
 from graylog_mcp.tools import App
 from tests import fake_claude
 from tests.fake_graylog import FakeGraylog
+
+
+def same_folder(header: str, folder: Path) -> bool:
+    """The repository header Claude Code sends: ${PWD:-} (expanded by it), or on Windows the folder itself."""
+    if header == "${PWD:-}":
+        return platform.system() != "Windows"
+    return Path(header).resolve() == folder.resolve()
 
 
 def make_repo(root: Path, name: str, remote: str | None = None) -> Path:
@@ -220,20 +228,22 @@ async def test_admin_repos_use_the_running_shared_server(admin, monkeypatch, tmp
     assert state["shared"]["running"] and state["groups"][1]["repos"][0]["claude_code"] == "stdio"
     # "Use shared server" on a repository whose .mcp.json starts uvx: a private override, the file is kept
     switched = (await client.post("/api/repos/setup", json={"group": "erp", "repo": str(old)})).json()
-    assert switched["source"] == "shared" and switched["claude_code"] == "every project (shared server)"
+    assert switched["source"] == "shared" and switched["claude_code"] == "this repository (shared server)"
     assert (old / ".mcp.json").read_text() == committed
     cfg = fake_claude.config()
-    assert cfg["mcpServers"]["graylog"]["url"] == clients.SHARED_URL
-    assert cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
-    # a new repository needs nothing written: the registration for every project covers it
+    assert "graylog" not in cfg.get("mcpServers", {})  # nothing global: only this repository
+    header = cfg["projects"][str(old.resolve())]["mcpServers"]["graylog"]["headers"]["X-Graylog-MCP-Repo"]
+    assert same_folder(header, old)  # ${PWD:-}, or the folder itself where Windows has no PWD
+    # a new repository gets the shared server in its own .mcp.json, created as it has none
     new = make_repo(root, "payment-api")
     added = await client.post(
         "/api/repos", json={"group": "payment", "repo": str(new), "project_config": True, "claude_code": True}
     )
-    assert added.json()["source"] == "shared" and not (new / ".mcp.json").exists()
+    assert added.json()["source"] == "shared"
+    assert json.loads((new / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == clients.SHARED_URL
     groups = {g["name"]: g for g in (await client.get("/api/state")).json()["groups"]}
     assert [r["claude_code"] for g in groups.values() for r in g["repos"]] == ["shared", "shared"]
-    assert len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 2  # user + the one override
+    assert len([c for c in fake_claude.calls(log) if c["args"][1] == "add"]) == 1  # only the uvx one: an override
 
 
 def test_repo_cli(tmp_path, monkeypatch, capsys):
@@ -277,3 +287,23 @@ async def test_admin_setup_existing_repo(admin):
     res = await client.post("/api/repos/setup", json={"group": "payment", "repo": "../payment-worker"})
     assert res.json()["ok"] and (repo / ".graylog-mcp.toml").exists() and (repo / ".mcp.json").exists()
     assert (await client.post("/api/repos/setup", json={"group": "payment", "repo": "f88/x"})).status_code == 400
+
+
+def test_setup_repo_on_another_drive_includes_the_config_by_its_absolute_path(tmp_path, monkeypatch):
+    """Windows: os.path.relpath raises 'path is on mount C:, start on mount D:' when the drives differ."""
+    from graylog_mcp.setup import configfile
+
+    shared = tmp_path / "platform" / "graylog-org.toml"
+    shared.parent.mkdir()
+    shared.write_text(
+        '[groups.payment.environments.prod]\nurl = "https://gl.test"\ntoken_env = "T"\n', encoding="utf-8"
+    )
+    repo = make_repo(tmp_path, "payment-api")
+
+    def other_drive(path, start=None):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    monkeypatch.setattr("os.path.relpath", other_drive)
+    target = configfile.setup_repo(repo, shared, "payment")
+    assert configfile.load_raw(target)["include"] == shared.resolve().as_posix()
+    assert configfile.load_raw(target)["default_group"] == "payment"

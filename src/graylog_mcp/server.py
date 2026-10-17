@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -13,7 +16,7 @@ from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, scan, tools
+from graylog_mcp import __version__, rca, scan, tools, usage
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
@@ -46,6 +49,14 @@ the user asks for them: pass streams=['*'] for everything, explicit streams, or 
 field (e.g. application:"other-service"). trace_request, service_map and root_cause always span every service.
 Inside a group's repository only that group is loaded (list_instances shows 'scope'); if the user
 asks about another group, say it is not loaded here and how to enable it, as the error explains.
+
+Searches that find nothing: search_logs and count_logs try the likely fixes and return 'suggestions', each
+with its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,
+outside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'
+says which AND clause matches nothing and the values its field really has ('did_you_mean'). When a
+result carries 'rewritten', the query you sent could not match as written (a field this Graylog does not
+have, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,
+for the reasons in 'why'; tell the user when that changes the meaning of their question.
 
 Time: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'
 (interpreted in the instance timezone shown in results). Output timestamps carry their offset.
@@ -82,12 +93,6 @@ Suggested investigation flow:
 Counts from count_logs, error_summary, top_values and log_histogram are exact (computed by Graylog);
 'count' inside search_logs groups only covers the returned page.
 Results are size-capped: when 'truncated' is true, narrow the query or page with next_offset.
-search_logs and count_logs fix obvious query mistakes before running (a field name that does not exist but
-clearly means one that does, lower-case and/or, a bare id also searched in the trace fields) and list them in
-'rewrites'; check them, and pass exact=true when the query was right as written. When nothing matches,
-'diagnosis' says why: the clause that matches nothing and the values its field really has, matches just
-outside the range (with the last one's time), or outside the repository's focus. Fix the query from it
-instead of guessing.
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
@@ -110,13 +115,6 @@ FromTime = Annotated[
     Field(description="Absolute start: ISO 8601 or 'YYYY-MM-DD HH:MM' in the instance timezone; overrides range"),
 ]
 ToTime = Annotated[str | None, Field(description="Absolute end, same formats as from_time; default now")]
-Exact = Annotated[
-    bool,
-    Field(
-        description="Run the query exactly as written: no field-name fixes, no and/or fix, no trace fields for a "
-        "bare id (default false; the result lists any rewrite)"
-    ),
-]
 Streams = Annotated[
     list[str] | None,
     Field(
@@ -136,15 +134,26 @@ def build_server(app: App | AppPool) -> MCPServer:
         single = app
         current, startup = (lambda: single), single
 
+    async def detect(app: App) -> None:
+        try:
+            status = await tools.list_instances(app)  # detect versions once, cached afterwards
+        except Exception as exc:  # each tool call detects again if needed
+            log.warning("version detection failed: %s", exc)
+            return
+        for inst in status["instances"]:
+            log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
+
     @asynccontextmanager
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
-        if startup is not None:
-            status = await tools.list_instances(startup)  # detect versions once, cached afterwards
-            for inst in status["instances"]:
-                log.info("instance %s: %s", inst["name"], inst.get("version") or inst["status"])
+        # in the background: an unreachable Graylog (VPN off) must not hold the server's start
+        task = asyncio.create_task(detect(startup)) if startup is not None else None
         try:
             yield
         finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await app.close()
 
     server = MCPServer(
@@ -166,13 +175,22 @@ def build_server(app: App | AppPool) -> MCPServer:
         )
 
     async def call(fn: Callable[..., Any], **kwargs: Any) -> str:
+        started, app, result, text, error = time.monotonic(), None, None, "", None
         try:
-            result = fn(current(), **kwargs)
+            app = current()
+            result = fn(app, **kwargs)
             if hasattr(result, "__await__"):
                 result = await result
+            text = dumps(result)
+            return text
         except (GraylogError, ConfigError, ValueError) as exc:
-            raise ToolError(str(exc)) from None
-        return dumps(result)
+            error = str(exc)
+            raise ToolError(error) from None
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            usage.track(fn.__name__, app, kwargs, result, error, started, len(text))
 
     # ------------------------------------------------------------------ search
 
@@ -194,7 +212,6 @@ def build_server(app: App | AppPool) -> MCPServer:
         dedup_lines: Annotated[
             bool, Field(description="Group lines that only differ in numbers/ids/timestamps (default true)")
         ] = True,
-        exact: Exact = False,
         instance: Instance = None,
     ) -> str:
         return await call(
@@ -209,7 +226,6 @@ def build_server(app: App | AppPool) -> MCPServer:
             limit=limit,
             offset=offset,
             dedup_lines=dedup_lines,
-            exact=exact,
             instance=instance,
         )
 
@@ -226,7 +242,6 @@ def build_server(app: App | AppPool) -> MCPServer:
         from_time: FromTime = None,
         to_time: ToTime = None,
         streams: Streams = None,
-        exact: Exact = False,
         instance: Instance = None,
     ) -> str:
         return await call(
@@ -236,7 +251,6 @@ def build_server(app: App | AppPool) -> MCPServer:
             from_time=from_time,
             to_time=to_time,
             streams=streams,
-            exact=exact,
             instance=instance,
         )
 

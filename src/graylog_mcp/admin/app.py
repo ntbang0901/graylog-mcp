@@ -26,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, scan, tools
+from graylog_mcp import __version__, rca, recover, scan, tools, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -187,25 +187,28 @@ def _raw_instances_view(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _claude_code_mode(folder: Path, claude: dict[str, Any] | None) -> str | None:
     """How Claude Code reaches graylog-mcp in this repository: 'shared' (the shared server, through the
-    repository's .mcp.json, a private override or the registration for every project), 'stdio' (its
-    .mcp.json starts a process per session), or None (not registered)."""
+    repository's .mcp.json, a private registration or the registration for every project), 'stale' (registered on
+    another port), 'stdio' (its .mcp.json starts a process per session), or None (not registered)."""
     try:
         servers = json.loads((folder / ".mcp.json").read_text(encoding="utf-8")).get("mcpServers", {})
         entry = servers.get(clients.SERVER_NAME) if isinstance(servers, dict) else None
     except (OSError, ValueError, AttributeError):
         entry = None
+    if claude is not None and str(folder) in [*claude["stale_projects"], *claude["stale_files"]]:
+        return "stale"  # registered on another port
     if isinstance(entry, dict):
         if entry.get("url"):
             return "shared"
         return "stdio" if claude is None or str(folder) in claude["stdio_projects"] else "shared"
-    return "shared" if claude and claude["registered"] else None
+    if claude and (claude["registered"] or str(folder) in claude["local_projects"]):
+        return "shared"
+    return None
 
 
 def _shared_url(state: AdminState) -> str:
     from graylog_mcp.setup import service
 
-    port = state.server_port or int(service.saved_settings().get("port") or service.DEFAULT_PORT)
-    return service.server_url(port)
+    return service.server_url(state.server_port) if state.server_port else service.shared_url()
 
 
 async def _shared_running(state: AdminState) -> bool:
@@ -225,10 +228,11 @@ async def _register_repo(state: AdminState, folder: Path, project: Path, names: 
     a private override when the repository's .mcp.json starts its own process (the committed file is kept)."""
     if source != "shared":
         return str(clients.install("claude-code", "project", folder, project, names, source).path)
-    done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder])
+    done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), [folder], None, False)
     if done["errors"]:
         raise ValueError("; ".join(done["errors"]))
-    return "every project (shared server)"
+    await asyncio.to_thread(clients.repoint_all, _shared_url(state), [folder])
+    return "this repository (shared server)"
 
 
 async def _shared_status(state: AdminState) -> dict[str, Any]:
@@ -627,6 +631,60 @@ def build_app(state: AdminState) -> Starlette:
             }
         )
 
+    def _range(request: Request) -> tuple[str, int, int]:
+        """24h in hourly buckets (default) or 7d in 6-hour buckets."""
+        return ("7d", 168, 6) if request.query_params.get("range") == "7d" else ("24h", 24, 1)
+
+    async def get_usage(request: Request) -> Response:
+        _, hours, step = _range(request)
+        return JSONResponse(await asyncio.to_thread(usage.summarize, hours, step))
+
+    async def get_logstats(request: Request) -> Response:
+        """Messages and errors per bucket in every environment, straight from Graylog (nothing is stored)."""
+        rng, _, step = _range(request)
+        try:
+            app = await state.app()
+        except ConfigError as exc:
+            return _err(str(exc))
+
+        async def one(name: str) -> dict[str, Any]:
+            gl = app.instances[name]
+
+            def histogram(query: str) -> Any:
+                return tools.log_histogram(
+                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name
+                )
+
+            try:
+                every, errors = await asyncio.wait_for(
+                    asyncio.gather(histogram("*"), histogram(gl.cfg.error_query)),
+                    timeout=20,
+                )
+            except Exception as exc:  # one unreachable environment must not hide the others
+                return {"name": name, "error": str(exc)[:300] or type(exc).__name__}
+            return {
+                "name": name,
+                "total": every.get("total") or 0,
+                "errors": errors.get("total") or 0,
+                "error_query": gl.cfg.error_query,
+                "buckets": every.get("buckets") or [],
+                "error_buckets": errors.get("buckets") or [],
+            }
+
+        rows = await asyncio.gather(*(one(name) for name in app.instances))
+        return JSONResponse({"range": rng, "bucket_hours": step, "environments": list(rows)})
+
+    async def get_learned(_request: Request) -> Response:
+        rules = await asyncio.to_thread(recover.LEARNED.listing)
+        return JSONResponse({"enabled": recover.enabled(), "auto_weight": recover.AUTO_WEIGHT,
+                             "auto_min_uses": recover.AUTO_MIN_USES, "rules": rules})  # fmt: skip
+
+    async def forget_learned(request: Request) -> Response:
+        key = str((await _body(request)).get("key") or "")
+        if not await asyncio.to_thread(recover.LEARNED.forget, key):
+            return _err("no such rule")
+        return JSONResponse({"ok": True})
+
     async def run_doctor(_request: Request) -> Response:
         try:
             app = await state.app()
@@ -670,11 +728,11 @@ def build_app(state: AdminState) -> Starlette:
         shared = await _shared_status(state)
         have = service.installed()
         autostart = service.Autostart()
-        kind = await asyncio.to_thread(lambda: autostart.kind)
+        kind, enabled = await asyncio.to_thread(lambda: (autostart.kind, autostart.enabled))
         out: dict[str, Any] = {
             "server": {**shared, "embedded": state.server_port is not None},
             "install": {"version": have.version, "commit": have.commit, "label": have.label, "via": have.via},
-            "autostart": {"kind": kind, "enabled": autostart.enabled},
+            "autostart": {"kind": kind, "enabled": enabled},
             "claude": clients.claude_code_status(_shared_url(state), _folders()),
             "log": str(service.log_path()),
         }
@@ -684,16 +742,20 @@ def build_app(state: AdminState) -> Starlette:
             out["update"] = {"latest": latest, "available": bool(latest and running and latest != running)}
         return JSONResponse(out)
 
-    async def setup_claude(_request: Request) -> Response:
+    async def setup_claude(request: Request) -> Response:
+        body = await _body(request)
         if not await _shared_running(state):
             return _err("start the shared server first")
         try:
-            done = await asyncio.to_thread(clients.register_claude_code, _shared_url(state), _folders())
+            done = await asyncio.to_thread(
+                clients.register_claude_code, _shared_url(state), _folders(), None, bool(body.get("everywhere"))
+            )
         except ValueError as exc:
             return _err(str(exc))
         if done["errors"]:
             return _err("; ".join(done["errors"]))
-        return JSONResponse({"ok": True, **done})
+        files = await asyncio.to_thread(clients.repoint_all, _shared_url(state), _folders())
+        return JSONResponse({"ok": True, **done, "files": [str(f) for f in files]})
 
     async def setup_autostart(request: Request) -> Response:
         from graylog_mcp.setup import service
@@ -702,13 +764,16 @@ def build_app(state: AdminState) -> Starlette:
         autostart = service.Autostart()
         if await asyncio.to_thread(lambda: autostart.kind) is None:
             return _err("starting at login is not supported on this system")
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         if body.get("on"):
             cmd = service.server_command(service.current_command(), port, state.path)
-            await asyncio.to_thread(autostart.install_only, cmd)
+            try:
+                await asyncio.to_thread(autostart.install_only, cmd)
+            except RuntimeError as exc:
+                return _err(str(exc))
         else:
             await asyncio.to_thread(autostart.disable, False)  # keeps running until logout
-        return JSONResponse({"ok": True, "enabled": autostart.enabled})
+        return JSONResponse({"ok": True, "enabled": await asyncio.to_thread(lambda: autostart.enabled)})
 
     async def setup_start(_request: Request) -> Response:
         """From a standalone UI: run 'graylog-mcp start' in the background (it installs and starts the server)."""
@@ -723,7 +788,7 @@ def build_app(state: AdminState) -> Starlette:
         """Install the latest version and restart the server; this page reconnects when it is back."""
         from graylog_mcp.setup import service
 
-        port = state.server_port or service.DEFAULT_PORT
+        port = state.server_port or service.current_port()
         service.spawn_detached([*service.current_command(), "update", "--port", str(port)])
         return JSONResponse({"ok": True})
 
@@ -794,6 +859,10 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/redact", redact_preview, methods=["POST"]),
         Route("/api/run", run_tool, methods=["POST"]),
         Route("/api/doctor", run_doctor),
+        Route("/api/usage", get_usage),
+        Route("/api/logstats", get_logstats),
+        Route("/api/learned", get_learned),
+        Route("/api/learned/forget", forget_learned, methods=["POST"]),
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
@@ -867,5 +936,5 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
     print("  (Ctrl+C to stop; the link contains a one-time access token)")
     if open_browser:
         webbrowser.open(url)
-    uvicorn.run(build_app(state), host=host, port=port, log_level="warning")
+    uvicorn.run(build_app(state), host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     return 0
