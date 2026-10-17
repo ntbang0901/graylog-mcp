@@ -117,6 +117,15 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
 - `count_logs` — exact number of matching messages.
+
+Both fix obvious query mistakes before running and list them in `rewrites` (`exact=true` runs the query as
+written): a field name that does not exist but clearly means one that does (`Level:3` → `level:3`,
+`status:500` → `http_status:500`, `exception:` → the configured exception field, a typo), lower-case `and` /
+`or` (Lucene searches them as words), and a bare id (`req-7f3a9c`, a UUID), searched in the `trace_fields` as
+well as the message text. When nothing matches, `diagnosis` says why, from a few exact counts: the clause
+that matches nothing on its own and the values its field really has (`service:paymnt` → did you mean
+`payment`?), matches just outside the range with the time of the last one, clauses that match on their own
+further back, and matches outside the repository's focus.
 - `get_message` — one message with all fields, by `index/id` ref.
 
 **Investigate**
@@ -314,6 +323,9 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
   follow-up calls.
 - **Errors**: clear messages for 401, 403, query syntax errors (with position), timeouts, unknown streams
   (with suggestions) and unsupported versions.
+- **Load on Graylog**: each instance takes at most `max_concurrency` requests at a time (default 16), shared
+  by every tool call and, with the shared server, every session. Connection errors, 429 and 502/503/504 are
+  retried `retries` times (default 2) with exponential backoff, honouring `Retry-After`.
 
 ## Configuration
 
