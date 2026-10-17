@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Smarter `search_logs` / `count_logs`: obvious query mistakes are fixed before running and listed in
+  `rewrites` (field names that do not exist but clearly mean one that does, lower-case `and`/`or`, a bare id also
+  searched in the trace fields; `exact=true` turns this off). A search that matches nothing returns a
+  `diagnosis`: the clause that matches nothing and the values its field really has, matches just outside the
+  range (with the last one's time), clauses matching on their own further back, and matches outside the focus.
+- Per-instance `max_concurrency` (default 16): requests in flight to one Graylog, shared by every tool call and
+  session. `retries` (default 2): connection errors, 429 and 502/503/504 are retried with exponential backoff
+  and `Retry-After`. Both can be set per instance, group or environment, and in the admin page.
 - `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
   background with the admin page at `/admin`, start it at login (launchd, systemd, Startup folder), register
   Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open

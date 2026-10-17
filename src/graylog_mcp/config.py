@@ -139,6 +139,8 @@ class InstanceConfig:
     ca_bundle: str | None = None
     proxy: str | None = None
     timeout: float = 30.0
+    max_concurrency: int = 16  # requests in flight to this instance, across every tool call and session
+    retries: int = 2  # extra attempts after a connection error, 429 or 502/503/504
     timezone: str = "UTC"
     trace_fields: tuple[str, ...] = tuple(DEFAULT_TRACE_FIELDS)
     service_fields: tuple[str, ...] = tuple(DEFAULT_SERVICE_FIELDS)
@@ -385,6 +387,8 @@ _INSTANCE_KEYS = {
     "ca_bundle",
     "proxy",
     "timeout",
+    "max_concurrency",
+    "retries",
     "timezone",
     "message_api",
     "aggregation_api",
@@ -592,6 +596,10 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     timeout = data.get("timeout", 30)
     if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
         raise ConfigError(f"{where}.timeout: expected a positive number of seconds")
+    max_concurrency = _positive_int(f"{where}.max_concurrency", data.get("max_concurrency", 16))
+    retries = data.get("retries", 2)
+    if not isinstance(retries, int) or isinstance(retries, bool) or not 0 <= retries <= 10:
+        raise ConfigError(f"{where}.retries: expected a whole number from 0 to 10")
 
     inv = _investigation(where, data, defaults)
     tz = _check_timezone(f"{where}.timezone", data.get("timezone", defaults["timezone"]))
@@ -628,6 +636,8 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         ca_bundle=ca_bundle,
         proxy=proxy,
         timeout=float(timeout),
+        max_concurrency=max_concurrency,
+        retries=retries,
         timezone=tz,
         trace_fields=inv["trace_fields"],
         service_fields=inv["service_fields"],

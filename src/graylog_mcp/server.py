@@ -82,6 +82,12 @@ Suggested investigation flow:
 Counts from count_logs, error_summary, top_values and log_histogram are exact (computed by Graylog);
 'count' inside search_logs groups only covers the returned page.
 Results are size-capped: when 'truncated' is true, narrow the query or page with next_offset.
+search_logs and count_logs fix obvious query mistakes before running (a field name that does not exist but
+clearly means one that does, lower-case and/or, a bare id also searched in the trace fields) and list them in
+'rewrites'; check them, and pass exact=true when the query was right as written. When nothing matches,
+'diagnosis' says why: the clause that matches nothing and the values its field really has, matches just
+outside the range (with the last one's time), or outside the repository's focus. Fix the query from it
+instead of guessing.
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
@@ -104,6 +110,13 @@ FromTime = Annotated[
     Field(description="Absolute start: ISO 8601 or 'YYYY-MM-DD HH:MM' in the instance timezone; overrides range"),
 ]
 ToTime = Annotated[str | None, Field(description="Absolute end, same formats as from_time; default now")]
+Exact = Annotated[
+    bool,
+    Field(
+        description="Run the query exactly as written: no field-name fixes, no and/or fix, no trace fields for a "
+        "bare id (default false; the result lists any rewrite)"
+    ),
+]
 Streams = Annotated[
     list[str] | None,
     Field(
@@ -181,6 +194,7 @@ def build_server(app: App | AppPool) -> MCPServer:
         dedup_lines: Annotated[
             bool, Field(description="Group lines that only differ in numbers/ids/timestamps (default true)")
         ] = True,
+        exact: Exact = False,
         instance: Instance = None,
     ) -> str:
         return await call(
@@ -195,6 +209,7 @@ def build_server(app: App | AppPool) -> MCPServer:
             limit=limit,
             offset=offset,
             dedup_lines=dedup_lines,
+            exact=exact,
             instance=instance,
         )
 
@@ -211,6 +226,7 @@ def build_server(app: App | AppPool) -> MCPServer:
         from_time: FromTime = None,
         to_time: ToTime = None,
         streams: Streams = None,
+        exact: Exact = False,
         instance: Instance = None,
     ) -> str:
         return await call(
@@ -220,6 +236,7 @@ def build_server(app: App | AppPool) -> MCPServer:
             from_time=from_time,
             to_time=to_time,
             streams=streams,
+            exact=exact,
             instance=instance,
         )
 

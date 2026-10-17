@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from graylog_mcp import smartsearch
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
@@ -273,6 +274,7 @@ async def search_logs(
     limit: int | None = None,
     offset: int = 0,
     dedup_lines: bool = True,
+    exact: bool = False,
     instance: str | None = None,
 ) -> dict[str, Any]:
     gl = app.gl(instance)
@@ -281,7 +283,8 @@ async def search_logs(
     if offset < 0:
         raise ToolInputError("offset must be >= 0")
     limit = app.limit(limit)
-    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
+    run, fixes = await _prepare(gl, query, exact)
+    effective, stream_ids, focus = await apply_focus(app, gl, run, streams)
     page = await gl.search(
         MessageQuery(
             query=effective,
@@ -297,7 +300,7 @@ async def search_logs(
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
     budget = app.budget()
-    out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset)
+    out = _header(gl, tr, query=query or "*", **fixes, focus=focus, total=page.total, offset=offset)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
     else:
@@ -327,8 +330,8 @@ async def search_logs(
     out["messages"] = fitted
     out["truncated"] = budget.truncated
     out["next_offset"] = next_offset
-    if not page.messages:
-        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus)
+    if not page.messages and offset == 0:
+        out.update(await _explain_empty(app, gl, effective, tr, stream_ids, focus, run))
     return out
 
 
@@ -340,14 +343,44 @@ def _minimal(item: dict[str, Any]) -> dict[str, Any]:
     return {**{k: v for k, v in item.items() if k != "sample"}, "sample": small} if "sample" in item else small
 
 
-async def _empty_hint(
-    gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...], focus: dict[str, Any] | None = None
-) -> str:
-    problems = await gl.validate(query, tr, streams)
+async def _prepare(gl: Graylog, query: str | None, exact: bool) -> tuple[str, dict[str, Any]]:
+    """The query to run (see ``smartsearch.prepare``) and the result keys saying what changed."""
+    query = query or "*"
+    if exact:
+        return query, {}
+    run, notes = await smartsearch.prepare(gl, query)
+    out: dict[str, Any] = {}
+    rewrites = [n for n in notes if "to" in n]
+    if rewrites:
+        out["query_used"] = run
+        out["rewrites"] = rewrites
+        out["exact"] = "pass exact=true to run the query as written"
+    unknown = [n for n in notes if n.get("unknown")]
+    if unknown:
+        out["unknown_fields"] = {n["field"]: n["similar"] for n in unknown}
+    return run, out
+
+
+async def _explain_empty(
+    app: App,
+    gl: Graylog,
+    effective: str,
+    tr: TimeRange,
+    stream_ids: tuple[str, ...],
+    focus: dict[str, Any] | None,
+    query: str,
+) -> dict[str, Any]:
+    """``hint`` and ``diagnosis`` for a query that matched nothing."""
+    unfocused = (query, ()) if focus else None
+    diagnosis = await smartsearch.diagnose(app, gl, effective, tr, stream_ids, focus, unfocused)
     hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
     if focus:
         hint += ". Only this repository's service was searched (focus); pass streams=['*'] to search every stream"
-    return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
+    found = smartsearch.summarize(diagnosis)
+    out: dict[str, Any] = {"hint": f"no matches: {found}" if found else hint}
+    if diagnosis:
+        out["diagnosis"] = diagnosis
+    return out
 
 
 async def count_logs(
@@ -357,15 +390,17 @@ async def count_logs(
     from_time: str | None = None,
     to_time: str | None = None,
     streams: list[str] | None = None,
+    exact: bool = False,
     instance: str | None = None,
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "15m")
-    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
+    run, fixes = await _prepare(gl, query, exact)
+    effective, stream_ids, focus = await apply_focus(app, gl, run, streams)
     count = await gl.count(effective, tr, stream_ids)
-    out = _header(gl, tr, query=query or "*", focus=focus, count=count)
+    out = _header(gl, tr, query=query or "*", **fixes, focus=focus, count=count)
     if count == 0:
-        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus)
+        out.update(await _explain_empty(app, gl, effective, tr, stream_ids, focus, run))
     return out
 
 

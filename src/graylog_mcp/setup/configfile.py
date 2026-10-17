@@ -233,7 +233,11 @@ INVESTIGATION_SETTINGS = (
     "trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields",
     "error_query", "change_query", "message_lookup_range", "group_fields.exception", "group_fields.logger",
 )  # fmt: skip
-CONNECTION_SETTINGS = ("timezone", "verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api")
+CONNECTION_SETTINGS = (
+    "timezone", "verify_tls", "ca_bundle", "proxy", "timeout", "max_concurrency", "retries", "message_api",
+    "aggregation_api",
+)  # fmt: skip
+INT_SETTINGS = {"max_concurrency", "retries"}
 GLOBAL_SETTINGS = ("default_group", "default_environment", "default_instance", "app_packages")
 LIST_SETTINGS = {"trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields", "app_packages"}
 
@@ -310,6 +314,8 @@ def write_scope(data: dict[str, Any], scope: str, values: dict[str, Any]) -> dic
             value = [v.strip() for v in raw.split(",") if v.strip()]
         if key == "timeout" and isinstance(raw, str):
             value = float(raw) if raw.strip() else None
+        if key in INT_SETTINGS and isinstance(raw, str):
+            value = int(raw) if raw.strip() else None
         empty = value in (None, "", [])
         if key.startswith("group_fields."):
             sub = key.split(".", 1)[1]
@@ -367,6 +373,8 @@ def effective_scope(config: Config, scope: str) -> dict[str, Any]:
         "ca_bundle": inst.ca_bundle,
         "proxy": inst.proxy,
         "timeout": inst.timeout,
+        "max_concurrency": inst.max_concurrency,
+        "retries": inst.retries,
         "message_api": inst.message_api,
         "aggregation_api": inst.aggregation_api,
         "app_packages": list(config.stacktrace.app_packages),

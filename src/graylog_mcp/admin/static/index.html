@@ -791,6 +791,8 @@ const SETTING_META = {
   ca_bundle: ["CA bundle path", "text", "for internal certificates"],
   proxy: ["Proxy", "text", "e.g. http://proxy:3128"],
   timeout: ["Timeout (seconds)", "number", ""],
+  max_concurrency: ["Max concurrent requests", "number", "to this Graylog, across every session"],
+  retries: ["Retries", "number", "after connection errors, 429 and 502/503/504"],
   message_api: ["Message API", "select:auto,universal,views,scripting", "auto picks by Graylog version"],
   aggregation_api: ["Aggregation API", "select:auto,views,scripting", "auto picks by Graylog version"],
   default_group: ["Default group", "groups", "when a question names no system"],
@@ -802,7 +804,7 @@ const SETTING_SECTIONS = [
   ["General", "Defaults and display", ["description", "timezone", "default_group", "default_environment", "default_instance"]],
   ["Field names in your logs", "Leave empty to use what the parent level uses", ["service_fields", "trace_fields", "version_fields", "latency_fields", "group_fields.exception", "group_fields.logger", "default_fields", "app_packages"]],
   ["Queries", "", ["error_query", "change_query", "message_lookup_range"]],
-  ["Connection", "", ["verify_tls", "ca_bundle", "proxy", "timeout", "message_api", "aggregation_api"]],
+  ["Connection", "", ["verify_tls", "ca_bundle", "proxy", "timeout", "max_concurrency", "retries", "message_api", "aggregation_api"]],
 ];
 let scopeData = null;
 async function loadScope() {
