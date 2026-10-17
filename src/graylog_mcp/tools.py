@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from graylog_mcp import smartsearch
+from graylog_mcp import recover
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
@@ -274,7 +274,6 @@ async def search_logs(
     limit: int | None = None,
     offset: int = 0,
     dedup_lines: bool = True,
-    exact: bool = False,
     instance: str | None = None,
 ) -> dict[str, Any]:
     gl = app.gl(instance)
@@ -283,24 +282,40 @@ async def search_logs(
     if offset < 0:
         raise ToolInputError("offset must be >= 0")
     limit = app.limit(limit)
-    run, fixes = await _prepare(gl, query, exact)
-    effective, stream_ids, focus = await apply_focus(app, gl, run, streams)
-    page = await gl.search(
-        MessageQuery(
-            query=effective,
-            timerange=tr,
-            streams=stream_ids,
-            fields=tuple(fields) if fields and "*" not in fields else None,
-            sort_field=sort_field,
-            sort_order=sort_order,
-            limit=limit,
-            offset=offset,
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
+    effective, rewritten = await _safe_rewrite(gl, query, effective)
+
+    def run(q: str) -> Any:
+        return gl.search(
+            MessageQuery(
+                query=q,
+                timerange=tr,
+                streams=stream_ids,
+                fields=tuple(fields) if fields and "*" not in fields else None,
+                sort_field=sort_field,
+                sort_order=sort_order,
+                limit=limit,
+                offset=offset,
+            )
         )
-    )
+
+    page = await run(effective)
+    suggestions: list[dict[str, Any]] | None = None
+    if not page.messages and offset == 0:
+        rec = await recover.recover(gl, query, effective, tr, stream_ids, focus is not None)
+        if rec.auto is not None:  # a fix learned from earlier searches: rerun with it
+            page, rewritten = (
+                await run(rec.auto.query),
+                _rewritten(query, rec.auto.query, [recover.learned_note(rec.auto)]),
+            )
+            effective = rec.auto.query
+        else:
+            suggestions = [c.as_dict() for c in rec.suggestions]
+    recover.LEARNED.observe(gl.cfg.name, query or "*", len(page.messages))
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
     budget = app.budget()
-    out = _header(gl, tr, query=query or "*", **fixes, focus=focus, total=page.total, offset=offset)
+    out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset, rewritten=rewritten)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
     else:
@@ -330,9 +345,30 @@ async def search_logs(
     out["messages"] = fitted
     out["truncated"] = budget.truncated
     out["next_offset"] = next_offset
-    if not page.messages and offset == 0:
-        out.update(await _explain_empty(app, gl, effective, tr, stream_ids, focus, run))
+    if not page.messages:
+        diagnosis = await _diagnose(app, gl, effective, tr, stream_ids) if offset == 0 else None
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions, diagnosis)
+        if suggestions:
+            out["suggestions"] = suggestions
+        if diagnosis:
+            out["diagnosis"] = diagnosis
     return out
+
+
+async def _diagnose(
+    app: App, gl: Graylog, effective: str, tr: TimeRange, streams: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Why a search found nothing (see ``recover.diagnose``); None when there is nothing to tell."""
+    return await recover.diagnose(gl, effective, tr, streams, app.redact_key) or None
+
+
+async def _safe_rewrite(gl: Graylog, query: str, effective: str) -> tuple[str, dict[str, Any] | None]:
+    fix = await recover.safe_rewrite(gl, effective)
+    return (fix.query, _rewritten(query, fix.query, fix.why)) if fix else (effective, None)
+
+
+def _rewritten(query: str, ran: str, why: list[str]) -> dict[str, Any]:
+    return {"from": query or "*", "ran": ran, "why": why}
 
 
 def _minimal(item: dict[str, Any]) -> dict[str, Any]:
@@ -343,44 +379,36 @@ def _minimal(item: dict[str, Any]) -> dict[str, Any]:
     return {**{k: v for k, v in item.items() if k != "sample"}, "sample": small} if "sample" in item else small
 
 
-async def _prepare(gl: Graylog, query: str | None, exact: bool) -> tuple[str, dict[str, Any]]:
-    """The query to run (see ``smartsearch.prepare``) and the result keys saying what changed."""
-    query = query or "*"
-    if exact:
-        return query, {}
-    run, notes = await smartsearch.prepare(gl, query)
-    out: dict[str, Any] = {}
-    rewrites = [n for n in notes if "to" in n]
-    if rewrites:
-        out["query_used"] = run
-        out["rewrites"] = rewrites
-        out["exact"] = "pass exact=true to run the query as written"
-    unknown = [n for n in notes if n.get("unknown")]
-    if unknown:
-        out["unknown_fields"] = {n["field"]: n["similar"] for n in unknown}
-    return run, out
-
-
-async def _explain_empty(
-    app: App,
+async def _empty_hint(
     gl: Graylog,
-    effective: str,
-    tr: TimeRange,
-    stream_ids: tuple[str, ...],
-    focus: dict[str, Any] | None,
     query: str,
-) -> dict[str, Any]:
-    """``hint`` and ``diagnosis`` for a query that matched nothing."""
-    unfocused = (query, ()) if focus else None
-    diagnosis = await smartsearch.diagnose(app, gl, effective, tr, stream_ids, focus, unfocused)
+    tr: TimeRange,
+    streams: tuple[str, ...],
+    focus: dict[str, Any] | None = None,
+    suggestions: list[dict[str, Any]] | None = None,
+    diagnosis: dict[str, Any] | None = None,
+) -> str:
+    problems = await gl.validate(query, tr, streams)
+    if suggestions:
+        best = suggestions[0]
+        where = (
+            f" with range={best['range']!r}"
+            if best.get("range")
+            else " with streams=['*']"
+            if best.get("streams")
+            else ""
+        )
+        hint = (f"no matches; {best['query']!r}{where} finds {best['count']} ({best['why']}). "
+                "See suggestions (exact counts) and run the one that fits")  # fmt: skip
+        return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
+    found = recover.summarize(diagnosis) if diagnosis else ""
+    if found:
+        hint = f"no matches: {found}. See diagnosis"
+        return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
     hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
     if focus:
         hint += ". Only this repository's service was searched (focus); pass streams=['*'] to search every stream"
-    found = smartsearch.summarize(diagnosis)
-    out: dict[str, Any] = {"hint": f"no matches: {found}" if found else hint}
-    if diagnosis:
-        out["diagnosis"] = diagnosis
-    return out
+    return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
 
 
 async def count_logs(
@@ -390,17 +418,30 @@ async def count_logs(
     from_time: str | None = None,
     to_time: str | None = None,
     streams: list[str] | None = None,
-    exact: bool = False,
     instance: str | None = None,
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "15m")
-    run, fixes = await _prepare(gl, query, exact)
-    effective, stream_ids, focus = await apply_focus(app, gl, run, streams)
+    effective, stream_ids, focus = await apply_focus(app, gl, query, streams)
+    effective, rewritten = await _safe_rewrite(gl, query, effective)
     count = await gl.count(effective, tr, stream_ids)
-    out = _header(gl, tr, query=query or "*", **fixes, focus=focus, count=count)
+    suggestions: list[dict[str, Any]] | None = None
     if count == 0:
-        out.update(await _explain_empty(app, gl, effective, tr, stream_ids, focus, run))
+        rec = await recover.recover(gl, query, effective, tr, stream_ids, focus is not None)
+        if rec.auto is not None and rec.auto.count:
+            count, effective = rec.auto.count, rec.auto.query
+            rewritten = _rewritten(query, rec.auto.query, [recover.learned_note(rec.auto)])
+        else:
+            suggestions = [c.as_dict() for c in rec.suggestions]
+    recover.LEARNED.observe(gl.cfg.name, query or "*", count)
+    out = _header(gl, tr, query=query or "*", focus=focus, count=count, rewritten=rewritten)
+    if count == 0:
+        diagnosis = await _diagnose(app, gl, effective, tr, stream_ids)
+        out["hint"] = await _empty_hint(gl, effective, tr, stream_ids, focus, suggestions, diagnosis)
+        if suggestions:
+            out["suggestions"] = suggestions
+        if diagnosis:
+            out["diagnosis"] = diagnosis
     return out
 
 
@@ -1079,8 +1120,7 @@ async def list_instances(app: App) -> dict[str, Any]:
             out["focus"] = {"configured": cfg.focus.services or cfg.focus.streams, "status": "not resolved"}
         else:
             out["focus"] = {"status": f"no service matches the repository name {cfg.focus.repo_names[0]!r}; "
-                            "set [focus] service in .graylog-mcp.toml, or in the shared "
-                            "server's config under [repos.\"<repository>\"]"}  # fmt: skip
+                            "set [focus] service in .graylog-mcp.toml"}  # fmt: skip
     out["redaction"] = app.redactor.active_rules
     return out
 

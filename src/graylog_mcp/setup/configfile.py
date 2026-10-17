@@ -419,7 +419,10 @@ def setup_repo(repo: Path, config_file: Path, group: str) -> Path:
     if target.resolve() == config_file.resolve():
         raise ConfigError("this repository holds the shared config itself")
     # forward slashes: the file is shared by people on Windows, macOS and Linux
-    rel = Path(os.path.relpath(config_file.resolve(), repo.resolve())).as_posix()
+    try:
+        rel = Path(os.path.relpath(config_file.resolve(), repo.resolve())).as_posix()
+    except ValueError:  # Windows: the repository and the config are on different drives, no relative path exists
+        rel = config_file.resolve().as_posix()
     includes = data.get("include", [])
     includes = [includes] if isinstance(includes, str) else list(includes)
     if rel not in includes:

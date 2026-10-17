@@ -16,20 +16,46 @@ All notable changes to this project are documented here. The format follows
   shows how the server identifies the repository, and registers it in Claude Code with `graylog-mcp headers` as
   the headersHelper (saved token and git remote); `--project` writes a `.mcp.json` with no secret and no path, to
   commit. `graylog-mcp status` checks the saved server when none runs locally (`--url` for any).
-- Smarter `search_logs` / `count_logs`: obvious query mistakes are fixed before running and listed in
-  `rewrites` (field names that do not exist but clearly mean one that does, lower-case `and`/`or`, a bare id also
-  searched in the trace fields; `exact=true` turns this off). A search that matches nothing returns a
-  `diagnosis`: the clause that matches nothing and the values its field really has, matches just outside the
-  range (with the last one's time), clauses matching on their own further back, and matches outside the focus.
+- Searches that find nothing, more fixes: the safe rewrite also uses the instance's configured name for a field
+  (`exception` -> `exception_class` from `group_fields`) and the one field ending in that word (`status` ->
+  `http_status`); suggestions add lower-case `and`/`or` and a bare id looked for in the trace fields, and a wider
+  range says when the newest match was (`last_seen`); `diagnosis` gives the counts of each `AND` clause, the values
+  the field of a dead clause really has with the close ones, and the dead clauses matching further back.
 - Per-instance `max_concurrency` (default 16): requests in flight to one Graylog, shared by every tool call and
   session. `retries` (default 2): connection errors, 429 and 502/503/504 are retried with exponential backoff
   and `Retry-After`. Both can be set per instance, group or environment, and in the admin page.
+- Searches that find nothing: `search_logs` and `count_logs` fix queries that cannot match before they run (a
+  field that does not exist but has one clear counterpart, a level word on a numeric level field) and report it
+  in `rewritten`; after an empty search they count likely fixes (misspelled field or synonym, level form, letter
+  case, prefix wildcard, outside the focus, a wider range) and return the ones that find something in
+  `suggestions`, with exact counts. Fixes the model then uses are learned per instance (weight = mean of
+  Beta(1 + used, 1 + offered - used)); one used twice with weight >= 0.75 applies by itself. `learned.json`,
+  `GRAYLOG_MCP_LEARN=off`, admin page Activity > What graylog-mcp learned, `/api/learned`.
+- Usage statistics: the MCP server records each tool call (tool, environment, duration, results, size, the query
+  redacted with the redaction rules) in `usage.jsonl` next to its state, trimmed past 4 MB; `GRAYLOG_MCP_USAGE=off`
+  turns it off. The admin page's Dashboard charts log volume and errors per environment from Graylog (24 hours or
+  7 days), the tools used and the searches that found nothing; a new Activity page shows calls over time,
+  per-tool latency and the recent calls, each re-runnable in the Playground. `/api/usage`, `/api/logstats`.
+- Admin page rebuilt for fewer steps (8 pages instead of 9, Activity included): **Finish setup** runs every step that needs no
+  input and opens the form for the rest; the Dashboard shows each environment's problem, fix and button on one row;
+  Environments, groups and repositories share one page and save as you change them; field detection sits in
+  Log fields and applies to the scope being edited; the environment form tests and saves in one click and
+  names the environment from its URL; Ctrl/⌘+K command palette; save bar with Ctrl/⌘+S and a guard against
+  losing changes. New look: quiet neutral grays with one blue for data and red/green only for state,
+  dark by default with a light theme, accessible contrast, focus rings, reduced-motion support, SVG
+  icons. "Start the server" from `graylog-mcp ui` no longer waits for a /healthz that page does not serve.
 - `graylog-mcp start`: one command to install a stable copy (`uv tool`), run the shared server in the
-  background with the admin page at `/admin`, start it at login (launchd, systemd, Startup folder), register
-  Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
+  background with the admin page at `/admin`, start it at login (launchd, systemd, XDG autostart, Windows Task
+  Scheduler), register Claude Code once for every project (private overrides for projects whose `.mcp.json` starts uvx) and open
   the page. `stop`, `status`, `update` (reinstall from the same source and restart); `ui` opens the running
   server's page. The admin page starts with a Setup checklist with one button per step, and versions show
-  their git commit.
+  their git commit. Where no service manager restarts a crashed server (XDG autostart, Task Scheduler), it runs
+  under `graylog-mcp keepalive`, which starts it again (giving up after 5 quick crashes); on Windows through
+  pythonw, so no console window opens. A Startup-folder entry from an earlier version is replaced.
+  The background server listens on 127.0.0.1:18742 (8000 is taken by many dev servers); the port is fixed so no
+  client configuration goes stale: when another program has it, `start` stops with an error instead of taking
+  another one (`--port` picks one, and `stop`, `status`, `update`, `ui` and `install --shared` follow it).
+  Command output no longer fails on consoles that cannot show ✓ (a Windows pipe in cp1252).
 - `serve --shared`: one HTTP server process for every session and repository instead of one stdio process per
   session. Each client names its repository (`X-Graylog-MCP-Repo` header or `?repo=`) and gets that repository's
   config, group and focus; Graylog clients, version detection and caches are shared; configs reload when edited.
@@ -92,6 +118,38 @@ All notable changes to this project are documented here. The format follows
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
+
+### Fixed
+- Windows: the `.mcp.json` written for a repository carries the repository folder itself in the `X-Graylog-MCP-Repo`
+  header (Claude Code has no `PWD` there, so `${PWD:-}` was empty and every tool failed with `no repository given
+  and no default configuration`); an earlier file is fixed in place. `start` also says why the config it serves
+  cannot be used (a token that is not set, a missing include) instead of leaving it to the server log.
+- Claude Code no longer reports `graylog` as defined in several scopes with different endpoints: `start` and Finish
+  setup remove the registration for every project that an earlier version made (unless `--global`), and a
+  `.mcp.json` entry on another local port has its URL rewritten (`.bak` kept) instead of being overridden.
+- Setting up a repository on another drive than the shared config (Windows: `path is on mount 'C:', start on
+  mount 'D:'`) writes the include as an absolute path instead of failing.
+- `graylog-mcp update` says what it is doing and how long it can take.
+- `graylog-mcp update` on Windows no longer fails with `failed to remove directory ...\Scripts: Access is denied`:
+  that command and the server both run from the directory uv replaces, and Windows cannot delete a running
+  program. It stops the server and finishes in the background from a copy in uv's cache (progress in the
+  server log), retrying while the old files are let go, then restarts the server.
+- Admin page: the Dashboard and Activity pages use the width of a large screen (up to 1840 px instead of 1160 px)
+  rather than leaving the right half empty; forms keep their readable width.
+- Ctrl+C, `graylog-mcp stop` and `update` no longer wait for requests still in flight (a check against an
+  unreachable Graylog, an open Claude session): the HTTP server and the admin UI give them 3 seconds.
+- The server no longer waits for every Graylog's version to be detected before it answers: detection runs in the
+  background, so an unreachable Graylog (VPN off) does not make `graylog-mcp start` report that it did not start.
+  `start` also waits up to a minute (was 20 seconds) for a slow first start.
+- Claude Code is connected repository by repository: `start`, **Finish setup** and the repositories page write the
+  shared server into the `.mcp.json` of each repository of the groups, creating the file when it has none (other
+  servers in it stay, `.bak` kept); a repository whose `.mcp.json` starts its own process gets a private override.
+  Nothing is registered for every project: `graylog-mcp start --global` does that, and without it the
+  registration for every project that an earlier version made is removed.
+- Changing the port no longer leaves the registrations of the earlier one behind: every time the server starts,
+  Claude Code's registrations and private overrides, committed `.mcp.json` entries pointing to another local port
+  (through a private override; the files are untouched) and Cursor / VS Code entries (URL rewritten, `.bak`
+  kept) follow it. `status` and the admin page list what still points to the old port.
 
 ## [0.1.0] - 2026-10-06
 

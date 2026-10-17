@@ -5,10 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hmac
+import io
 import ipaddress
 import json
 import logging
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +168,21 @@ def admin_for_server(config_path: str | None, port: int) -> Any:
     return build_app(state)
 
 
+def _repair_registrations(config_path: str | None, port: int) -> None:
+    """On every start: what an earlier port registered (Claude Code, Cursor, VS Code) follows the server to ``port``."""
+    from graylog_mcp.setup import clients, service
+
+    try:
+        path = Path(config_path).expanduser() if config_path else service.user_config_path()
+        url, folders = service.server_url(port), _group_folders(path)
+        done = clients.repair_registrations(url, folders)
+        moved = [*done["projects"], *clients.repoint_all(url, folders)]
+        if done["user"] or moved or done["errors"]:
+            log.info("moved to %s: %s%s; errors: %s", url, "user, " if done["user"] else "", moved, done["errors"])
+    except Exception:  # a courtesy at startup must never stop the server
+        log.exception("could not update the registrations of an earlier port")
+
+
 def run_http(
     config: Config | None,
     host: str,
@@ -193,8 +212,10 @@ def run_http(
     if admin:
         log.info("admin page: http://127.0.0.1:%s/admin/ (token in %s)", port, service.home_dir() / "admin-token")
         service.write_pid()
+        threading.Thread(target=_repair_registrations, args=(config_path, port), daemon=True).start()
     try:
-        uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True)
+        # Claude sessions keep event streams open: give them a few seconds, not forever, on Ctrl+C or stop
+        uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True, timeout_graceful_shutdown=3)
     finally:
         if admin:
             service.clear_pid()
@@ -221,6 +242,7 @@ async def _check(config: Config) -> int:
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
     "ui", "connect", "headers",
+    "keepalive",  # internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
 Getting started (one command, then everything happens in the browser):
@@ -618,7 +640,7 @@ def _detect(argv: list[str]) -> int:
 
 def _install(argv: list[str]) -> int:
     from graylog_mcp.config import find_project_config
-    from graylog_mcp.setup import clients, configfile
+    from graylog_mcp.setup import clients, configfile, service
 
     parser = argparse.ArgumentParser(prog="graylog-mcp install", description="Register the server in an MCP client")
     parser.add_argument("client", choices=sorted(clients.CLIENTS))
@@ -632,7 +654,11 @@ def _install(argv: list[str]) -> int:
         help="how the client starts the server; shared: connect to 'graylog-mcp serve --shared' instead",
     )
     parser.add_argument("--shared", action="store_const", const="shared", dest="source", help="same as --source shared")
-    parser.add_argument("--url", default=None, help="URL of the shared server (default http://127.0.0.1:8000/mcp)")
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="URL of the shared server (default: the one 'graylog-mcp start' runs, else port 8000)",
+    )
     parser.add_argument("--with-secrets", action="store_true", help="claude-desktop: copy current token values")
     parser.add_argument("--dry-run", action="store_true", help="print the entry, write nothing")
     args = parser.parse_args(argv)
@@ -655,7 +681,7 @@ def _install(argv: list[str]) -> int:
             args.source,
             args.with_secrets,
             args.dry_run,
-            url=args.url or clients.SHARED_URL,
+            url=args.url or service.shared_url(),
         )
     except ValueError as exc:
         print(f"graylog-mcp install: {exc}", file=sys.stderr)
@@ -675,7 +701,7 @@ def _install(argv: list[str]) -> int:
     elif config_file is None:
         print("  no .graylog-mcp.toml found: the server will use GRAYLOG_URL/GRAYLOG_TOKEN from the environment")
     if args.client == "claude-code":
-        command = clients.claude_code_command(secrets, args.source, url=args.url or clients.SHARED_URL)
+        command = clients.claude_code_command(secrets, args.source, url=args.url or service.shared_url())
         print(f"  for all your projects instead: {command}")
     return 0
 
@@ -703,22 +729,52 @@ def _group_folders(config_file: Path) -> list[Path]:
     return [p for p in (resolve_repo_path(e, config_file.parent) for e in entries) if p.is_dir()]
 
 
-def _connect_claude(port: int, config_file: Path) -> None:
+def _connect_claude(port: int, config_file: Path, everywhere: bool = False) -> None:
+    """Connect Claude Code to the server on ``port``: each repository of the groups gets the server in its own
+    .mcp.json (created when missing), or with ``everywhere`` one registration for every project instead. What an
+    earlier port registered is moved."""
     from graylog_mcp.setup import clients, service
 
     url = service.server_url(port)
+    folders = _group_folders(config_file)
+    before = clients.claude_code_status(url, folders)
     try:
-        done = clients.register_claude_code(url, _group_folders(config_file))
+        done = clients.register_claude_code(url, folders, user=everywhere)
     except ValueError as exc:
         print(f"  ! Claude Code: {exc}")
         return
-    status = clients.claude_code_status(url)
-    if done["user"] or status["registered"]:
+    status = clients.claude_code_status(url, folders)
+    if status["registered"]:
         print("  ✓ Claude Code: connected in every project")
+    elif not folders:
+        print("  - Claude Code: add repositories to a group and each gets the server in its .mcp.json (or --global)")
     for folder in done["projects"]:
-        print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+        if str(folder) in before["stale_projects"]:
+            print(f"  ✓ {folder}: pointed to another port; now uses {url} (private override)")
+        elif str(folder) in before["missing_projects"]:
+            print(f"  ✓ {folder}: wrote the shared server into its .mcp.json")
+        elif str(folder) in before["stdio_projects"]:
+            print(f"  ✓ {folder}: its .mcp.json started its own process; now uses the shared server (private override)")
+        else:
+            print(f"  ✓ {folder}: connected to the shared server")
+    if done.get("removed_user"):
+        print("  ✓ Claude Code: removed the registration for every project (each repository has its own)")
+    for path in clients.repoint_all(url, folders):
+        print(f"  ✓ {path}: now points to {url}")
     for error in done["errors"]:
         print(f"  ! Claude Code: {error}")
+
+
+def _check_start_config(config_file: Path) -> None:
+    """Say why the server cannot use its config (it then starts without a default one: only a repository that
+    names itself, with its own .graylog-mcp.toml, is served), instead of leaving it to a message in a log."""
+    if not config_file.is_file():
+        return
+    try:
+        load_config(str(config_file))
+    except ConfigError as exc:
+        print(f"  ! config {config_file}: {exc}")
+        print("    until that is fixed the server only answers repositories that send their folder")
 
 
 def _start(argv: list[str]) -> int:
@@ -731,10 +787,20 @@ def _start(argv: list[str]) -> int:
         description="One command: run graylog-mcp in the background for every session, start it at login, "
         "connect Claude Code and open the admin page",
     )
-    parser.add_argument("--port", type=int, default=service.DEFAULT_PORT)
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"default: the port used last time, else {service.DEFAULT_PORT}; one in use is an error, not replaced",
+    )
     parser.add_argument("--config", "-c", help="config file (default: the one found from here, else the user config)")
     parser.add_argument("--no-autostart", action="store_true", help="run now, but do not start at login")
     parser.add_argument("--no-claude", action="store_true", help="do not register Claude Code")
+    parser.add_argument(
+        "--global",
+        dest="everywhere",
+        action="store_true",
+        help="also register Claude Code once for every project (default: only the repositories of your groups)",
+    )
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
         "--from", dest="source", help=f"what to install (default: where this copy came from, else {service.GIT_SOURCE})"
@@ -753,46 +819,62 @@ def _start(argv: list[str]) -> int:
             exe = service.install_tool(args.source or have.source or service.GIT_SOURCE)
         except RuntimeError as exc:
             print(f"  ! {exc}; running this copy instead")
-    cmd = service.server_command(exe, args.port, config_file)
-    service.save_settings(config=str(config_file), port=args.port)
+    port = args.port or service.current_port()
+    running = service.probe(port)
+    if not (running and running.get("admin")):  # not ours (ours is restarted below on this version)
+        running = None
+        if not service.port_free(port):  # the port is the one every client is registered on: never moved silently
+            print(
+                f"  ! port {port} is used by another program: stop it, or pass another --port "
+                "(the registrations of your repositories move to it)",
+                file=sys.stderr,
+            )
+            return 1
+    cmd = service.server_command(exe, port, config_file)
+    service.save_settings(config=str(config_file), port=port)
 
     autostart = service.Autostart()
-    running = service.probe(args.port)
-    if running is not None and not running.get("admin"):
-        print(f"  ! port {args.port} is used by another server; stop it or pass --port", file=sys.stderr)
-        return 1
     if running is not None:
         print("  restarting the running server on this version…")
         if not args.no_autostart and autostart.kind:
-            autostart.write(cmd)
-        service.restart(cmd, args.port, autostart)
-        service.wait_down(args.port, timeout=3)
-    elif not args.no_autostart and autostart.kind:
-        autostart.enable(cmd, start_now=True)
-    else:
+            _try_autostart(autostart.write, cmd)
+        service.restart(cmd, port, autostart)
+        service.wait_down(port, timeout=3)
+    elif args.no_autostart or not autostart.kind or not _try_autostart(autostart.enable, cmd, start_now=True):
         service.spawn_detached(cmd)
-    body = service.wait_healthy(args.port)
+    body = service.wait_healthy(port)
     if body is None:
         print(f"  ✗ the server did not start; see {service.log_path()}", file=sys.stderr)
         return 1
     where = f"starts at login ({autostart.kind})" if autostart.enabled else "running until you log out"
-    print(f"  ✓ server: {service.server_url(args.port)} · {where}")
+    print(f"  ✓ server: {service.server_url(port)} · {where}")
     if not args.no_claude:
-        _connect_claude(args.port, config_file)
-    url = service.admin_url(args.port)
+        _connect_claude(port, config_file, args.everywhere)
+    _check_start_config(config_file)
+    url = service.admin_url(port)
     print(f"  ✓ admin page: {url}")
     if not args.no_browser:
         webbrowser.open(url)
     return 0
 
 
+def _try_autostart(step: Any, *args: Any, **kwargs: Any) -> bool:
+    try:
+        step(*args, **kwargs)
+    except (RuntimeError, OSError) as exc:
+        print(f"  ! cannot start at login: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def _stop(argv: list[str]) -> int:
     from graylog_mcp.setup import service
 
     parser = argparse.ArgumentParser(prog="graylog-mcp stop", description="Stop the background server")
-    parser.add_argument("--port", type=int, default=service.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, help="default: the port 'graylog-mcp start' used")
     parser.add_argument("--keep-autostart", action="store_true", help="stop now but start again at next login")
     args = parser.parse_args(argv)
+    args.port = args.port or service.current_port()
     autostart = service.Autostart()
     if autostart.enabled and not args.keep_autostart:
         autostart.disable(stop_now=True)
@@ -948,7 +1030,7 @@ def _status(argv: list[str]) -> int:
     from graylog_mcp.setup import clients, remote, service
 
     parser = argparse.ArgumentParser(prog="graylog-mcp status", description="Is the background server running?")
-    parser.add_argument("--port", type=int, default=service.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, help="default: the port 'graylog-mcp start' used")
     parser.add_argument(
         "--url", help="a server on another machine (default: the one 'connect' saved, when none runs here)"
     )
@@ -960,6 +1042,7 @@ def _status(argv: list[str]) -> int:
         except ValueError as exc:
             print(f"graylog-mcp status: {exc}", file=sys.stderr)
             return 2
+    args.port = args.port or service.current_port()
     have = service.installed()
     body = service.probe(args.port)
     saved_remote = service.saved_settings().get("remote")
@@ -973,9 +1056,14 @@ def _status(argv: list[str]) -> int:
     print(f"server:      {'running ' + running if running else 'not running'} on {service.server_url(args.port)}")
     print(f"this copy:   {have.label} ({have.via})")
     print(f"at login:    {'yes (' + str(autostart.kind) + ')' if autostart.enabled else 'no'}")
-    print(f"Claude Code: {'connected in every project' if claude['registered'] else 'not connected'}")
+    mode = "connected in every project" if claude["registered"] else "per repository (not registered globally)"
+    print(f"Claude Code: {mode}")
+    for folder in claude["local_projects"]:
+        print(f"             {folder} connected")
     for folder in claude["stdio_projects"]:
         print(f"             {folder} still starts its own process (.mcp.json)")
+    for folder in [*claude["stale_projects"], *claude["stale_files"]]:
+        print(f"             {folder} points to another port: 'graylog-mcp start' moves it")
     if body:
         print(f"admin page:  {service.admin_url(args.port)}")
     else:
@@ -987,26 +1075,49 @@ def _update(argv: list[str]) -> int:
     from graylog_mcp.setup import service
 
     parser = argparse.ArgumentParser(prog="graylog-mcp update", description="Install the latest version and restart")
-    parser.add_argument("--port", type=int, default=service.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, help="default: the port 'graylog-mcp start' used")
     parser.add_argument("--from", dest="source", help="what to install (default: where this copy came from)")
+    parser.add_argument("--after-pid", type=int, help=argparse.SUPPRESS)  # Windows: finish once this process is gone
+    parser.add_argument("--restart", action="store_true", help=argparse.SUPPRESS)  # the server was stopped for this
     args = parser.parse_args(argv)
+    args.port = args.port or service.current_port()
     _setup_logging("WARNING")
     have = service.installed()
     source = args.source or have.source or service.GIT_SOURCE
+    probed = service.probe(args.port)
+    was_running = args.restart or bool(probed and probed.get("admin"))
+    windows = service.is_windows()
+    if windows and have.via == "uv-tool" and not args.after_pid:  # this process runs from the directory uv replaces
+        return _update_from_outside(args.port, source, was_running)
+    if args.after_pid:
+        service.wait_pid(args.after_pid)
     print(f"graylog-mcp {have.label}: updating from {source}…")
-    try:
-        exe = service.install_tool(source)
-    except RuntimeError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
-        return 1
+    print(
+        "  uv downloads and rebuilds it: about a minute, longer on a slow connection (nothing is shown until done)",
+        flush=True,
+    )
+    if windows and probed:  # a running server holds its files: Windows cannot replace them
+        service.kill_server()
+        service.wait_down(args.port)
+    began = time.monotonic()
+    for attempt in range(1, 6):
+        try:
+            exe = service.install_tool(source)
+            break
+        except RuntimeError as exc:
+            if windows and attempt < 5 and ("os error 5" in str(exc) or "Access is denied" in str(exc)):
+                time.sleep(3)  # the stopped server (or its keepalive) is still letting go of its files
+                continue
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
     new = service.run([*exe, "--version"]).stdout.strip()
-    print(f"✓ installed {new or 'the latest version'}")
-    running = service.probe(args.port)
-    if running is None or not running.get("admin"):
+    print(f"✓ installed {new or 'the latest version'} ({time.monotonic() - began:.0f}s)")
+    if not was_running:
         print("  the background server is not running: 'graylog-mcp start' starts it")
         return 0
     saved = service.saved_settings()
     cmd = service.server_command(exe, args.port, Path(saved["config"]) if saved.get("config") else None)
+    print("  restarting the server (waits up to a minute for it to answer)…", flush=True)
     service.restart(cmd, args.port, service.Autostart())
     service.wait_down(args.port, timeout=3)
     body = service.wait_healthy(args.port)
@@ -1015,6 +1126,28 @@ def _update(argv: list[str]) -> int:
     else:
         print(f"✗ did not restart; see {service.log_path()}")
     return 0 if body else 1
+
+
+def _update_from_outside(port: int, source: str, was_running: bool) -> int:
+    """Windows cannot replace the files of a program that is running, and this command and the server both run
+    from the copy uv replaces: stop the server, then let a copy run from uv's cache do the install and restart."""
+    from graylog_mcp.setup import service
+
+    uv = service.uv_binary()
+    if uv is None:
+        print("✗ uv is not installed: see https://docs.astral.sh/uv/", file=sys.stderr)
+        return 1
+    if was_running:
+        service.kill_server()
+        service.wait_down(port)
+    # --isolated: never the installed tool (uv would reuse it, and it is the directory being replaced)
+    cmd = [uv, "tool", "run", "--isolated", "--from", source, "graylog-mcp", "update", "--port", str(port)]
+    cmd += ["--from", source]
+    cmd += ["--after-pid", str(os.getpid())] + (["--restart"] if was_running else [])
+    service.spawn_detached(cmd)
+    print("✓ updating in the background (Windows cannot replace a program that is running); this takes a minute.")
+    print(f"  see the progress in {service.log_path()}; 'graylog-mcp status' shows the new version when it is done")
+    return 0
 
 
 def _ui(argv: list[str]) -> int:
@@ -1031,8 +1164,7 @@ def _ui(argv: list[str]) -> int:
     _setup_logging("WARNING")
     from graylog_mcp.setup import service
 
-    saved = service.saved_settings()
-    port = int(saved.get("port") or service.DEFAULT_PORT)
+    port = service.current_port()
     running = None if args.standalone or args.config else service.probe(port)
     if running and running.get("admin"):  # the background server has the admin page: open it
         url = service.admin_url(port)
@@ -1051,7 +1183,26 @@ def _ui(argv: list[str]) -> int:
         return 130
 
 
+def _keepalive(argv: list[str]) -> int:
+    """Internal: what the login item runs where no service manager restarts a crashed server."""
+    from graylog_mcp.setup import service
+
+    command = argv[1:] if argv[:1] == ["--"] else argv
+    if not command:
+        print("usage: graylog-mcp keepalive -- COMMAND [ARGS...]", file=sys.stderr)
+        return 2
+    return service.keep_alive(command)
+
+
+def _tolerant_output() -> None:
+    """Print '?' for characters the console cannot show (✓ on a Windows cp1252 pipe) instead of failing."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _tolerant_output()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help", "help"):
         print(HELP)
@@ -1073,6 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
         "ui": _ui,
         "connect": _connect,
         "headers": _headers,
+        "keepalive": _keepalive,
     }
     return handlers[command](argv)
 

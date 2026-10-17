@@ -120,8 +120,8 @@ class AppPool:
             if self.default is None:
                 raise ConfigError(
                     f"no repository given and no default configuration: send the {REPO_HEADER} header "
-                    "(or ?repo= on the URL) with the repository's git remote or folder, or start the server with "
-                    "--config"
+                    "(or ?repo= on the URL) with the repository's git remote or folder (${PWD} is empty on "
+                    "Windows: write the folder itself), or start the server with --config"
                 )
             return self.default
         key, info = self.identify(repo)

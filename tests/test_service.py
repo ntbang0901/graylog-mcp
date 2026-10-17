@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import httpx
@@ -17,6 +18,7 @@ import pytest
 from graylog_mcp.__main__ import build_http_app, main, with_admin
 from graylog_mcp.setup import clients, service
 from tests import fake_claude
+from tests.test_repos import same_folder
 from tests.test_shared import _free_port, workspace
 
 
@@ -61,7 +63,7 @@ def test_install_tool(monkeypatch, tmp_path):
     monkeypatch.setattr(service, "uv_binary", lambda: "/bin/uv")
     rec = Recorder(stdout=str(tmp_path / "bin") + "\n")
     exe = service.install_tool("git+https://example.test/repo@main", rec)
-    assert rec.calls[0] == ["/bin/uv", "tool", "install", "--force", "--reinstall", "--refresh",
+    assert rec.calls[0] == ["/bin/uv", "--color", "never", "tool", "install", "--force", "--reinstall", "--refresh",
                             "git+https://example.test/repo@main"]  # fmt: skip
     assert exe == [str(tmp_path / "bin" / ("graylog-mcp.exe" if sys.platform == "win32" else "graylog-mcp"))]
     with pytest.raises(RuntimeError, match="uv tool install failed"):
@@ -105,7 +107,137 @@ def test_systemd_unit(monkeypatch, tmp_path):
     assert rec.calls[-1] == ["systemctl", "--user", "enable", "graylog-mcp.service"]
     auto.disable(stop_now=True)
     assert ["systemctl", "--user", "disable", "--now", "graylog-mcp.service"] in rec.calls and not auto.enabled
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
+    monkeypatch.delenv("DESKTOP_SESSION", raising=False)
     assert service.Autostart(Recorder(returncode=1), system="Linux").kind is None  # no user session bus
+
+
+def test_xdg_autostart_without_systemd(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    spawned = []
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: spawned.append(cmd) or 1)
+    auto = service.Autostart(Recorder(), system="Linux")
+    assert auto.kind == "xdg-autostart"
+    cmd = ["/opt/my tools/graylog-mcp", "serve", "--config", "/c/50%.toml"]
+    path = auto.enable(cmd, start_now=True)
+    assert path == tmp_path / "autostart" / "graylog-mcp.desktop" and auto.enabled
+    entry = path.read_text()
+    assert ('Exec="/opt/my tools/graylog-mcp" keepalive -- "/opt/my tools/graylog-mcp" serve --config /c/50%%.toml'
+            in entry)  # fmt: skip
+    assert spawned == [["/opt/my tools/graylog-mcp", "keepalive", "--", *cmd]]  # runs now like at login
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP")
+    assert auto.kind == "xdg-autostart"  # still found from a shell without the desktop session, to turn it off
+    auto.disable(stop_now=True)
+    assert not path.exists() and auto.kind is None
+
+
+def test_desktop_quote():
+    assert service._desktop_quote("/usr/bin/x") == "/usr/bin/x"
+    assert service._desktop_quote('a "b" $c') == '"a \\"b\\" \\$c"'
+
+
+class TaskScheduler(Recorder):
+    """schtasks: remembers whether the task exists."""
+
+    def __init__(self, create_returncode: int = 0):
+        super().__init__()
+        self.exists, self.create_returncode = False, create_returncode
+
+    def __call__(self, cmd, **_kw):
+        self.calls.append(list(cmd))
+        code = 0
+        if cmd[:2] == ["schtasks", "/Create"]:
+            code = self.create_returncode
+            self.exists = self.exists or code == 0
+        elif cmd[:2] == ["schtasks", "/Delete"]:
+            self.exists = False
+        elif cmd[:2] == ["schtasks", "/Query"]:
+            code = 0 if self.exists else 1
+        return subprocess.CompletedProcess(cmd, code, "", "Access is denied." if code else "")
+
+
+def test_task_scheduler(monkeypatch, tmp_path):
+    monkeypatch.setattr(service.shutil, "which", lambda name: "C:/Windows/System32/schtasks.exe")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("USERDOMAIN", "ACME")
+    monkeypatch.setenv("USERNAME", "an")
+    legacy = service._startup_file()
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("@echo off\r\n")  # what earlier versions wrote
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pythonw.exe").write_bytes(b"")
+    exe = str(scripts / "graylog-mcp.exe")
+    rec = TaskScheduler()
+    auto = service.Autostart(rec, system="Windows")
+    assert auto.kind == "task-scheduler" and not auto.enabled
+    path = auto.enable([exe, "serve", "--config", "C:/My Config/org.toml"], start_now=True)
+    assert auto.enabled and not legacy.exists()
+    xml = path.read_text(encoding="utf-16")
+    assert "<UserId>ACME\\an</UserId>" in xml and "<RestartOnFailure>" in xml
+    assert f"<Command>{scripts / 'pythonw.exe'}</Command>" in xml  # pythonw: no console window
+    assert f'<Arguments>-m graylog_mcp keepalive -- {exe} serve --config "C:/My Config/org.toml"</Arguments>' in xml
+    changes = [c for c in rec.calls if c[1] != "/Query"]
+    assert changes == [["schtasks", "/Create", "/TN", "graylog-mcp", "/XML", str(path), "/F"],
+                       ["schtasks", "/Run", "/TN", "graylog-mcp"]]  # fmt: skip
+    auto.disable(stop_now=True)
+    assert ["schtasks", "/End", "/TN", "graylog-mcp"] in rec.calls and not auto.enabled and not path.exists()
+    with pytest.raises(RuntimeError, match="Access is denied"):
+        service.Autostart(TaskScheduler(create_returncode=1), system="Windows").enable([exe, "serve"], True)
+
+
+def test_pythonw_of_a_uv_tool(monkeypatch, tmp_path):
+    tools = tmp_path / "uv" / "tools"
+    (tools / "graylog-mcp" / "Scripts").mkdir(parents=True)
+    (tools / "graylog-mcp" / "Scripts" / "pythonw.exe").write_bytes(b"")
+    monkeypatch.setattr(service, "uv_binary", lambda: "uv")
+    exe = str(tmp_path / "bin" / "graylog-mcp.exe")  # uv's bin directory holds only a launcher
+    cmd = service.keepalive_command([exe, "serve"], windowless=True, runner=Recorder(stdout=f"{tools}\n"))
+    assert cmd == [str(tools / "graylog-mcp" / "Scripts" / "pythonw.exe"), "-m", "graylog_mcp", "keepalive", "--",
+                   exe, "serve"]  # fmt: skip
+    monkeypatch.setattr(service, "uv_binary", lambda: None)  # no pythonw found: the launcher itself
+    assert service.keepalive_command([exe, "serve"], windowless=True)[:2] == [exe, "keepalive"]
+    assert service.keepalive_command(["/py", "-m", "graylog_mcp", "serve"]) == [
+        "/py", "-m", "graylog_mcp", "keepalive", "--", "/py", "-m", "graylog_mcp", "serve"]  # fmt: skip
+
+
+def test_restart_through_task_scheduler(monkeypatch):
+    rec = TaskScheduler()
+    rec.exists = True
+    monkeypatch.setattr(service.shutil, "which", lambda name: "schtasks")
+    monkeypatch.setattr(service, "kill_server", lambda: True)
+    monkeypatch.setattr(service, "wait_down", lambda port: True)
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: pytest.fail("spawned outside the task"))
+    service.restart(["graylog-mcp.exe", "serve"], 8000, service.Autostart(rec, system="Windows"))
+    assert rec.calls[-1] == ["schtasks", "/Run", "/TN", "graylog-mcp"]
+    assert rec.calls[-2][:4] == ["schtasks", "/Create", "/TN", "graylog-mcp"]  # the new copy's command
+
+
+def _exit_with(code):
+    return [sys.executable, "-c", f"import sys; sys.exit({code})"]
+
+
+def test_keepalive_restarts_after_a_crash(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "log_path", lambda: tmp_path / "server.log")
+    marker = tmp_path / "runs"
+    script = (f"import pathlib, sys; p = pathlib.Path({str(marker)!r}); n = len(p.read_text()) if p.exists() else 0;"
+              " p.write_text('x' * (n + 1)); sys.exit(3 if n < 2 else 0)")  # fmt: skip
+    sleeps = []
+    assert service.keep_alive([sys.executable, "-c", script], sleep=sleeps.append) == 0
+    assert marker.read_text() == "xxx" and sleeps == [2, 4]  # crashed twice, then exited cleanly
+
+
+def test_keepalive_gives_up_and_stops_on_purpose(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "log_path", lambda: tmp_path / "server.log")
+    sleeps = []
+    assert service.keep_alive(_exit_with(3), sleep=sleeps.append) == 3
+    assert len(sleeps) == 4 and "5 times in a row" in service.log_path().read_text()
+    assert service._stopped_on_purpose(-service.signal.SIGTERM)  # graylog-mcp stop / update
+    assert not service._stopped_on_purpose(1)
+    assert main(["keepalive"]) == 2
+    assert main(["keepalive", "--", *_exit_with(0)]) == 0
 
 
 def test_with_admin_dispatch():
@@ -155,7 +287,7 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         health = service.probe(port)
         assert health and health["admin"] is True and "commit" in health
         page = httpx.get(f"{base}/admin/", trust_env=False)
-        assert page.status_code == 200 and "graylog-mcp" in page.text and "setupRows" in page.text
+        assert page.status_code == 200 and "graylog-mcp" in page.text and "setupCard" in page.text
         token = {"X-Admin-Token": service.admin_token()}
         assert httpx.get(f"{base}/admin/api/state", trust_env=False).status_code == 401
         state = httpx.get(f"{base}/admin/api/state", headers=token, trust_env=False).json()
@@ -163,9 +295,20 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
         assert setup["server"]["embedded"] and setup["claude"]["registered"] is False and not setup["claude"]["cli"]
         assert setup["claude"]["command"].startswith("claude mcp add --transport http graylog --scope user")
-        # Connect: registers Claude Code for every project through the claude CLI
+        # Connect: the repositories of the groups, privately; nothing for every project
         fake_claude.install(tmp_path, monkeypatch)
         done = httpx.post(f"{base}/admin/api/setup/claude", headers=token, json={}, trust_env=False).json()
+        assert done["ok"] and not done["user"] and str(pay.resolve()) in done["projects"]
+        assert "mcpServers" not in fake_claude.config()
+        setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
+        assert setup["claude"]["missing_projects"] == []
+        written = json.loads((pay / ".mcp.json").read_text())["mcpServers"]["graylog"]
+        assert written["url"] == f"{base}/mcp"
+        assert same_folder(written["headers"]["X-Graylog-MCP-Repo"], pay)
+        # ... and, when asked, one registration for every project
+        done = httpx.post(
+            f"{base}/admin/api/setup/claude", headers=token, json={"everywhere": True}, trust_env=False
+        ).json()
         assert done["ok"] and done["user"]
         assert fake_claude.config()["mcpServers"]["graylog"]["url"] == f"{base}/mcp"
         setup = httpx.get(f"{base}/admin/api/setup", headers=token, trust_env=False).json()
@@ -189,11 +332,16 @@ def test_claude_code_status_and_register(tmp_path, monkeypatch):
     status = clients.claude_code_status(url)
     assert not status["registered"] and status["stdio_projects"] == [str(uvx_repo)] and status["cli"]
     done = clients.register_claude_code(url)
-    assert done == {"user": True, "projects": [str(uvx_repo)], "errors": []}
+    assert done == {"user": True, "projects": [str(uvx_repo)], "written": [], "errors": []}
     after = clients.claude_code_status(url)
     assert after["registered"] and after["stdio_projects"] == []
     count = len(fake_claude.calls(log))
-    assert clients.register_claude_code(url) == {"user": False, "projects": [], "errors": []}  # nothing left to do
+    assert clients.register_claude_code(url) == {
+        "user": False,
+        "projects": [],
+        "written": [],
+        "errors": [],
+    }  # nothing left to do
     assert len(fake_claude.calls(log)) == count
     # a user entry pointing elsewhere (an old uvx registration) is replaced
     data = json.loads(cfg_path.read_text())
@@ -203,9 +351,173 @@ def test_claude_code_status_and_register(tmp_path, monkeypatch):
     assert [c["args"][:2] for c in fake_claude.calls(log)[count:]] == [["mcp", "remove"], ["mcp", "add"]]
 
 
-def test_register_without_claude_cli():
+def test_port_change_moves_old_registrations(tmp_path, monkeypatch):
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    override, committed, remote, cursor_repo = (tmp_path / n for n in ("a", "b", "c", "d"))
+    for folder in (override, committed, remote, cursor_repo):
+        folder.mkdir()
+    (committed / ".mcp.json").write_text(json.dumps({"mcpServers": {"graylog": {"type": "http", "url": old}}}))
+    (remote / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"graylog": {"type": "http", "url": "https://team/mcp"}}})
+    )
+    (cursor_repo / ".cursor").mkdir()
+    cursor = cursor_repo / ".cursor" / "mcp.json"
+    cursor.write_text(
+        json.dumps({"mcpServers": {"graylog": {"url": old, "headers": {"X": "1"}}, "other": {"url": old}}})
+    )
+    cfg_path = clients.claude_config_path()
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"graylog": {"type": "http", "url": old}},
+                "projects": {
+                    str(override): {"mcpServers": {"graylog": {"type": "http", "url": old}}},
+                    str(committed): {},
+                    str(remote): {},
+                },
+            }
+        )
+    )
+    status = clients.claude_code_status(url)
+    assert not status["registered"] and status["user_stale"]
+    assert status["stale_projects"] == [str(override)] and status["stdio_projects"] == []
+    assert status["stale_files"] == [str(committed)]  # a committed file: its URL is rewritten, not overridden
+    done = clients.register_claude_code(url)
+    assert done == {"user": True, "projects": [str(override)], "written": [], "errors": []}
+    assert [c["args"][:2] for c in fake_claude.calls(log)[:2]] == [["mcp", "remove"], ["mcp", "add"]]  # the user entry
+    assert clients.claude_code_status(url)["stale_projects"] == []
+    assert set(clients.repoint_all(url, [cursor_repo, remote])) == {committed / ".mcp.json", cursor}
+    assert json.loads((committed / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == url
+    assert json.loads((remote / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "https://team/mcp"
+    entry = json.loads(cursor.read_text())["mcpServers"]
+    assert entry["graylog"] == {"url": url, "headers": {"X": "1"}} and entry["other"] == {"url": old}
+    assert clients.repoint_files(url, [cursor_repo]) == []
+
+
+def test_repair_moves_what_exists_and_creates_nothing(tmp_path, monkeypatch):
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    stale, fresh = tmp_path / "a", tmp_path / "b"
+    stale.mkdir()
+    fresh.mkdir()
+    clients.claude_config_path().write_text(
+        json.dumps({"projects": {str(stale): {"mcpServers": {"graylog": {"type": "http", "url": old}}}}})
+    )
+    assert clients.repair_registrations(url, [stale, fresh]) == {
+        "user": False,
+        "projects": [str(stale)],
+        "written": [],
+        "errors": [],
+    }
+    assert clients.claude_code_status(url, [stale, fresh])["missing_projects"] == [str(fresh)]  # not created
+    assert all(c["cwd"] == str(stale) for c in fake_claude.calls(log))
+    assert clients.repair_registrations(url, [stale, fresh]) == {
+        "user": False,
+        "projects": [],
+        "written": [],
+        "errors": [],
+    }
+    # per repository: register_claude_code(user=False) writes the missing one's .mcp.json, still no user entry
+    done = clients.register_claude_code(url, [stale, fresh], user=False)
+    assert done == {"user": False, "projects": [str(fresh)], "written": [str(fresh / ".mcp.json")], "errors": []}
+    assert json.loads((fresh / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == url
+    assert "mcpServers" not in json.loads(clients.claude_config_path().read_text())
+    assert clients.claude_code_status(url, [stale, fresh])["missing_projects"] == []
+
+
+def test_per_repository_leaves_no_conflicting_scopes(tmp_path, monkeypatch):
+    """user (new port) + project .mcp.json (old port) + local (new port): what Claude Code reports as conflicting."""
+    old, url = "http://127.0.0.1:8000/mcp", "http://127.0.0.1:8001/mcp"
+    log = fake_claude.install(tmp_path, monkeypatch)
+    repo = tmp_path / "a"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"graylog": {"type": "http", "url": old, "headers": {"X": "1"}}}})
+    )
+    clients.claude_config_path().write_text(
+        json.dumps(
+            {
+                "mcpServers": {"graylog": {"type": "http", "url": url}},
+                "projects": {str(repo): {"mcpServers": {"graylog": {"type": "http", "url": url}}}},
+            }
+        )
+    )
+    status = clients.claude_code_status(url, [repo])
+    assert status["user_local"] and status["stale_files"] == [str(repo)]
+    done = clients.register_claude_code(url, [repo], user=False)
+    assert done["removed_user"]
+    assert "graylog" not in json.loads(clients.claude_config_path().read_text()).get("mcpServers", {})
+    assert clients.repoint_all(url, [repo]) == [repo / ".mcp.json"]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"] == {
+        "type": "http",
+        "url": url,
+        "headers": {"X": "1"},
+    }
+    status = clients.claude_code_status(url, [repo])
+    assert status["stale_files"] == [] and status["local_projects"] == [str(repo)] and not status["user_local"]
+    assert [c["args"][:2] for c in fake_claude.calls(log)] == [["mcp", "remove"]]  # only the user entry went
+    # ... and with --global the registration for every project stays
+    assert not clients.register_claude_code(url, [repo], user=True).get("removed_user")
+
+
+def test_windows_writes_the_repository_folder_where_pwd_is_empty(tmp_path, monkeypatch):
+    """Claude Code on Windows has no PWD: ${PWD:-} would send an empty header and the server could not tell the
+    repository ('no repository given and no default configuration')."""
+    url = "http://127.0.0.1:18742/mcp"
+    monkeypatch.setattr(clients, "_windows", lambda: True)
+    repo = tmp_path / "InboundReceiving"
+    repo.mkdir()
+    assert clients.shared_entry("claude-code", url)["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}  # no folder known
+    assert clients.shared_entry("claude-code", url, repo)["headers"] == {"X-Graylog-MCP-Repo": str(repo)}
+    assert clients.shared_entry("cursor", url, repo)["headers"] == {"X-Graylog-MCP-Repo": "${workspaceFolder}"}
+    clients.install("claude-code", "project", repo, None, [], "shared", url=url)  # a new .mcp.json
+    written = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert written["headers"] == {"X-Graylog-MCP-Repo": str(repo)} and written["url"] == url
+    # an .mcp.json written by an earlier version has the empty one: fixed in place
+    (repo / ".mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"graylog": {"type": "http", "url": url, "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}
+        )
+    )
+    assert clients.repoint_files(url, [repo]) == [repo / ".mcp.json"]
+    fixed = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert fixed["headers"] == {"X-Graylog-MCP-Repo": str(repo)}
+    assert clients.repoint_files(url, [repo]) == []
+    # each repository gets its own folder, not the last one's
+    first, second = tmp_path / "first", tmp_path / "second"
+    for folder in (first, second):
+        folder.mkdir()
+        (folder / ".mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"graylog": {"type": "http", "url": url, "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}
+            )
+        )
+    assert set(clients.repoint_files(url, [first, second])) == {first / ".mcp.json", second / ".mcp.json"}
+    for folder in (first, second):
+        assert json.loads((folder / ".mcp.json").read_text())["mcpServers"]["graylog"]["headers"] == {
+            "X-Graylog-MCP-Repo": str(folder)
+        }
+    # elsewhere ${PWD:-} stays: Claude Code fills in the folder it runs in
+    monkeypatch.setattr(clients, "_windows", lambda: False)
+    other = tmp_path / "unix"
+    other.mkdir()
+    clients.install("claude-code", "project", other, None, [], "shared", url=url)
+    unix = json.loads((other / ".mcp.json").read_text())["mcpServers"]["graylog"]
+    assert unix["headers"] == {"X-Graylog-MCP-Repo": "${PWD:-}"}
+
+
+def test_register_without_claude_cli(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="claude mcp add --transport http graylog --scope user"):
         clients.register_claude_code()
+    # per repository the .mcp.json is a file: written without the claude command
+    monkeypatch.setattr(clients, "claude_binary", lambda: None)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    done = clients.register_claude_code("http://127.0.0.1:18742/mcp", [repo], user=False)
+    assert done["errors"] == [] and done["written"] == [str(repo / ".mcp.json")]
+    assert json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:18742/mcp"
 
 
 def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
@@ -232,28 +544,150 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     assert started == [(["/tools/graylog-mcp", "serve", "--shared", "--admin", "--port", "8123", "--config",
                          str((tmp_path / ".graylog-mcp.toml").resolve())], True)]  # fmt: skip
     assert "installing a stable copy" in out and "starts at login (launchd)" in out
-    assert "Claude Code: connected in every project" in out and f"{pay.resolve()}: its .mcp.json" in out
+    assert f"{pay.resolve()}: its .mcp.json started its own process" in out and "connected in every project" not in out
     assert opened == [service.admin_url(8123)]
     assert service.saved_settings()["port"] == 8123
-    projects = fake_claude.config()["projects"]
-    assert projects[str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
+    config = fake_claude.config()
+    assert "mcpServers" not in config  # nothing for every project unless --global
+    assert config["projects"][str(pay.resolve())]["mcpServers"]["graylog"]["url"] == "http://127.0.0.1:8123/mcp"
 
 
-def test_start_refuses_a_port_used_by_another_server(monkeypatch, capsys):
+def test_start_keeps_its_port_and_fails_when_another_program_has_it(monkeypatch, capsys):
     monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
-    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok"})  # no admin: not ours
-    assert main(["start", "--no-browser", "--no-claude"]) == 1
-    assert "port 8000 is used by another server" in capsys.readouterr().err
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
+    monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
+    spawned: list = []
+    monkeypatch.setattr(service, "spawn_detached", spawned.append)
+    monkeypatch.setattr(service, "port_free", lambda port: False)
+    for extra in ([], ["--port", str(service.DEFAULT_PORT + 1)]):
+        assert main(["start", "--no-browser", "--no-claude", *extra]) == 1
+        assert "is used by another program" in capsys.readouterr().err
+    assert spawned == [] and service.current_port() == service.DEFAULT_PORT  # nothing started, nothing saved
+    monkeypatch.setattr(service, "port_free", lambda port: True)
+    assert main(["start", "--no-browser", "--no-claude", "--port", "6679"]) == 0
+    assert spawned[0][spawned[0].index("--port") + 1] == "6679"
+    assert service.current_port() == 6679  # later commands follow the port asked for
+    assert service.shared_url() == "http://127.0.0.1:6679/mcp"
+
+
+def test_ports(monkeypatch):
+    import socket
+
+    assert service.current_port() == service.DEFAULT_PORT and service.shared_url() == clients.SHARED_URL
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert not service.port_free(port)
 
 
 def test_status_when_not_running(monkeypatch, capsys):
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
     assert main(["status"]) == 1
     out = capsys.readouterr().out
-    assert "not running" in out and "graylog-mcp start" in out and "Claude Code: not connected" in out
+    assert "not running" in out and "graylog-mcp start" in out and "Claude Code: per repository" in out
 
 
 def test_ui_opens_the_running_server(monkeypatch, capsys):
     monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: {"status": "ok", "admin": True})
     assert main(["ui", "--no-browser"]) == 0
     assert service.admin_url() in capsys.readouterr().out
+
+
+def test_output_that_cannot_show_a_character(monkeypatch):
+    import io
+
+    from graylog_mcp.__main__ import _tolerant_output
+
+    out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # a pipe on Windows
+    monkeypatch.setattr(sys, "stdout", out)
+    _tolerant_output()
+    print("✓ started")
+    out.flush()
+    assert out.buffer.getvalue().strip() == b"? started"
+
+
+def _windows_update(monkeypatch, via, installs, running=True):
+    """What 'update' does on Windows, with the system calls replaced; returns the log of what it did."""
+    done: list = []
+    monkeypatch.setattr(service, "is_windows", lambda: True)
+    monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", "a" * 40, "git+https://x/y", via))
+    monkeypatch.setattr(service, "uv_binary", lambda: "uv")
+    probed = {"status": "ok", "admin": True} if running else None
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: probed)
+    monkeypatch.setattr(service, "kill_server", lambda: done.append("kill"))
+    monkeypatch.setattr(service, "wait_down", lambda port, timeout=10.0: done.append("down") or True)
+    monkeypatch.setattr(service, "wait_pid", lambda pid, timeout=30.0: done.append(("wait", pid)) or True)
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: done.append(("spawn", cmd)) or 1)
+    monkeypatch.setattr(service, "run", lambda cmd, **kw: types.SimpleNamespace(stdout="graylog-mcp 0.2.0\n"))
+    monkeypatch.setattr(service, "restart", lambda cmd, port, autostart: done.append(("restart", cmd[0])))
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=60.0, commit=None: {"version": "0.2.0"})
+    monkeypatch.setattr("graylog_mcp.__main__.time.sleep", lambda s: done.append("sleep"))
+    monkeypatch.setattr(service, "install_tool", lambda source: _next_install(installs, done))
+    return done
+
+
+def _next_install(installs, done):
+    result = installs.pop(0)
+    done.append("install")
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def test_update_on_windows_leaves_the_install_to_a_copy_outside_uv_tools(monkeypatch, capsys):
+    """This command and the server run from the directory uv replaces, and Windows cannot delete a running exe."""
+    done = _windows_update(monkeypatch, "uv-tool", [])
+    assert main(["update"]) == 0
+    assert done[:2] == ["kill", "down"] and done[2][0] == "spawn"  # no install here
+    cmd = done[2][1]
+    assert cmd[:7] == ["uv", "tool", "run", "--isolated", "--from", "git+https://x/y", "graylog-mcp"]
+    assert "--restart" in cmd and "--after-pid" in cmd and cmd[cmd.index("--port") + 1] == str(service.DEFAULT_PORT)
+    assert "updating in the background" in capsys.readouterr().out
+
+
+def test_update_finishes_from_the_copy_in_uvs_cache(monkeypatch, capsys):
+    locked = RuntimeError(
+        "uv tool install failed: failed to remove directory ...Scripts: Access is denied. (os error 5)"
+    )
+    done = _windows_update(monkeypatch, "uvx", [locked, locked, ["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert done == [
+        ("wait", 123),
+        "install",
+        "sleep",
+        "install",
+        "sleep",
+        "install",
+        ("restart", "C:/tools/graylog-mcp.exe"),
+        "down",
+    ]
+    assert "restarted: 0.2.0" in capsys.readouterr().out
+    # any other failure is reported at once
+    done = _windows_update(monkeypatch, "uvx", [RuntimeError("uv tool install failed: no network")], running=False)
+    assert main(["update"]) == 1
+    assert done == ["install"] and "no network" in capsys.readouterr().err
+
+
+def test_start_says_why_its_config_is_unusable(monkeypatch, tmp_path, capsys):
+    from graylog_mcp.__main__ import _check_start_config
+
+    _check_start_config(tmp_path / "missing.toml")  # not created yet: nothing to say
+    assert capsys.readouterr().out == ""
+    config = tmp_path / "config.toml"
+    config.write_text('[instances.dev]\nurl = "https://gl.test"\ntoken_env = "NO_SUCH_TOKEN_VAR"\n', encoding="utf-8")
+    monkeypatch.delenv("NO_SUCH_TOKEN_VAR", raising=False)
+    monkeypatch.setattr("graylog_mcp.secrets.get", lambda name: None)
+    _check_start_config(config)
+    out = capsys.readouterr().out
+    assert str(config) in out and "NO_SUCH_TOKEN_VAR" in out and "only answers repositories" in out
+
+
+def test_update_continuation_never_hands_over_again(monkeypatch):
+    """The background copy may itself end up in a uv tool environment: it installs, it does not spawn another."""
+    done = _windows_update(monkeypatch, "uv-tool", [["C:/tools/graylog-mcp.exe"]], running=False)
+    assert main(["update", "--after-pid", "123", "--restart"]) == 0
+    assert (
+        ("wait", 123) in done and "install" in done and not any(isinstance(d, tuple) and d[0] == "spawn" for d in done)
+    )
