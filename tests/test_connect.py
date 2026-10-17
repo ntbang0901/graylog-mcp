@@ -71,11 +71,8 @@ def test_headers_helper(tmp_path, monkeypatch, capsys):
     assert main(["headers"]) == 0
     assert json.loads(capsys.readouterr().out) == {REPO_HEADER: "github.com/acme/payment-api"}
     secrets.save(clients.HTTP_TOKEN_ENV, "s3cret")
-    assert main(["headers", "--token-only"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"Authorization": "Bearer s3cret"}
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)  # a person typing it: the token stays hidden
-    assert main(["headers", "--token-only"]) == 0
-    assert "s3cret" not in capsys.readouterr().out
+    assert main(["headers"]) == 0
+    assert "s3cret" not in capsys.readouterr().out  # never printed: Claude Code takes it from the environment
 
 
 def test_entries_hold_no_secret_and_no_path(tmp_path):
@@ -88,9 +85,9 @@ def test_entries_hold_no_secret_and_no_path(tmp_path):
         "headers": {REPO_HEADER: "github.com/acme/payment-api", "Authorization": "Bearer ${GRAYLOG_MCP_HTTP_TOKEN:-}"},
         "headersHelper": "graylog-mcp headers",
     }
-    user = remote.user_entry(URL, ["/opt/my tools/graylog-mcp"])
-    assert user["headers"][REPO_HEADER] == "${PWD:-}"
-    assert user["headersHelper"] == "'/opt/my tools/graylog-mcp' headers --token-only"
+    user = remote.user_entry(URL)
+    assert user["headers"] == {REPO_HEADER: "${PWD:-}", "Authorization": "Bearer ${GRAYLOG_MCP_HTTP_TOKEN:-}"}
+    assert "headersHelper" not in user
     assert "s3cret" not in json.dumps([project, user]) and str(tmp_path) not in json.dumps(project)
 
 
@@ -114,6 +111,7 @@ def test_connect_a_project(vm, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "github.com/acme/payment-api → group payment" in out and "default:     payment/prod" in out
     assert secrets.get(clients.HTTP_TOKEN_ENV) == "s3cret"
+    assert "set GRAYLOG_MCP_HTTP_TOKEN" in out and "s3cret" not in out  # saved here, not yet where Claude Code runs
     entry = json.loads((repo / ".mcp.json").read_text())["mcpServers"]["graylog"]
     assert entry["url"] == URL and entry["headersHelper"] == "graylog-mcp headers"
     # later: status finds the saved server when none runs on this machine
@@ -133,12 +131,11 @@ def test_connect_for_every_project(vm, tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(clients, "claude_binary", lambda: "claude")
     monkeypatch.setattr("graylog_mcp.setup.service.run", runner)
-    monkeypatch.setattr("graylog_mcp.__main__._stable_exe", lambda: ["/bin/graylog-mcp"])
     assert main(["connect", URL]) == 0
     assert "none here (not in a git repository)" in capsys.readouterr().out
     added = ran[-1]
     assert added[:4] == ["claude", "mcp", "add-json", "graylog"] and added[-2:] == ["--scope", "user"]
-    assert json.loads(added[4])["headersHelper"] == "/bin/graylog-mcp headers --token-only"
+    assert json.loads(added[4]) == remote.user_entry(URL)
 
 
 def test_connect_with_a_wrong_token(vm, tmp_path, monkeypatch, capsys):

@@ -12,10 +12,11 @@ All notable changes to this project are documented here. The format follows
   repositories by remote or name and `[repos."<repository>"]` holds each one's focus and defaults. `http.repo_paths`
   (default: only on a loopback address) decides whether folders named by clients are read at all. `GET /status`
   says how the server identified the caller.
-- `graylog-mcp connect URL [--project]`: use the team's server from a developer's machine. Saves its token here,
-  shows how the server identifies the repository, and registers it in Claude Code with `graylog-mcp headers` as
-  the headersHelper (saved token and git remote); `--project` writes a `.mcp.json` with no secret and no path, to
-  commit. `graylog-mcp status` checks the saved server when none runs locally (`--url` for any).
+- `graylog-mcp connect URL [--project]`: use the team's server from a developer's machine. Shows how the server
+  identifies the repository and registers it in Claude Code, which sends the token from `GRAYLOG_MCP_HTTP_TOKEN`;
+  in a project, `graylog-mcp headers` (the headersHelper) gives the repository's git remote. `--project` writes a
+  `.mcp.json` with no secret and no path, to commit. `graylog-mcp status` checks the saved server when none runs
+  locally (`--url` for any).
 - Searches that find nothing, more fixes: the safe rewrite also uses the instance's configured name for a field
   (`exception` -> `exception_class` from `group_fields`) and the one field ending in that word (`status` ->
   `http_status`); suggestions add lower-case `and`/`or` and a bare id looked for in the trace fields, and a wider

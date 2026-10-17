@@ -721,16 +721,17 @@ On each developer's machine, nothing runs but Claude Code:
 
 | | |
 |---|---|
-| `graylog-mcp connect https://graylog-mcp.example.com` | asks for the server's token once and saves it on this machine (outside any repository), shows how the server identifies the current repository, and registers the server in Claude Code for every project |
-| `graylog-mcp connect URL --project` | writes the repository's `.mcp.json` instead. It holds no secret and no path: commit it, and each teammate only runs `connect` once for the token |
+| `GRAYLOG_MCP_HTTP_TOKEN=<token>` | the server's token, in the environment Claude Code starts in (shell profile; `setx` on Windows). Claude Code sends it as `Authorization: Bearer ${GRAYLOG_MCP_HTTP_TOKEN}`; no graylog-mcp command prints it |
+| `graylog-mcp connect https://graylog-mcp.example.com` | shows how the server identifies the current repository and registers the server in Claude Code for every project (asks for the token when the variable is not set, to check the connection) |
+| `graylog-mcp connect URL --project` | writes the repository's `.mcp.json` instead. It holds no secret and no path: commit it; each teammate only sets the variable |
 | `graylog-mcp status` | is the server reachable, which version, and how it identifies this repository: group, focus, default environment, each Graylog instance |
 
 How a connection names its repository: in a project's `.mcp.json`, Claude Code runs `graylog-mcp headers`
-(its `headersHelper`) in the project folder when it connects; it prints the saved token and the repository's
-git remote. Without graylog-mcp installed, the static headers apply: the remote written by `connect` and the
-token from `GRAYLOG_MCP_HTTP_TOKEN`. Registered for every project, the helper runs outside the project, so it
-only gives the token and the server identifies the repository by the name of the folder Claude Code runs in
-(`${PWD}`): list repositories by name in `repos`, or use `connect --project` for the ones listed by remote.
+(its `headersHelper`) in the project folder when it connects; it prints the repository's git remote. Without
+graylog-mcp installed, the remote written by `connect` applies. Registered for every project, there is no helper
+(it would run outside the project): the server identifies the repository by the name of the folder Claude Code
+runs in (`${PWD}`), so list repositories by name in `repos`, or use `connect --project` for the ones listed by
+remote.
 
 ## Testing
 
