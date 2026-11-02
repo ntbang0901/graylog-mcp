@@ -276,7 +276,7 @@ def make_dataset(now: datetime) -> list[dict[str, Any]]:
         )
     for i in range(6):
         add(
-            600 + i * 1000,
+            650 + i * 1000,  # not 600: 3600s would sit exactly on the edge of a 1h window and flip between windows
             source="db-1",
             level=3,
             service="orders",

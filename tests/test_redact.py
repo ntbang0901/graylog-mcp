@@ -136,3 +136,49 @@ def test_nested_values():
 def test_luhn():
     assert luhn_ok("4111111111111111")
     assert not luhn_ok("4111111111111112")
+
+
+# --------------------------------------------------------------------------- profiles
+
+
+def _from_toml(**redaction):
+    from graylog_mcp.config import _parse_redaction
+
+    return Redactor(_parse_redaction(redaction))
+
+
+def test_profile_basic_is_the_default():
+    assert _from_toml().rules == Redactor().rules
+    assert _from_toml(profile="basic").is_sensitive_field("full_name") is False
+
+
+def test_profile_pii_masks_personal_fields_but_not_look_alikes():
+    red = _from_toml(profile="pii")
+    assert red.fields({"full_name": "An Nguyen", "phone": "x"}) == {"full_name": "[REDACTED]", "phone": "[REDACTED]"}
+    # logger_name / ip_address / hostname must stay readable
+    assert red.fields({"logger_name": "acme.Pay", "ip_address": "10.0.0.1"})["logger_name"] == "acme.Pay"
+
+
+def test_profile_finance_adds_iban_pack():
+    iban = "DE89 3704 0044 0532 0130 00"
+    assert "[IBAN]" in _from_toml(profile="finance").text(f"pay {iban}")
+    assert iban in _from_toml().text(f"pay {iban}")
+
+
+def test_profile_strict_masks_ipv4_and_every_pack():
+    red = _from_toml(profile="strict")
+    assert red.text("from 203.0.113.7 ok") == "from [IP] ok"
+    assert {"vn_cccd", "us_ssn", "iban", "uk_nino", "in_pan"} <= set(red.active_rules)
+
+
+def test_profile_is_a_base_the_file_extends_and_exclude_wins():
+    red = _from_toml(profile="pii", sensitive_fields=["order_note"], exclude_fields=["phone"])
+    assert red.is_sensitive_field("order_note") and red.is_sensitive_field("first_name")
+    assert not red.is_sensitive_field("phone")
+
+
+def test_profile_unknown_name_lists_the_choices():
+    from graylog_mcp.config import ConfigError
+
+    with pytest.raises(ConfigError, match=r"unknown profile 'nope'.*basic"):
+        _from_toml(profile="nope")

@@ -215,3 +215,24 @@ async def test_diagnosis_masks_values_and_skips_pages_past_the_end(make_app):
     assert_clean(out)
     out = await tools.search_logs(app, query="level:3", range="2h", offset=10_000)
     assert out["messages"] == [] and "diagnosis" not in out
+
+
+def test_pending_suggestions_expire_and_are_capped(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    learned = recover.Learned()
+    monkeypatch.setattr(learned, "load", dict)
+    monkeypatch.setattr(learned, "_save", lambda rules: None)
+    monkeypatch.setattr(recover, "MAX_PENDING", 50)
+
+    def offer(i):
+        learned.offer("prod", [NS(key="k", kind="k", from_="a", to="b", query=f"error AND user:{i}")])
+
+    for i in range(200):  # none is ever run again
+        offer(i)
+    assert len(learned.pending) == 50 and "prod|error AND user:199" in learned.pending  # the newest stay
+
+    for key, (rule, offered) in list(learned.pending.items()):
+        learned.pending[key] = (rule, offered - recover.PENDING_SECONDS - 1)
+    offer(999)
+    assert list(learned.pending) == ["prod|error AND user:999"]  # expired ones are gone

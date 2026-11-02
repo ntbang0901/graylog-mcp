@@ -403,7 +403,7 @@ _INSTANCE_KEYS = {
     "aggregation_api",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
-_REDACTION_KEYS = {"packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
+_REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
@@ -677,12 +677,17 @@ def _parse_limits(data: Any) -> Limits:
 
 
 def _parse_redaction(data: Any) -> RedactionConfig:
-    from graylog_mcp.redact import PACKS  # local import: avoid a cycle
+    from graylog_mcp.redact import PACKS, PROFILES  # local import: avoid a cycle
 
     if not isinstance(data, dict):
         raise ConfigError("redaction: expected a table")
     _check_keys("redaction", data, _REDACTION_KEYS)
-    packs = _str_list("redaction.packs", data.get("packs", []))
+    profile_name = data.get("profile", "basic")
+    if profile_name not in PROFILES:
+        raise ConfigError(f"redaction.profile: unknown profile {profile_name!r}; available: {', '.join(PROFILES)}")
+    profile = PROFILES[profile_name]
+    # the profile is the base; what the file lists is added on top
+    packs = tuple(dict.fromkeys((*profile.packs, *_str_list("redaction.packs", data.get("packs", [])))))
     for pack in packs:
         if pack not in PACKS:
             raise ConfigError(f"redaction.packs: unknown pack {pack!r}; available: {', '.join(sorted(PACKS))}")
@@ -710,13 +715,15 @@ def _parse_redaction(data: Any) -> RedactionConfig:
                 replacement=str(item.get("replacement", f"[{str(name).upper()}]")),
             )
         )
+    from_profile = [CustomPattern(n, re.compile(rx), repl) for n, rx, repl in profile.patterns]
+    sensitive = (*profile.sensitive_fields, *_str_list("redaction.sensitive_fields", data.get("sensitive_fields", [])))
     return RedactionConfig(
         packs=packs,
         vn_cmnd=vn_cmnd,
-        extra_sensitive_fields=_str_list("redaction.sensitive_fields", data.get("sensitive_fields", [])),
+        extra_sensitive_fields=tuple(dict.fromkeys(sensitive)),
         exclude_fields=_str_list("redaction.exclude_fields", data.get("exclude_fields", [])),
         allow=allow,
-        patterns=tuple(patterns),
+        patterns=(*from_profile, *patterns),
     )
 
 
@@ -1153,6 +1160,8 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         red = dict(data.get("redaction", {}))
         red["packs"] = [p.strip() for p in os.environ["GRAYLOG_REDACTION_PACKS"].split(",") if p.strip()]
         data["redaction"] = red
+    if os.environ.get("GRAYLOG_REDACTION_PROFILE"):
+        data["redaction"] = {**data.get("redaction", {}), "profile": os.environ["GRAYLOG_REDACTION_PROFILE"].strip()}
     if os.environ.get("GRAYLOG_APP_PACKAGES"):
         st = dict(data.get("stacktrace", {}))
         st["app_packages"] = [p.strip() for p in os.environ["GRAYLOG_APP_PACKAGES"].split(",") if p.strip()]

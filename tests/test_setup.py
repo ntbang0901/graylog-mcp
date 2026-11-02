@@ -266,6 +266,17 @@ async def test_admin_security(admin):
     assert page.status_code == 200 and "graylog-mcp admin" in page.text
 
 
+async def test_admin_security_headers_on_every_response(admin):
+    client, _ = admin
+    ok = await client.get("/")
+    denied = await client.get("/api/state", headers={"X-Admin-Token": "wrong"})
+    for resp in (ok, denied):
+        assert "frame-ancestors 'none'" in resp.headers["content-security-policy"]
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["x-frame-options"] == "DENY"
+        assert resp.headers["referrer-policy"] == "no-referrer"
+
+
 async def test_admin_flow(admin):
     client, project = admin
     state = (await client.get("/api/state")).json()

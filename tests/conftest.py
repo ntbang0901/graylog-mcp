@@ -32,9 +32,16 @@ def _clean_env(monkeypatch, tmp_path_factory):
     # never touch the real Claude Code config, CLI, or graylog-mcp state of the machine running the tests
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude")))
     monkeypatch.setenv("GRAYLOG_MCP_HOME", str(tmp_path_factory.mktemp("gmhome")))
-    from graylog_mcp.setup import clients
+    from graylog_mcp.setup import clients, service
 
     monkeypatch.setattr(clients, "claude_binary", lambda: None)
+    # a real background server on the default port must not answer the tests; test servers use their own ports
+    real_probe = service.probe
+
+    def probe(port=service.DEFAULT_PORT, timeout=0.5):
+        return None if port == service.DEFAULT_PORT else real_probe(port, timeout)
+
+    monkeypatch.setattr(service, "probe", probe)
     monkeypatch.setenv("TEST_GRAYLOG_TOKEN", "secret-token")
 
 

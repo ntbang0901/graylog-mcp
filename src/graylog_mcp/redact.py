@@ -211,6 +211,62 @@ PACKS: dict[str, Callable[[RedactionConfig], list[Rule]]] = {
 }
 
 
+@dataclass(frozen=True)
+class Profile:
+    """A ready-made bundle of redaction settings, chosen with ``[redaction] profile``."""
+
+    summary: str
+    packs: tuple[str, ...] = ()
+    sensitive_fields: tuple[str, ...] = ()
+    patterns: tuple[tuple[str, str, str], ...] = ()  # (name, regex, replacement)
+
+
+# Field names are matched as substrings, so each entry is specific: a bare "name" or "address" would also
+# hide logger_name, hostname and ip_address.
+_PII_FIELDS = (
+    "full_name",
+    "first_name",
+    "last_name",
+    "customer_name",
+    "birthdate",
+    "birthday",
+    "date_of_birth",
+    "phone",
+    "mobile",
+    "home_address",
+    "billing_address",
+    "shipping_address",
+    "street",
+)
+_FINANCE_FIELDS = (
+    "account_number",
+    "bank_account",
+    "card_number",
+    "cardnumber",
+    "cvv",
+    "cvc",
+    "iban",
+    "routing_number",
+    "tax_id",
+)
+
+PROFILES: dict[str, Profile] = {
+    "basic": Profile("Core rules only: secrets, credentials, emails, card numbers (the default)."),
+    "pii": Profile(
+        "Core rules, plus personal names, phone numbers, birth dates and street addresses.", (), _PII_FIELDS
+    ),
+    "finance": Profile(
+        "Core rules, plus bank account, card and tax fields, and IBAN values.", ("eu",), _FINANCE_FIELDS
+    ),
+    "strict": Profile(
+        "Everything above, every country pack and IPv4 addresses. Noisy: version numbers like 1.2.3.4 are masked too.",
+        tuple(PACKS),
+        _PII_FIELDS + _FINANCE_FIELDS,
+        (("ipv4", r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", "[IP]"),),
+    ),
+}
+
+
 class Redactor:
     def __init__(self, cfg: RedactionConfig | None = None):
         cfg = cfg or RedactionConfig()

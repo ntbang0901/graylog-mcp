@@ -335,7 +335,24 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
     URLs, PEM private keys, card numbers that pass the Luhn check;
   - packs enabled in config: `vn` (phone numbers, 12-digit CCCD, optional 9-digit CMND), `us` (SSN),
     `eu` (IBAN with checksum), `uk` (NINO), `in` (Aadhaar, PAN);
-  - your own regexes, plus an allow-list and excluded field names to avoid false positives.
+  - a ready-made `profile` (below), then your own `packs`, `sensitive_fields` and regexes on top, plus an
+    allow-list and excluded field names to avoid false positives.
+
+  | `profile` | Adds to the core rules |
+  |-----------|------------------------|
+  | `basic` (default) | nothing |
+  | `pii` | field names for personal names, phone, birth date, home/billing/shipping address, street |
+  | `finance` | field names for account, card, CVV, IBAN, routing and tax ids; the `eu` pack (IBAN) |
+  | `strict` | `pii` + `finance` + every country pack + IPv4 addresses (noisy: `1.2.3.4` version numbers are masked) |
+
+  ```toml
+  [redaction]
+  profile = "pii"
+  packs = ["vn"]                    # added to the profile's packs
+  sensitive_fields = ["order_note"] # added to the profile's field names
+  exclude_fields = ["phone"]        # always wins over the profile
+  ```
+
   Grouping keys (`top_values`, `error_summary`) are masked too.
 - **Stack traces** (Java/Kotlin, Python, .NET, Go, Node): exception lines, `Caused by` blocks and frames
   from `app_packages` are kept; the rest becomes `… N frames`. Without `app_packages`, the first N frames
@@ -362,6 +379,7 @@ Environment variables:
 | `GRAYLOG_VERIFY_TLS`, `GRAYLOG_CA_BUNDLE`, `GRAYLOG_PROXY` | TLS and proxy for the env-only instance |
 | `GRAYLOG_TIMEZONE` | display timezone and zone for naive times (default UTC) |
 | `GRAYLOG_REDACTION_PACKS` | e.g. `vn,eu` |
+| `GRAYLOG_REDACTION_PROFILE` | `basic`, `pii`, `finance` or `strict` |
 | `GRAYLOG_APP_PACKAGES` | e.g. `com.acme,/srv/app/` |
 | `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
 | `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
@@ -478,8 +496,9 @@ rules before it is written**. It stays on your machine, is trimmed past 4 MB, an
 server's environment turns it off.
 
 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
-save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Dark by default, with a
-light theme and a phone layout; neutral grays with one blue for data, red and green only for state.
+save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Light or dark follows
+the OS until you pick one (the **Follow OS theme** checkbox goes back to it), with a phone layout; ruled lists in plain ink, teal only for what is healthy, red only for
+failures.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password

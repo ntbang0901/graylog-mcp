@@ -178,3 +178,31 @@ def test_shared_server_starts_without_a_default_config(tmp_path, monkeypatch):
     assert main(["serve", "--shared"]) == 0
     assert started["config"] is None and started["shared"] and started["port"] == 8000
     assert main(["serve"]) == 2  # stdio still needs a configuration
+
+
+def test_pool_keeps_a_bounded_number_of_repositories(tmp_path, monkeypatch):
+    pay, _ = workspace(tmp_path)
+    monkeypatch.setattr(shared, "MAX_ENTRIES", 3)
+    pool = AppPool()
+    for i in range(10):  # a client choosing a new repository name each time
+        with pytest.raises(ConfigError):
+            pool.get(f"acme.test/team/repo-{i}")
+    assert len(pool.entries) == 3
+    assert next(reversed(pool.entries)).endswith("repo-9")  # the most recent stays
+    pool.get(str(pay))
+    assert len(pool.entries) == 3
+
+
+async def test_pool_closes_a_client_replaced_by_a_config_change(tmp_path, monkeypatch):
+    pay, _ = workspace(tmp_path)
+    monkeypatch.setattr(shared, "RELOAD_SECONDS", 0)
+    monkeypatch.setattr(shared, "RETIRE_SECONDS", 0)
+    pool = AppPool()
+    old = pool.get(str(pay)).instances["payment/prod"]
+    org = tmp_path / "org.toml"
+    org.write_text(org.read_text(encoding="utf-8").replace("https://", "https://new-"), encoding="utf-8")
+    new = pool.get(str(pay)).instances["payment/prod"]
+    assert new is not old and old not in pool.graylogs and new in pool.graylogs
+    await asyncio.sleep(0.05)  # the retired client closes after its grace period
+    assert old not in pool._retired and not pool._closing
+    await pool.close()

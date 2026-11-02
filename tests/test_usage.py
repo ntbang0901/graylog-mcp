@@ -38,7 +38,7 @@ async def test_tool_calls_are_recorded_with_redacted_queries(make_app):
 
 
 def test_summary_buckets_tools_misses_and_previous_period():
-    now = time.time()
+    now = time.time() // 3600 * 3600 + 1800  # mid-hour: 'two minutes ago' must stay in the current bucket
     base = {"ok": True, "ms": 100, "chars": 10, "instance": "main"}
     for e in [
         {"tool": "search_logs", "results": 0, "args": {"query": "OrderNotFound"}, "ts": now - 60},

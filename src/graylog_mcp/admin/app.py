@@ -16,6 +16,7 @@ import secrets
 import socket
 import time
 import webbrowser
+from collections.abc import MutableMapping
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,7 @@ from graylog_mcp.config import (
     resolve_repo_path,
 )
 from graylog_mcp.config import _parse_redaction as parse_redaction
-from graylog_mcp.redact import PACKS, Redactor
+from graylog_mcp.redact import PACKS, PROFILES, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
 from graylog_mcp.setup.detect import detect, local_timezone
 from graylog_mcp.shaping import dumps
@@ -275,6 +276,21 @@ def _groups_view(config: Config | None, base_dir: Path, url: str | None = None) 
     ]
 
 
+# index.html carries its own inline script and style, so the CSP must allow 'unsafe-inline' for them;
+# it still blocks framing, foreign hosts and <base>/form hijacking. Tighten with a nonce if the page is split.
+_SECURITY_HEADERS = [
+    (k.encode(), v.encode())
+    for k, v in {
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+    }.items()
+]
+
+
 def build_app(state: AdminState) -> Starlette:
     static = resources.files("graylog_mcp.admin").joinpath("static/index.html")
 
@@ -321,6 +337,7 @@ def build_app(state: AdminState) -> Starlette:
                 "secrets_file": str(secret_store.path()),
                 "clients": client_list,
                 "packs": sorted(PACKS),
+                "profiles": {name: p.summary for name, p in PROFILES.items()},
                 "tools": sorted(TOOLS),
                 "local_timezone": local_timezone(),
             }
@@ -876,12 +893,18 @@ def build_app(state: AdminState) -> Starlette:
     ]
     inner = Starlette(routes=routes)
 
-    async def guard(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def guard(scope: dict[str, Any], receive: Any, send_raw: Any) -> None:
         if scope["type"] == "lifespan":
-            await inner(scope, receive, send)
+            await inner(scope, receive, send_raw)
             return
         if scope["type"] != "http":
             return
+
+        async def send(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), *_SECURITY_HEADERS]}
+            await send_raw(message)
+
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
         host = headers.get("host", "").rsplit(":", 1)[0].strip("[]")
         if state.allowed_hosts and host not in state.allowed_hosts:

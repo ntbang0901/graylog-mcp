@@ -13,6 +13,9 @@ All notable changes to this project are documented here. The format follows
   cut in `cut_fields`; passing those names in `fields` returns them. `context_around` keeps the lines nearest the
   anchor when it has to cut, so the lines after it are no longer the first to go.
 - Shorter tool parameter descriptions, to spend fewer tokens on every session.
+- The admin page is redesigned: the Dashboard leads with a ruled list of environments and their state in words,
+  health is no longer a coloured dot, and the theme follows the OS until you pick one, with a checkbox to go back to it (it was dark by default).
+  Same pages, API and shortcuts.
 
 ### Added
 - `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
@@ -129,8 +132,17 @@ All notable changes to this project are documented here. The format follows
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
+- Redaction profiles: `[redaction] profile = "basic" | "pii" | "finance" | "strict"` (or
+  `GRAYLOG_REDACTION_PROFILE`, or the Profile list on the admin UI's Redaction page) starts from a ready-made set
+  of packs, sensitive field names and patterns; `packs`, `sensitive_fields` and `patterns` add to it, and
+  `exclude_fields` / `allow` always win.
+- The admin UI sends `Content-Security-Policy` (no framing, no foreign hosts), `X-Content-Type-Options`,
+  `X-Frame-Options` and `Referrer-Policy` on every response, including 401/403/415.
 
 ### Fixed
+- Memory that only grew in a long-running server: suggestions offered after an empty search and never run again
+  are now dropped after 30 minutes (at most 2000 kept); the shared server keeps at most 256 repositories (the
+  least recently used goes) and closes a Graylog client once a config change replaces it.
 - Windows: the `.mcp.json` written for a repository carries the repository folder itself in the `X-Graylog-MCP-Repo`
   header (Claude Code has no `PWD` there, so `${PWD:-}` was empty and every tool failed with `no repository given
   and no default configuration`); an earlier file is fixed in place. `start` also says why the config it serves
