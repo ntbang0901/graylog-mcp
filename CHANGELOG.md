@@ -7,12 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
-- **Breaking:** a `.graylog-mcp.toml` or `graylog-mcp.toml` no longer takes effect on its own, because a committed file
-  could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `auth`, `username`, `*_env`,
-  `include`, `only_groups`, `repos`, `[http]` and `[redaction]` settings need `graylog-mcp trust` on each machine, and
-  again when they change. Run it once in each repository you already use. This also applies through `--config` and
-  `GRAYLOG_MCP_CONFIG`, and to any config inside a git repository; a config with another name elsewhere, and the user
-  config, are unchanged.
+- `graylog-mcp trust`, briefly on `main`, is removed: a `.graylog-mcp.toml` in a repository applies as it is again, so
+  use this only with repositories you trust (see "One repository, several environments" in the README). A leftover
+  `trusted-configs.json` in the graylog-mcp state folder is no longer read and can be deleted.
 - A `.bak` committed as a symlink is no longer written through when saving a config or a client's `.mcp.json`, and a
   committed project config, `.mcp.json`, `.cursor` or `.vscode` that is a symlink leading out of the repository is no
   longer written at all: either could overwrite a file outside the repository.

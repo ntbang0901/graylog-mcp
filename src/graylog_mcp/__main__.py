@@ -16,15 +16,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp import __version__, trust
+from graylog_mcp import __version__
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
     Config,
     ConfigError,
     HttpConfig,
-    UntrustedConfig,
     default_config_path,
-    find_project_config,
     load_config,
 )
 
@@ -249,7 +247,7 @@ async def _check(config: Config) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers", "trust",
+    "ui", "connect", "headers",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
@@ -267,7 +265,6 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
-       graylog-mcp trust [FOLDER|FILE]        accept the url, token and redaction settings of a repository's config
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
@@ -314,8 +311,7 @@ def _serve(argv: list[str]) -> int:
     except ConfigError as exc:
         if not args.shared or args.check:
             print(f"graylog-mcp: configuration error: {exc}", file=sys.stderr)
-            if not isinstance(exc, UntrustedConfig):
-                print("hint: run 'graylog-mcp start' (or 'graylog-mcp init') for a guided setup", file=sys.stderr)
+            print("hint: run 'graylog-mcp start' (or 'graylog-mcp init') for a guided setup", file=sys.stderr)
             return 2
         # the shared server starts anyway: repositories bring their own config, the admin page creates one
         log.warning("default configuration not usable (%s): repositories use their own .graylog-mcp.toml", exc)
@@ -504,7 +500,6 @@ def _repo(argv: list[str]) -> int:
         print("graylog-mcp repo: no config file found (use --config or run 'graylog-mcp init')", file=sys.stderr)
         return 2
     try:
-        trust.guard(path)  # a repository set up from this file would include it, and be accepted with it
         path = path.resolve()
         data = configfile.load_raw(path)
         config = configfile.validate(data, base_dir=path.parent)
@@ -557,44 +552,6 @@ def _repo(argv: list[str]) -> int:
     return 0
 
 
-def _trust(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(
-        prog="graylog-mcp trust",
-        description="Accept the url, token and redaction settings of a repository's .graylog-mcp.toml on this machine",
-    )
-    parser.add_argument(
-        "target", nargs="?", default=".", help="a repository, a folder in it, or the file (default: here)"
-    )
-    parser.add_argument("--yes", "-y", action="store_true", help="do not ask, for a script that already reviewed it")
-    args = parser.parse_args(argv)
-    target = Path(args.target).expanduser()
-    found = target if target.is_file() else find_project_config(target)
-    if found is None:
-        print(f"graylog-mcp trust: no .graylog-mcp.toml found from {args.target}", file=sys.stderr)
-        return 2
-    try:
-        accepted = trust.settings(found)
-    except ConfigError as exc:
-        print(f"graylog-mcp trust: {exc}", file=sys.stderr)
-        return 2
-    if not accepted:
-        print(f"{found} has no settings that need trust")
-        return 0
-    print(f"{found} sets:")
-    for name, value in accepted.items():
-        print(f"  {json.dumps(name[0])[1:-1]}: {trust.label(name)} = {json.dumps(value, default=str)}")
-    if not args.yes:
-        if not sys.stdin.isatty():
-            print("graylog-mcp trust: nothing accepted; a person must confirm this in a terminal", file=sys.stderr)
-            return 2
-        if input("Use these settings on this machine? [y/N]: ").strip().lower() not in ("y", "yes"):
-            print("nothing accepted")
-            return 1
-    trust.record(found, accepted)  # what was shown: the file may have changed during the prompt
-    print("✓ trusted; this machine asks again if they change")
-    return 0
-
-
 def _load_for_tools(path: str | None) -> Config:
     return load_config(path, require_usable=False)
 
@@ -611,9 +568,7 @@ def _doctor(argv: list[str]) -> int:
     try:
         config = _load_for_tools(args.config)
     except ConfigError as exc:
-        print(f"✗ config: {exc}", file=sys.stderr)
-        if not isinstance(exc, UntrustedConfig):
-            print("  fix: run 'graylog-mcp init' or correct the file", file=sys.stderr)
+        print(f"✗ config: {exc}\n  fix: run 'graylog-mcp init' or correct the file", file=sys.stderr)
         return 2
 
     async def run() -> list[Any]:
@@ -716,16 +671,14 @@ def _install(argv: list[str]) -> int:
     project_dir = Path(args.project_dir).resolve()
     config_file = Path(args.config).resolve() if args.config else find_project_config(project_dir)
     try:
-        if config_file:  # the entry written below would name its token variables and its path
-            trust.guard(config_file)
+        secrets = (
+            configfile.secret_envs(configfile.load_raw(config_file), config_file.parent)
+            if config_file
+            else ["GRAYLOG_TOKEN"]
+        )
     except ConfigError as exc:
         print(f"graylog-mcp install: {exc}", file=sys.stderr)
         return 2
-    secrets = (
-        configfile.secret_envs(configfile.load_raw(config_file), config_file.parent)
-        if config_file
-        else ["GRAYLOG_TOKEN"]
-    )
     spec = clients.CLIENTS[args.client]
     scope = args.scope or spec.scopes[0]
     try:
@@ -778,7 +731,6 @@ def _group_folders(config_file: Path) -> list[Path]:
     from graylog_mcp.setup import configfile
 
     try:
-        trust.guard(config_file)  # these folders get their .mcp.json rewritten
         config = configfile.validate(configfile.load_raw(config_file), base_dir=config_file.parent)
     except (ConfigError, OSError):
         return []
@@ -1285,7 +1237,6 @@ def main(argv: list[str] | None = None) -> int:
         "ui": _ui,
         "connect": _connect,
         "headers": _headers,
-        "trust": _trust,
         "keepalive": _keepalive,
     }
     return handlers[command](argv)

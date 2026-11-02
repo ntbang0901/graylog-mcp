@@ -401,23 +401,11 @@ Commit a `.graylog-mcp.toml` at the root of your application repository with one
 The server finds it from the current directory or any parent up to the repository root, so everyone working
 in the repo gets the same setup. Tokens stay out of the file: each instance names its environment variable.
 
-A file that arrives with a clone could point a saved token at another host or switch masking off, so its sensitive
-settings apply only after you accept them on your machine. Read the file, then run:
-
-```bash
-graylog-mcp trust            # or: graylog-mcp trust /path/to/repo
-```
-
-It shows the settings and asks you to confirm in a terminal (`--yes` skips that, for a script that already reviewed
-them). Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `auth`, `username`, any `*_env`, `include`,
-`only_groups`, `repos`, `[http]` and all of `[redaction]`. Until you accept them the server refuses the file and sends nothing to
-Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as `[focus]`, `presets`,
-`[limits]` or `timezone`, can change freely. A file included from the same repository counts by its content, one
-outside it by its path. `init` and the admin page accept what they write themselves.
-
-Any file named `.graylog-mcp.toml` or `graylog-mcp.toml`, and any config inside a git repository, needs this, also
-through `--config` or `GRAYLOG_MCP_CONFIG`. Your user config, even kept in a dotfiles repository, and a config with
-another name outside a repository, such as `/etc/graylog-mcp/prod.toml` in a container, are treated as yours and do not.
+**Only use this with repositories you trust.** The file is applied as it is, with no approval step, and with the
+shared server, opening a client in the repository is enough. Its `url`, `proxy`, `verify_tls` and `*_env` settings
+decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can switch masking
+off, `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
+did not write before you run `start`, `init` or `install` there, or open a client in that repository.
 
 ```toml
 # .graylog-mcp.toml

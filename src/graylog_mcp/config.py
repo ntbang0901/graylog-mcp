@@ -31,10 +31,6 @@ class MissingSecret(ConfigError):
     """An environment variable holding a secret is not set (the instance is unusable, the config is valid)."""
 
 
-class UntrustedConfig(ConfigError):
-    """A project config holds settings this user has not accepted (see ``trust.py``)."""
-
-
 DEFAULT_TRACE_FIELDS = [
     "trace_id",
     "traceId",
@@ -1118,34 +1114,24 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
-def include_paths(data: dict[str, Any], base_dir: Path) -> list[tuple[Path, Path]]:
-    """The files ``include`` names, each as written and with its symlinks resolved."""
-    includes = data.get("include", [])
+def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    data = dict(data)
+    includes = data.pop("include", [])
     if isinstance(includes, str):
         includes = [includes]
     if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
         raise ConfigError("include: expected a path or a list of paths")
-    found = []
+    merged: dict[str, Any] = {}
     for item in includes:
         try:
-            literal = base_dir / Path(item).expanduser()
-            path = literal.resolve()
+            path = (base_dir / Path(item).expanduser()).resolve()
         except (RuntimeError, ValueError):  # ~name of a user this machine does not have; a NUL byte in the path
             raise ConfigError(f"include: cannot read the path {item!r}") from None
-        if not path.is_file():
-            raise ConfigError(f"include: file not found: {path}")
-        found.append((literal, path))
-    return found
-
-
-def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
-    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
-    paths = include_paths(data, base_dir)
-    data = {k: v for k, v in data.items() if k != "include"}
-    merged: dict[str, Any] = {}
-    for _, path in paths:
         if path in seen:
             raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
+        if not path.is_file():
+            raise ConfigError(f"include: file not found: {path}")
         try:
             with path.open("rb") as fh:
                 inner = tomllib.load(fh)
@@ -1256,9 +1242,6 @@ def load_config(
     if file_path is not None:
         if not file_path.is_file():
             raise ConfigError(f"config file not found: {file_path}")
-        from graylog_mcp import trust  # local import: trust reads this module
-
-        trust.guard(file_path)
         data = read_config_file(file_path)
         source = str(file_path)
     if repo is not None:

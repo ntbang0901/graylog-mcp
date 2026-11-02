@@ -9,7 +9,6 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp import trust
 from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, parse_config, resolve_includes
 from graylog_mcp.setup import tomlwrite
 
@@ -29,7 +28,7 @@ def load_raw(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
 
 
@@ -84,12 +83,8 @@ def _refuse_symlink(path: Path) -> None:
 
 
 def write_text(path: Path, text: str) -> None:
-    """What this tool writes needs no review, but writing must not accept what an untrusted file already held."""
     _refuse_symlink(path)
-    accepted = trust.applies(path) and (not path.exists() or trust.is_trusted(path))
     path.write_text(text, encoding="utf-8")
-    if accepted:
-        trust.accept_written(path)
 
 
 def save(path: Path, data: dict[str, Any]) -> Path | None:
