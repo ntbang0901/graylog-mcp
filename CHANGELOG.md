@@ -11,7 +11,11 @@ All notable changes to this project are documented here. The format follows
   could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `auth`, `username`, `*_env`,
   `include`, `only_groups`, `[http]` and `[redaction]` settings need `graylog-mcp trust` on each machine, and again when
   they change. Run it once in each repository you already use. This also applies through `--config` and
-  `GRAYLOG_MCP_CONFIG`; a config with another name, and the user config, are unchanged.
+  `GRAYLOG_MCP_CONFIG`, and to any config inside a git repository; a config with another name elsewhere, and the user
+  config, are unchanged.
+- A `.bak` committed as a symlink is no longer written through when saving a config or a client's `.mcp.json`, and a
+  committed `.mcp.json` or project config that is a symlink is no longer written at all: either could overwrite a file
+  outside the repository.
 - Redaction masks more shapes of secrets in log text: JSON inside a string, `=>`, unclosed quotes, `password=<x>`,
   `password=[x]`, and names such as `userPassword`, `PGPASSWORD`, `secretKey`, `JSESSIONID`. Field names match more
   spellings (`dbPassword1`, `accesstoken`, `req_cookies`). A card number next to another number, or written

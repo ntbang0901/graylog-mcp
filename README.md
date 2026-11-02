@@ -415,8 +415,9 @@ Graylog; if they change later (a `git pull`, say) it asks again. Everything else
 `[limits]` or `timezone`, can change freely. A file included from the same repository counts by its content, one
 outside it by its path. `init` and the admin page accept what they write themselves.
 
-Any file named `.graylog-mcp.toml` or `graylog-mcp.toml` needs this, also through `--config` or `GRAYLOG_MCP_CONFIG`.
-A config with another name, such as `/etc/graylog-mcp/prod.toml` in a container, is treated as yours and does not.
+Any file named `.graylog-mcp.toml` or `graylog-mcp.toml`, and any config inside a git repository, needs this, also
+through `--config` or `GRAYLOG_MCP_CONFIG`. A config with another name outside a repository, such as
+`/etc/graylog-mcp/prod.toml` in a container, is treated as yours and does not.
 
 ```toml
 # .graylog-mcp.toml

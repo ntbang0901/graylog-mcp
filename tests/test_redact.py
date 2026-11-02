@@ -223,6 +223,9 @@ def test_long_values_cost_linear_time(unit):
         "x-eyJ_",
         "(",
         "password=",
+        "password=<a ",
+        "password=[a ",
+        "password:=",
         'password=\\"',
         "token:",
         ".eyJ",
@@ -287,6 +290,10 @@ def test_url_passwords_are_masked_whatever_comes_before(text):
         "password=<fake-value>",
         "password=[fake-value]",
         "password=[fakevalue]",
+        'password := "fake-value"',
+        'password == "fake-value"',
+        "password=<my fake-value>",
+        "password=[my fake-value]",
         "userPassword=fake-value",
         "dbpassword=fake-value",
         "PGPASSWORD=fake-value",
@@ -367,6 +374,16 @@ def test_a_token_inside_a_dashed_run_is_still_masked():
     assert Redactor().text(f"x-{token}") == "x-[JWT]" and Redactor().text(f"eyJ-{token}") == "[JWT]"
     assert Redactor().text("eyJhbGciOiJ-eyJh.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4fw") == "[JWT]"
     assert Redactor().text(f"a.{token}") == "a.[JWT]"
+
+
+def test_an_allow_pattern_sees_the_whole_name_or_url():
+    # the regexes start at the secret word and at "://", but an allow pattern is written for what a person reads
+    assert "fake-value" not in _from_toml(allow=["password=.*"]).text("db_password=fake-value")
+    assert _from_toml(allow=["password=.*"]).text("password=public") == "password=public"
+    assert _from_toml(allow=["db_password=.*"]).text("db_password=public") == "db_password=public"
+    allowed = "https://ci:public@"
+    assert _from_toml(allow=[allowed]).text(f"{allowed}localhost/x") == f"{allowed}localhost/x"
+    assert "fake-value" not in _from_toml(allow=[allowed]).text("https://ci:fake-value@example.test")
 
 
 def test_exclude_fields_names_a_field_in_any_spelling_but_not_a_part_of_one():

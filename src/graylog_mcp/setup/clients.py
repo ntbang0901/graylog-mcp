@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from graylog_mcp import secrets
+from graylog_mcp.setup import configfile
 
 GIT_SOURCE = "git+https://github.com/ntbang0901/graylog-mcp"
 PYPI_PACKAGE = "graylog-mcp"
@@ -234,10 +235,11 @@ def install(
     servers[SERVER_NAME] = entry
     backup = None
     if not dry_run:
+        if scope == "project" and path.is_symlink():  # a repository could have committed it pointing anywhere
+            raise ValueError(f"{path} is a symbolic link: replace it with a file first")
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            backup = path.with_name(path.name + ".bak")
-            shutil.copy2(path, backup)
+            backup = configfile.backup_file(path)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return InstallResult(path=path, backup=backup, replaced=replaced, entry=entry)
 
@@ -468,8 +470,8 @@ def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
             if repo is not None and _windows() and isinstance(headers, dict) and headers.get(REPO_HEADER) == "${PWD:-}":
                 headers[REPO_HEADER] = str(repo)
                 touched = True
-        if touched:
-            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        if touched and not path.is_symlink():  # a repository could have committed it pointing anywhere
+            configfile.backup_file(path)
             path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             changed.append(path)
     return changed

@@ -94,7 +94,6 @@ class AdminState:
 
     async def app(self) -> tools.App:
         """A tools.App for the current file; rebuilt when the file or the secrets change."""
-        trust.guard(self.path)  # on every call: a git pull can change the file while the page is open
         data = self.raw()
         stat = self.path.stat() if self.path.exists() else None
         secret_state = tuple(secret_store.source(n) for n in configfile.secret_envs(data, self.path.parent))
@@ -919,6 +918,11 @@ def build_app(state: AdminState) -> Starlette:
             # a JSON content type cannot be sent cross-site without a CORS preflight
             if scope["method"] in ("POST", "PUT") and "application/json" not in headers.get("content-type", ""):
                 await JSONResponse({"error": "JSON body required"}, status_code=415)(scope, receive, send)
+                return
+            try:  # on every call: a git pull can change the file while the page is open, and it tests connections
+                trust.guard(state.path)
+            except ConfigError as exc:
+                await JSONResponse({"error": str(exc)}, status_code=409)(scope, receive, send)
                 return
         await inner(scope, receive, send)
 

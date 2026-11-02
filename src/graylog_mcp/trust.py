@@ -5,8 +5,9 @@ url and token_env could send a saved token to another host, and its redaction se
 Those settings apply only after ``graylog-mcp trust``, which stores a digest of what was reviewed. Other settings
 (focus, presets, limits) cost tokens at worst and can change freely.
 
-A file with a project config's name is checked however it was reached, including --config and GRAYLOG_MCP_CONFIG:
-``install`` and ``start`` write those paths themselves, so they do not show that anyone reviewed it.
+A file with a project config's name, or any config inside a git repository, is checked however it was reached,
+including --config and GRAYLOG_MCP_CONFIG: ``install`` and ``start`` write those paths themselves, so they do not show
+that anyone reviewed it, and a symlink can give a committed file any name.
 """
 
 from __future__ import annotations
@@ -48,10 +49,15 @@ def _read(path: Path) -> dict[str, Any]:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
 
 
+def _repositories(path: Path) -> list[Path]:
+    return [d for d in path.absolute().parents if (d / ".git").exists()]
+
+
 def _root(path: Path) -> Path:
-    """The outermost repository: a submodule's own .git must not make a file of its parent count as outside."""
-    repositories = [d for d in path.absolute().parents if (d / ".git").exists()]
-    return (repositories[-1] if repositories else path.absolute().parent).resolve()
+    """The outermost repository: a submodule's own .git must not make a file of its parent count as outside.
+    Without one (an extracted archive) nothing is known to be this machine's, so every include counts by content."""
+    repositories = _repositories(path)
+    return repositories[-1].resolve() if repositories else Path(path.resolve().anchor)
 
 
 def settings(path: Path) -> dict[tuple[str, ...], Any]:
@@ -99,7 +105,7 @@ def _stored() -> dict[str, str]:
 
 def label(name: tuple[str, ...]) -> str:
     """A setting path for a terminal: its keys come from the file, and control characters could hide other lines."""
-    return json.dumps(".".join(name[1:]), ensure_ascii=False)[1:-1]
+    return json.dumps(".".join(name[1:]))[1:-1]
 
 
 def is_trusted(path: Path) -> bool:
@@ -116,7 +122,8 @@ def check(path: Path) -> None:
     stored = _stored()
     if not found or stored.get(str(path.resolve())) == _digest(found):
         return
-    names = sorted({label(("", name[-1])) for name in found})
+    # known names only: this message reaches the model, and a key ending in _env can say anything
+    names = sorted({name[-1] if name[-1] in _KEYS else "*_env" for name in found})
     state = "changed since it was trusted" if str(path.resolve()) in stored else "has not been trusted"
     raise UntrustedConfig(
         f"{path} sets {', '.join(names)} and {state} on this machine. A person must read the file and run, in a "
@@ -124,15 +131,28 @@ def check(path: Path) -> None:
     )
 
 
+def applies(path: Path) -> bool:
+    """Whether a repository could have committed this config file."""
+    return path.name in PROJECT_CONFIG_NAMES or bool(_repositories(path))
+
+
 def guard(path: Path) -> None:
-    """Check a config file about to be used, if it is one a repository could have committed."""
-    if path.name in PROJECT_CONFIG_NAMES:
+    """Check a config file about to be used."""
+    if applies(path):
         check(path)
 
 
-def record(path: Path) -> None:
-    """Accept the sensitive settings a project config holds now."""
+def accept_written(path: Path) -> None:
+    """Accept what this tool just wrote, which is that file only: what it includes still needs a person."""
     found = settings(path)
+    own = path.resolve().relative_to(_root(path)).as_posix()
+    if all(name[0] == own for name in found):
+        record(path, found)
+
+
+def record(path: Path, found: dict[tuple[str, ...], Any] | None = None) -> None:
+    """Accept the given sensitive settings of a project config, by default those it holds now."""
+    found = settings(path) if found is None else found
     if not found:
         return
     values = {**_stored(), str(path.resolve()): _digest(found)}

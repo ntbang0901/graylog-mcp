@@ -18,7 +18,15 @@ from typing import Any
 
 from graylog_mcp import __version__, trust
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError, HttpConfig, UntrustedConfig, find_project_config, load_config
+from graylog_mcp.config import (
+    Config,
+    ConfigError,
+    HttpConfig,
+    UntrustedConfig,
+    default_config_path,
+    find_project_config,
+    load_config,
+)
 
 log = logging.getLogger("graylog_mcp")
 
@@ -469,7 +477,7 @@ def _logout(argv: list[str]) -> int:
 
 
 def _repo(argv: list[str]) -> int:
-    from graylog_mcp.config import default_config_path, detect_repo, is_repo_path, resolve_repo_path
+    from graylog_mcp.config import detect_repo, is_repo_path, resolve_repo_path
     from graylog_mcp.setup import clients, configfile
 
     parser = argparse.ArgumentParser(prog="graylog-mcp repo", description="Repositories served by each group")
@@ -495,8 +503,9 @@ def _repo(argv: list[str]) -> int:
     if path is None or not path.is_file():
         print("graylog-mcp repo: no config file found (use --config or run 'graylog-mcp init')", file=sys.stderr)
         return 2
-    path = path.resolve()
     try:
+        trust.guard(path)  # a repository set up from this file would include it, and be accepted with it
+        path = path.resolve()
         data = configfile.load_raw(path)
         config = configfile.validate(data, base_dir=path.parent)
         if args.action == "list":
@@ -573,7 +582,7 @@ def _trust(argv: list[str]) -> int:
         return 0
     print(f"{found} sets:")
     for name, value in accepted.items():
-        print(f"  {trust.label(name)} = {json.dumps(value, ensure_ascii=False, default=str)}")
+        print(f"  {trust.label(name)} = {json.dumps(value, default=str)}")
     if not args.yes:
         if not sys.stdin.isatty():
             print("graylog-mcp trust: nothing accepted; a person must confirm this in a terminal", file=sys.stderr)
@@ -581,7 +590,7 @@ def _trust(argv: list[str]) -> int:
         if input("Use these settings on this machine? [y/N]: ").strip().lower() not in ("y", "yes"):
             print("nothing accepted")
             return 1
-    trust.record(found)
+    trust.record(found, accepted)  # what was shown: the file may have changed during the prompt
     print("✓ trusted; this machine asks again if they change")
     return 0
 
@@ -749,7 +758,6 @@ def _install(argv: list[str]) -> int:
 
 
 def _start_config(arg: str | None) -> Path:
-    from graylog_mcp.config import default_config_path
     from graylog_mcp.setup import service
 
     if arg:
@@ -850,12 +858,14 @@ def _start(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     _setup_logging("WARNING")
 
-    config_file = _start_config(args.config)
-    try:
-        trust.guard(config_file)
+    try:  # before _start_config resolves it: a symlink can give a committed file any name
+        named = Path(args.config).expanduser() if args.config else default_config_path()
+        if named is not None:
+            trust.guard(named)
     except ConfigError as exc:
         print(f"graylog-mcp start: {exc}", file=sys.stderr)
         return 2
+    config_file = _start_config(args.config)
     have = service.installed()
     print(f"graylog-mcp {have.label}")
     print(f"  config: {config_file}{'' if config_file.exists() else ' (created when you add the first environment)'}")

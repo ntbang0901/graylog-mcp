@@ -62,22 +62,29 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
-    backup = None
-    if path.exists():
-        backup = path.with_name(path.name + ".bak")
-        shutil.copy2(path, backup)
+    backup = backup_file(path) if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)
     write_text(path, text)
     return backup
 
 
+def backup_file(path: Path) -> Path:
+    """Copy to ``<path>.bak``. A .bak committed as a symlink must not be written through: it can point at ~/.zshrc."""
+    backup = path.with_name(path.name + ".bak")
+    if backup.is_symlink():
+        backup.unlink()
+    shutil.copy2(path, backup)
+    return backup
+
+
 def write_text(path: Path, text: str) -> None:
     """What this tool writes needs no review, but writing must not accept what an untrusted file already held."""
-    fresh = not path.exists() and not path.is_symlink()
-    accepted = path.name in PROJECT_CONFIG_NAMES and (fresh or (path.exists() and trust.is_trusted(path)))
+    if path.name in PROJECT_CONFIG_NAMES and path.is_symlink():
+        raise ConfigError(f"{path} is a symbolic link: edit the file it points to, or replace it")
+    accepted = trust.applies(path) and (not path.exists() or trust.is_trusted(path))
     path.write_text(text, encoding="utf-8")
     if accepted:
-        trust.record(path)
+        trust.accept_written(path)
 
 
 def save(path: Path, data: dict[str, Any]) -> Path | None:

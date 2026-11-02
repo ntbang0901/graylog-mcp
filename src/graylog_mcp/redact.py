@@ -15,6 +15,7 @@ that fully matches an allow pattern is kept as is).
 from __future__ import annotations
 
 import re
+import string
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -55,6 +56,8 @@ class Rule:
     # Lower runs first. Loose patterns (phone numbers, bare 9-digit ids) run last so that
     # validated, more specific ones (IBAN, card) win on overlapping text.
     priority: int = 50
+    # Characters before the match that belong to it for an allow pattern: the regex starts later only to stay linear.
+    prefix: str = ""
 
 
 def _const(text: str) -> Callable[[re.Match[str]], str]:
@@ -140,6 +143,7 @@ CORE_RULES: tuple[Rule, ...] = (
         # time on a long a-b-c-... run, on the event loop
         re.compile(r"(://[^\s:/@]*):([^\s@/]+)@"),
         lambda m: f"{m.group(1)}:{REDACTED}@",
+        prefix=string.ascii_letters + string.digits + "+.-",
     ),
     Rule(
         "jwt",
@@ -170,10 +174,12 @@ CORE_RULES: tuple[Rule, ...] = (
             r"(?i)((?<![A-Za-z0-9])(?:access|refresh|id|auth|csrf|xsrf|bearer)?[_\-]?(?:" + _SECRET_WORDS + r")"
             r"|pass(?:word|wd|phrase)|secret(?:[_\-]?key)?|(?:access|refresh|id|auth)[_\-]?token|"
             r"(?:api|access|private)[_\-]?key|cookies?|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
-            r"(\\?[\"']?)(\s*(?:=>|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
-            r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
+            r"(\\?[\"']?)(\s*(?:=>|:=|==|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
+            r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|<[^>\n]{0,256}>|\[[^\]\n]{0,256}\]|"
+            r"(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
         lambda m: m.group(1) + m.group(2) + m.group(3) + _mask_value(m.group(4)),
+        prefix=string.ascii_letters + string.digits + "_.-\"'",
     ),
     Rule(
         "email",
@@ -346,7 +352,13 @@ class Redactor:
             _SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name) or _SQUASHED_SENSITIVE.search(squashed)
         )
 
-    def _allowed(self, text: str) -> bool:
+    def _allowed(self, rule: Rule, m: re.Match[str]) -> bool:
+        if not self._cfg.allow:
+            return False
+        start = m.start()
+        while start > 0 and m.start() - start < 256 and m.string[start - 1] in rule.prefix:
+            start -= 1
+        text = m.string[start : m.end()]
         return any(p.fullmatch(text) for p in self._cfg.allow)
 
     def _apply(self, rule: Rule, value: str) -> str:
@@ -354,7 +366,7 @@ class Redactor:
             matched = m.group(0)
             if rule.validate is not None and not rule.validate(matched):
                 return matched
-            if self._allowed(matched):
+            if self._allowed(rule, m):
                 return matched
             return rule.replace(m)
 
