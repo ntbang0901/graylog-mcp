@@ -35,6 +35,7 @@ from graylog_mcp.config import (
     PROJECT_CONFIG_NAMES,
     Config,
     ConfigError,
+    UntrustedConfig,
     detect_repo,
     find_project_config,
     is_repo_path,
@@ -920,8 +921,8 @@ def build_app(state: AdminState) -> Starlette:
                 await JSONResponse({"error": "JSON body required"}, status_code=415)(scope, receive, send)
                 return
             try:  # on every call: a git pull can change the file while the page is open, and it tests connections
-                trust.guard(state.path)
-            except ConfigError as exc:
+                trust.refuse_untrusted(state.path)
+            except UntrustedConfig as exc:
                 await JSONResponse({"error": str(exc)}, status_code=409)(scope, receive, send)
                 return
         await inner(scope, receive, send)
@@ -958,7 +959,7 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         token,
         allowed_hosts=("127.0.0.1", "localhost", "::1"),
     )
-    trust.guard(state.path)
+    trust.refuse_untrusted(state.path)
     url = f"http://{'localhost' if host == 'localhost' else host}:{port}/#token={token}"
     print(f"graylog-mcp admin UI for {state.path}")
     print(f"  open: {url}")

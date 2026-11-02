@@ -92,28 +92,27 @@ def _card_ok(raw: str) -> bool:
     return 13 <= len(digits) <= 19 and bool(_CARD_PREFIX.match(digits)) and luhn_ok(digits)
 
 
-def _mask_card(m: re.Match[str]) -> str:
-    """A number next to a card widens the match (qty 1 4111 1111 ...), so look for cards inside it. Only whole digit
-    groups of four or more, or the whole match: a window of any long id or number list would pass the Luhn check."""
+_CARD_SHAPES = ((4, 4, 4, 4), (4, 6, 5))  # digits per group of a card as printed
+
+
+def _mask_card_in_numbers(m: re.Match[str]) -> str:
+    """A number next to a card (1234 4111 1111 1111 1111) defeats the "card" rule, so look inside the run. Only for
+    whole digit groups printed as a card, or one run of digits: any window of a number list would pass the Luhn check
+    too often."""
     raw = m.group(0)
-    if _card_ok(raw):
-        return "[CARD]"
-    groups = [g for g in re.finditer(r"\d+", raw) if len(g.group()) >= 4]
+    groups = list(re.finditer(r"\d+", raw))
     out, pos, first = [], 0, 0
     while first < len(groups):
-        last, digits = None, 0
-        for i in range(first, len(groups)):
-            digits += len(groups[i].group())
-            if digits > 19:
+        shapes = [len(s) for s in _CARD_SHAPES if tuple(len(g.group()) for g in groups[first:][: len(s)]) == s]
+        for count in [*shapes, 1]:
+            start, end = groups[first].start(), groups[first + count - 1].end()
+            if _card_ok(raw[start:end]):
+                out.append(raw[pos:start] + "[CARD]")
+                pos = end
+                first += count
                 break
-            if _card_ok(raw[groups[first].start() : groups[i].end()]):
-                last = i
-        if last is None:
+        else:
             first += 1
-            continue
-        out.append(raw[pos : groups[first].start()] + "[CARD]")
-        pos = groups[last].end()
-        first = last + 1
     return "".join(out) + raw[pos:]
 
 
@@ -188,9 +187,16 @@ CORE_RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "card",
-        # with dots only as four groups of four: longer decimals (3.141592653589793) must not pass for a card
-        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,}\d(?![\d\-])|(?<![\d.])\d{4}(?:\.\d{4}){3}(?![\d.])"),
-        _mask_card,
+        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,18}\d(?![\d\-])"),
+        _const("[CARD]"),
+        _card_ok,
+    ),
+    Rule(
+        "card_in_numbers",
+        # dots only between groups of four or more: a decimal (3.141592653589793) must not pass for a card
+        re.compile(r"(?<![\d\-.])(?:\d{4,}(?:[ .\-]\d{4,})+|\d{13,19})(?!\d|[\-.]\d)"),
+        _mask_card_in_numbers,
+        priority=60,  # after the packs: a spaced IBAN holds groups that can look like a card
     ),
 )
 

@@ -299,20 +299,94 @@ async def test_an_open_admin_page_checks_a_file_a_pull_changed(repo):
 
 
 def test_trust_and_the_loader_read_the_same_includes_through_a_symlink(repo):
+    # both from beside the link, as written: the setup that works for a symlinked file in a dotfiles repository
     real = repo / "sub" / "real.toml"
     real.parent.mkdir()
     real.write_text('include = "inc.toml"\n', encoding="utf-8")
-    (repo / "sub" / "inc.toml").write_text(INSTANCE, encoding="utf-8")
-    (repo / "inc.toml").write_text(INSTANCE.replace("graylog.test", "collector.test"), encoding="utf-8")
+    (repo / "sub" / "inc.toml").write_text(INSTANCE.replace("graylog.test", "other.test"), encoding="utf-8")
+    (repo / "inc.toml").write_text(INSTANCE, encoding="utf-8")
     file = repo / ".graylog-mcp.toml"
     file.unlink()
     file.symlink_to(Path("sub") / "real.toml")
 
     assert read_config_file(file)["instances"]["main"]["url"] == "https://graylog.test"
     trust.record(file)
-    (repo / "sub" / "inc.toml").write_text(INSTANCE.replace("graylog.test", "evil.test"), encoding="utf-8")
+    (repo / "inc.toml").write_text(INSTANCE.replace("graylog.test", "evil.test"), encoding="utf-8")
     with pytest.raises(UntrustedConfig):
         trust.check(file)
+
+
+def test_a_symlink_outside_a_repository_to_a_committed_file_is_checked(repo, tmp_path_factory):
+    (repo / "evil.toml").write_text(INSTANCE, encoding="utf-8")
+    link = tmp_path_factory.mktemp("home") / "ops.toml"
+    link.symlink_to(repo / "evil.toml")
+    with pytest.raises(UntrustedConfig):
+        load_config(str(link))
+
+
+async def test_the_admin_page_opens_for_a_broken_file_so_it_can_be_fixed(repo):
+    file = repo / ".graylog-mcp.toml"
+    state = AdminState(repo, None, "fake-token")
+    headers = {"X-Admin-Token": "fake-token"}
+    file.write_text("not toml =", encoding="utf-8")
+    trust.refuse_untrusted(state.path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=build_app(state)), base_url="http://testserver", headers=headers
+    ) as client:
+        assert (await client.get("/api/config")).status_code == 200
+
+
+def test_start_still_runs_with_an_untrusted_config_and_says_why(repo, capsys):
+    from graylog_mcp.__main__ import _check_start_config
+
+    _check_start_config(repo / ".graylog-mcp.toml")
+    assert "graylog-mcp trust" in capsys.readouterr().out
+
+
+def test_folders_of_an_untrusted_config_are_not_touched(repo):
+    from graylog_mcp.__main__ import _group_folders
+
+    file = repo / ".graylog-mcp.toml"
+    file.write_text(f'[groups.g]\nrepos = ["{repo.as_posix()}"]\n' + INSTANCE, encoding="utf-8")
+    assert _group_folders(file) == []
+
+
+def test_repos_needs_approval(tmp_path):
+    file = tmp_path / ".graylog-mcp.toml"
+    file.write_text('[groups.a]\nrepos = ["~/other"]\n', encoding="utf-8")
+    assert trust.settings(file)
+
+
+def test_install_refuses_an_untrusted_config(repo, capsys):
+    assert main(["install", "claude-code", "--scope", "project", "--project-dir", str(repo)]) == 2
+    assert "graylog-mcp trust" in capsys.readouterr().err
+    assert not (repo / ".mcp.json").exists()
+
+
+@pytest.mark.parametrize(("client", "folder"), [("cursor", ".cursor"), ("vscode", ".vscode")])
+def test_install_does_not_write_through_a_committed_folder_symlink(tmp_path, client, folder):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "mcp.json").write_text('{"mine": true}', encoding="utf-8")
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    (project / folder).symlink_to(outside, target_is_directory=True)
+    assert main(["install", client, "--scope", "project", "--project-dir", str(project)]) == 2
+    assert (outside / "mcp.json").read_text(encoding="utf-8") == '{"mine": true}'
+    assert not (outside / "mcp.json.bak").exists()
+
+
+def test_connect_does_not_write_through_a_committed_symlink(tmp_path):
+    from graylog_mcp.setup import remote
+
+    victim = tmp_path / "victim.json"
+    victim.write_text('{"mine": true}', encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".mcp.json").symlink_to(victim)
+    with pytest.raises(ValueError, match="symbolic link"):
+        remote.write_project(project, {"type": "http", "url": "http://127.0.0.1:1/mcp"})
+    assert victim.read_text(encoding="utf-8") == '{"mine": true}'
 
 
 def test_a_project_file_cannot_point_outside_through_a_symlink(tmp_path):

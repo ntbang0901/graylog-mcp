@@ -356,6 +356,26 @@ def test_a_card_next_to_another_number_is_masked(text):
     assert "[CARD]" in Redactor().text(text) and "1111 1111" not in Redactor().text(text)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("411 111 111 111 1111 1234", "[CARD] 1234"),
+        ("41 11 11 11 11 11 11 11 1234", "[CARD] 1234"),
+        ("card 37 8282 2463 10005 12345", "card [CARD] 12345"),
+    ],
+)
+def test_a_card_in_any_grouping_is_masked_as_before(text, expected):
+    assert Redactor().text(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["AT81 4982 9656 8389 9957", "1234 PT73 8600 3655 2491 6441 2096 6 5678", "DE89 3704 0044 0532 0130 00"]
+)
+def test_the_card_rules_leave_a_spaced_iban_to_its_own_rule(text):
+    masked = _from_toml(packs=["eu"]).text(text)
+    assert "[IBAN]" in masked and "[CARD]" not in masked
+
+
 def test_every_card_in_a_list_is_masked():
     masked = Redactor().text("4111 1111 1111 1111 5500 0000 0000 0004")
     assert masked == "[CARD] [CARD]"

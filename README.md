@@ -410,7 +410,7 @@ graylog-mcp trust            # or: graylog-mcp trust /path/to/repo
 
 It shows the settings and asks you to confirm in a terminal (`--yes` skips that, for a script that already reviewed
 them). Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `auth`, `username`, any `*_env`, `include`,
-`only_groups`, `[http]` and all of `[redaction]`. Until you accept them the server refuses the file and sends nothing to
+`only_groups`, `repos`, `[http]` and all of `[redaction]`. Until you accept them the server refuses the file and sends nothing to
 Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as `[focus]`, `presets`,
 `[limits]` or `timezone`, can change freely. A file included from the same repository counts by its content, one
 outside it by its path. `init` and the admin page accept what they write themselves.

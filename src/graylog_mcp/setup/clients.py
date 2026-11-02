@@ -235,8 +235,9 @@ def install(
     servers[SERVER_NAME] = entry
     backup = None
     if not dry_run:
-        if scope == "project" and path.is_symlink():  # a repository could have committed it pointing anywhere
-            raise ValueError(f"{path} is a symbolic link: replace it with a file first")
+        # a repository could have committed the file, or .cursor or .vscode, as a symlink pointing anywhere
+        if scope == "project" and not path.resolve().is_relative_to(project_dir.resolve()):
+            raise ValueError(f"{path} leads outside {project_dir} through a symbolic link: replace it first")
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             backup = configfile.backup_file(path)
@@ -470,7 +471,9 @@ def repoint_files(url: str, folders: list[Path] | None = None) -> list[Path]:
             if repo is not None and _windows() and isinstance(headers, dict) and headers.get(REPO_HEADER) == "${PWD:-}":
                 headers[REPO_HEADER] = str(repo)
                 touched = True
-        if touched and not path.is_symlink():  # a repository could have committed it pointing anywhere
+        # a repository could have committed the file, or its folder, as a symlink pointing anywhere
+        inside = path == pairs[0][0] or any(path.resolve().is_relative_to(f.resolve()) for f in folders or [])
+        if touched and inside:
             configfile.backup_file(path)
             path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             changed.append(path)

@@ -23,7 +23,19 @@ from typing import Any
 
 from graylog_mcp.config import PROJECT_CONFIG_NAMES, ConfigError, UntrustedConfig, include_paths
 
-_KEYS = {"url", "proxy", "ca_bundle", "verify_tls", "auth", "username", "include", "http", "redaction", "only_groups"}
+_KEYS = {
+    "url",
+    "proxy",
+    "ca_bundle",
+    "verify_tls",
+    "auth",
+    "username",
+    "include",
+    "http",
+    "redaction",
+    "only_groups",
+    "repos",
+}
 
 
 def store_path() -> Path:
@@ -69,24 +81,25 @@ def settings(path: Path) -> dict[tuple[str, ...], Any]:
     root = _root(path)
     first = path.resolve()
     if not first.is_relative_to(root):
-        raise ConfigError(f"{path} points outside its repository through a symlink")
+        raise UntrustedConfig(f"{path} points outside its repository through a symlink")
     found: dict[tuple[str, ...], Any] = {}
-    pending = [first]
+    # the first file's includes start beside it as written, as read_config_file does, even if it is a symlink
+    pending = [(first, path.parent)]
     seen: set[Path] = set()
     while pending:
-        current = pending.pop()
+        current, base = pending.pop()
         if current in seen or not current.is_file():
             continue
         seen.add(current)
         data = _read(current)
-        label = current.relative_to(root).as_posix()
+        file = current.relative_to(root).as_posix()
         for name, value in _walk(data):
-            found[(label, *name)] = value
-        for literal, target in include_paths(data, current.parent):
+            found[(file, *name)] = value
+        for literal, target in include_paths(data, base):
             if target.is_relative_to(root):
-                pending.append(target)
-            elif Path(os.path.normpath(literal)).is_relative_to(root):
-                raise ConfigError(f"{current}: include {literal} leaves the repository through a symlink")
+                pending.append((target, target.parent))
+            elif Path(os.path.normpath(literal.absolute())).is_relative_to(root):
+                raise UntrustedConfig(f"{current}: include {literal} leaves the repository through a symlink")
     return found
 
 
@@ -132,14 +145,24 @@ def check(path: Path) -> None:
 
 
 def applies(path: Path) -> bool:
-    """Whether a repository could have committed this config file."""
-    return path.name in PROJECT_CONFIG_NAMES or bool(_repositories(path))
+    """Whether a repository could have committed this config file, as named or at the end of its symlinks."""
+    return any(p.name in PROJECT_CONFIG_NAMES or _repositories(p) for p in (path, path.resolve()))
 
 
 def guard(path: Path) -> None:
     """Check a config file about to be used."""
     if applies(path):
         check(path)
+
+
+def refuse_untrusted(path: Path) -> None:
+    """``guard``, letting a broken file through: it sends nothing, and the admin page is where it can be fixed."""
+    try:
+        guard(path)
+    except UntrustedConfig:
+        raise
+    except ConfigError:
+        pass
 
 
 def accept_written(path: Path) -> None:

@@ -1162,8 +1162,7 @@ def read_config_file(path: Path) -> dict[str, Any]:
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
-    # from the real folder of a symlinked file, as trust.settings does: else the two read different includes
-    return resolve_includes(data, path.resolve().parent, (path.resolve(),))
+    return resolve_includes(data, path.parent, (path.resolve(),))
 
 
 # --------------------------------------------------------------------------- entry points

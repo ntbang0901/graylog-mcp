@@ -468,19 +468,25 @@ async def _fetch_message(app: App, gl: Graylog, ref: str) -> RawMessage:
 _SHORT_VALUE = 200  # JSON characters; a shorter value is dropped whole rather than trimmed
 
 
-def _next_cut(sizes: dict[str, int], over: int) -> str | None:
-    """Long values first; 'message' when trimming it is enough; else short fields, so 'message' keeps some text."""
+def _next_cuts(sizes: dict[str, int], over: int) -> list[str]:
+    """Long values first; 'message' when trimming it is enough; else short fields, so 'message' keeps some text.
+    Short fields come as many as it takes at once: a message can have thousands, and each pass measures the output."""
     # ref is never cut: it is how the model gets back here. A real ts is short; a long one is a log field named ts.
     longest = [k for k, size in sizes.items() if k not in {"ref", "message"} and size > _SHORT_VALUE]
     if longest:
-        return max(longest, key=sizes.__getitem__)
+        return [max(longest, key=sizes.__getitem__)]
     message = sizes.get("message", 0)
     if message > _SHORT_VALUE and message - over >= _SHORT_VALUE:
-        return "message"
+        return ["message"]
     droppable = [k for k in sizes if k not in {"ts", "ref", "source", "level", "message"}]
-    if droppable:
-        return max(droppable, key=lambda k: len(k) + sizes[k])
-    return "message" if message > _SHORT_VALUE else None
+    picked: list[str] = []
+    needed = over - max(0, message - _SHORT_VALUE)
+    for key in sorted(droppable, key=lambda k: len(k) + sizes[k], reverse=True):
+        picked.append(key)
+        needed -= len(key) + sizes[key] + 4  # quotes, colon and comma around them
+        if needed <= 0:
+            break
+    return picked or (["message"] if message > _SHORT_VALUE else [])
 
 
 def _fit_message(out: dict[str, Any], msg: dict[str, Any], limit: int) -> None:
@@ -492,25 +498,26 @@ def _fit_message(out: dict[str, Any], msg: dict[str, Any], limit: int) -> None:
     out.update(truncated=True, cut_fields=cut, hint="values were cut to fit; pass names from cut_fields in 'fields'")
     sizes = {k: len(dumps(v)) for k, v in msg.items()}
     while (over := len(dumps(out)) - limit) > 0:
-        key = _next_cut(sizes, over)
-        if key is None:
+        keys = _next_cuts(sizes, over)
+        if not keys:
             break
-        if key not in cut:
-            if len(dumps(cut)) + len(key) < limit // 4:
-                cut[key] = sizes[key]
-            else:
-                unlisted.add(key)
-                out["cut_more"] = len(unlisted)
-        if sizes[key] <= _SHORT_VALUE:
-            del msg[key], sizes[key]
-            continue
-        # sizes are in JSON characters and escapes make them longer than the text: keep the same share of the text,
-        # and if escapes are uneven the next pass takes the rest
-        value = msg[key]
-        left = sizes[key] - (len(dumps(out)) - limit)
-        fits = isinstance(value, str) and left >= _SHORT_VALUE // 2
-        msg[key] = value[: int(len(value) * left / sizes[key])] if fits else f"[omitted: {sizes[key]} chars]"
-        sizes[key] = len(dumps(msg[key]))
+        for key in keys:
+            if key not in cut:
+                if len(dumps(cut)) + len(dumps(key)) < limit // 4:
+                    cut[key] = sizes[key]
+                else:
+                    unlisted.add(key)
+                    out["cut_more"] = len(unlisted)
+            if sizes[key] <= _SHORT_VALUE:
+                del msg[key], sizes[key]
+                continue
+            # sizes are in JSON characters and escapes make them longer than the text: keep the same share of the
+            # text, and if escapes are uneven the next pass takes the rest
+            value = msg[key]
+            left = sizes[key] - (len(dumps(out)) - limit)
+            fits = isinstance(value, str) and left >= _SHORT_VALUE // 2
+            msg[key] = value[: int(len(value) * left / sizes[key])] if fits else f"[omitted: {sizes[key]} chars]"
+            sizes[key] = len(dumps(msg[key]))
 
 
 async def get_message(

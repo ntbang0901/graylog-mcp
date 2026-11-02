@@ -715,6 +715,12 @@ def _install(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     project_dir = Path(args.project_dir).resolve()
     config_file = Path(args.config).resolve() if args.config else find_project_config(project_dir)
+    try:
+        if config_file:  # the entry written below would name its token variables and its path
+            trust.guard(config_file)
+    except ConfigError as exc:
+        print(f"graylog-mcp install: {exc}", file=sys.stderr)
+        return 2
     secrets = (
         configfile.secret_envs(configfile.load_raw(config_file), config_file.parent)
         if config_file
@@ -760,10 +766,11 @@ def _install(argv: list[str]) -> int:
 def _start_config(arg: str | None) -> Path:
     from graylog_mcp.setup import service
 
+    # not resolved: the server checks this path on every load, and a symlink can give a committed file any name
     if arg:
-        return Path(arg).expanduser().resolve()
+        return Path(arg).expanduser().absolute()
     found = default_config_path()
-    return found.resolve() if found is not None else service.user_config_path()
+    return found.absolute() if found is not None else service.user_config_path()
 
 
 def _group_folders(config_file: Path) -> list[Path]:
@@ -772,6 +779,7 @@ def _group_folders(config_file: Path) -> list[Path]:
     from graylog_mcp.setup import configfile
 
     try:
+        trust.guard(config_file)  # these folders get their .mcp.json rewritten
         config = configfile.validate(configfile.load_raw(config_file), base_dir=config_file.parent)
     except (ConfigError, OSError):
         return []
@@ -858,13 +866,6 @@ def _start(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     _setup_logging("WARNING")
 
-    try:  # before _start_config resolves it: a symlink can give a committed file any name
-        named = Path(args.config).expanduser() if args.config else default_config_path()
-        if named is not None:
-            trust.guard(named)
-    except ConfigError as exc:
-        print(f"graylog-mcp start: {exc}", file=sys.stderr)
-        return 2
     config_file = _start_config(args.config)
     have = service.installed()
     print(f"graylog-mcp {have.label}")

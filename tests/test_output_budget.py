@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -175,6 +176,22 @@ async def test_context_stays_under_its_cap_with_an_oversized_anchor(make_app, va
     assert len(dumps(res)) <= 8000 and res["truncated"]
     assert "cut_fields" in res and "get_message" in res["hint"]
     assert any(m["message"] == "near" for m in res["messages"])
+
+
+async def test_get_message_is_quick_with_thousands_of_short_fields(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="wide", **{f"kubernetes_label_{i:05}": "v" * 50 for i in range(8000)})
+    started = time.monotonic()
+    res = await tools.get_message(app, "graylog_3/wide")
+    assert time.monotonic() - started < 3 and len(dumps(res)) <= 4000  # was 7 s when each field cost a pass
+
+
+async def test_get_message_keeps_a_long_name_with_control_characters_under_the_cap(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", message="M" * 600, **{"\x01" * 400: "v" * 300})
+    assert len(dumps(await tools.get_message(app, "graylog_3/big"))) <= 4000
 
 
 async def test_get_message_counts_the_names_it_cannot_list(make_app):
