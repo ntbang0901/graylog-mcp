@@ -401,6 +401,20 @@ Commit a `.graylog-mcp.toml` at the root of your application repository with one
 The server finds it from the current directory or any parent up to the repository root, so everyone working
 in the repo gets the same setup. Tokens stay out of the file: each instance names its environment variable.
 
+A file that arrives with a clone could point a saved token at another host or switch masking off, so its sensitive
+settings apply only after you accept them on your machine. Read the file, then run:
+
+```bash
+graylog-mcp trust            # or: graylog-mcp trust /path/to/repo
+```
+
+Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `username`, any `*_env`, `include`, `[http]`, and
+`allow`, `exclude_fields`, `profile` and `patterns` under `[redaction]`. Until you accept them the server refuses the
+file and sends nothing to Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as
+`[focus]`, `presets`, `[limits]` or `timezone`, can change freely. A file included from the same repository counts by
+its content, one outside it by its path. `init` and the admin page accept what they write themselves, and a path you
+name with `--config` or `GRAYLOG_MCP_CONFIG` needs no approval.
+
 ```toml
 # .graylog-mcp.toml
 default_instance = "staging"          # what tools use when no environment is named

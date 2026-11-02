@@ -470,7 +470,8 @@ _SHORT_VALUE = 200  # JSON characters; a shorter value is dropped whole rather t
 
 def _next_cut(sizes: dict[str, int], over: int) -> str | None:
     """Long values first; 'message' when trimming it is enough; else short fields, so 'message' keeps some text."""
-    longest = [k for k, size in sizes.items() if k != "message" and size > _SHORT_VALUE]
+    # ts and ref are never cut: they are not fields 'fields' could return, and ref is how the model gets back here
+    longest = [k for k, size in sizes.items() if k not in {"ts", "ref", "message"} and size > _SHORT_VALUE]
     if longest:
         return max(longest, key=sizes.__getitem__)
     message = sizes.get("message", 0)
@@ -506,9 +507,9 @@ def _fit_message(out: dict[str, Any], msg: dict[str, Any], limit: int) -> None:
         # sizes are in JSON characters and escapes make them longer than the text: keep the same share of the text,
         # and if escapes are uneven the next pass takes the rest
         value = msg[key]
-        share = (sizes[key] - (len(dumps(out)) - limit)) / sizes[key]
-        keep = int(len(value) * share) if isinstance(value, str) else 0
-        msg[key] = value[:keep] if keep >= 100 else f"[omitted: {sizes[key]} chars]"
+        left = sizes[key] - (len(dumps(out)) - limit)
+        fits = isinstance(value, str) and left >= _SHORT_VALUE // 2
+        msg[key] = value[: int(len(value) * left / sizes[key])] if fits else f"[omitted: {sizes[key]} chars]"
         sizes[key] = len(dumps(msg[key]))
 
 
@@ -718,12 +719,16 @@ async def context_around(
         "more_before": more_before,
         "more_after": more_after,
     }
+    # the header gets half at most: JSON escapes can make a sample far longer than SAMPLE_CHARS
+    _fit_message(out, out["anchor"], app.config.limits.context_output_chars // 2)
+    if "cut_fields" in out:
+        out["hint"] = "values of the anchor were cut to fit; get_message with its ref returns them"
     budget.take(out)
     # nearest first: fitting in time order would drop everything after the anchor.
     # Not budget.fit: it stops at the first long line, and shorter lines further out still help.
     kept = {id(entry) for entry in sorted(lines, key=lambda e: distance[id(e)]) if budget.take(entry)}
     out["messages"] = [entry for entry in lines if id(entry) in kept]
-    out["truncated"] = budget.truncated
+    out["truncated"] = budget.truncated or "cut_fields" in out
     return out
 
 

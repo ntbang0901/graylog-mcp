@@ -27,7 +27,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, recover, scan, tools, usage
+from graylog_mcp import __version__, rca, recover, scan, tools, trust, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -945,6 +945,8 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         loopback = False
     if not loopback:
         raise ConfigError("the admin UI writes files on this machine and only listens on 127.0.0.1 / localhost")
+    if not config:  # the page tests connections with what the file says
+        trust.check_discovered(project_dir)
     port = _free_port(host, port)
     token = secrets.token_urlsafe(24)
     state = AdminState(

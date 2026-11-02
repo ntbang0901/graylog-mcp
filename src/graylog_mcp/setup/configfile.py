@@ -9,7 +9,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp.config import ENV_NAME, Config, ConfigError, parse_config, resolve_includes
+from graylog_mcp import trust
+from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, parse_config, resolve_includes
 from graylog_mcp.setup import tomlwrite
 
 HEADER = (
@@ -61,12 +62,16 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
+    # what this tool writes needs no review, but saving must not accept what an untrusted file already held
+    accepted = path.name in PROJECT_CONFIG_NAMES and (not path.exists() or trust.is_trusted(path))
     backup = None
     if path.exists():
         backup = path.with_name(path.name + ".bak")
         shutil.copy2(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    if accepted:
+        trust.record(path)
     return backup
 
 

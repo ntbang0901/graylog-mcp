@@ -16,9 +16,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp import __version__
+from graylog_mcp import __version__, trust
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError, HttpConfig, load_config
+from graylog_mcp.config import Config, ConfigError, HttpConfig, UntrustedConfig, find_project_config, load_config
 
 log = logging.getLogger("graylog_mcp")
 
@@ -241,7 +241,7 @@ async def _check(config: Config) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers",
+    "ui", "connect", "headers", "trust",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
@@ -259,6 +259,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
+       graylog-mcp trust [FOLDER]             accept the url, token and redaction settings of a repository's config
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
@@ -305,7 +306,8 @@ def _serve(argv: list[str]) -> int:
     except ConfigError as exc:
         if not args.shared or args.check:
             print(f"graylog-mcp: configuration error: {exc}", file=sys.stderr)
-            print("hint: run 'graylog-mcp start' (or 'graylog-mcp init') for a guided setup", file=sys.stderr)
+            if not isinstance(exc, UntrustedConfig):
+                print("hint: run 'graylog-mcp start' (or 'graylog-mcp init') for a guided setup", file=sys.stderr)
             return 2
         # the shared server starts anyway: repositories bring their own config, the admin page creates one
         log.warning("default configuration not usable (%s): repositories use their own .graylog-mcp.toml", exc)
@@ -546,6 +548,33 @@ def _repo(argv: list[str]) -> int:
     return 0
 
 
+def _trust(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp trust",
+        description="Accept the url, token and redaction settings of a repository's .graylog-mcp.toml on this machine",
+    )
+    parser.add_argument("folder", nargs="?", default=".", help="the repository, or a folder inside it (default: here)")
+    args = parser.parse_args(argv)
+    found = find_project_config(Path(args.folder).expanduser())
+    if found is None:
+        print(f"graylog-mcp trust: no .graylog-mcp.toml found from {args.folder}", file=sys.stderr)
+        return 2
+    try:
+        accepted = trust.settings(found)
+        trust.record(found)
+    except ConfigError as exc:
+        print(f"graylog-mcp trust: {exc}", file=sys.stderr)
+        return 2
+    if not accepted:
+        print(f"{found} has no settings that need trust")
+        return 0
+    print(f"✓ trusted {found}, with these settings:")
+    for name, value in accepted.items():
+        print(f"  {name} = {json.dumps(value, ensure_ascii=False, default=str)}")
+    print("  this machine asks again if they change")
+    return 0
+
+
 def _load_for_tools(path: str | None) -> Config:
     return load_config(path, require_usable=False)
 
@@ -562,7 +591,9 @@ def _doctor(argv: list[str]) -> int:
     try:
         config = _load_for_tools(args.config)
     except ConfigError as exc:
-        print(f"✗ config: {exc}\n  fix: run 'graylog-mcp init' or correct the file", file=sys.stderr)
+        print(f"✗ config: {exc}", file=sys.stderr)
+        if not isinstance(exc, UntrustedConfig):
+            print("  fix: run 'graylog-mcp init' or correct the file", file=sys.stderr)
         return 2
 
     async def run() -> list[Any]:
@@ -808,6 +839,12 @@ def _start(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     _setup_logging("WARNING")
 
+    if not args.config:  # _start_config turns what it finds into a path the server is told to use
+        try:
+            trust.check_discovered()
+        except ConfigError as exc:
+            print(f"graylog-mcp start: {exc}", file=sys.stderr)
+            return 2
     config_file = _start_config(args.config)
     have = service.installed()
     print(f"graylog-mcp {have.label}")
@@ -1224,6 +1261,7 @@ def main(argv: list[str] | None = None) -> int:
         "ui": _ui,
         "connect": _connect,
         "headers": _headers,
+        "trust": _trust,
         "keepalive": _keepalive,
     }
     return handlers[command](argv)

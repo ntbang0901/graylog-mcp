@@ -31,6 +31,10 @@ class MissingSecret(ConfigError):
     """An environment variable holding a secret is not set (the instance is unusable, the config is valid)."""
 
 
+class UntrustedConfig(ConfigError):
+    """A project config holds settings this user has not accepted (see ``trust.py``)."""
+
+
 DEFAULT_TRACE_FIELDS = [
     "trace_id",
     "traceId",
@@ -1233,6 +1237,10 @@ def load_config(
 ) -> Config:
     """Load and validate the configuration. Raises ``ConfigError`` on any problem. ``repo``: a repository
     known by its identity only (its folder is not read)."""
+    if not path:
+        from graylog_mcp import trust  # local import: trust reads this module
+
+        trust.check_discovered(repo_dir)
     file_path = Path(path).expanduser() if path else default_config_path(repo_dir)
     data: dict[str, Any] = {}
     source = "env"

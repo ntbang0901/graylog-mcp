@@ -38,6 +38,12 @@ _SENSITIVE_FIELD = re.compile(
 )
 # camelCase names (accessToken, clientSecret, userPassword)
 _CAMEL_SENSITIVE = re.compile(r"(Password|Passwd|Secret|Token|ApiKey|AccessKey|PrivateKey|Cookie|Authorization)$")
+# Any spelling of the words that mean little else (dbPassword1, accesstoken, req_cookies), matched against the name
+# without separators. A bare "token" stays out: total_tokens counts model tokens.
+_SQUASHED_SENSITIVE = re.compile(
+    r"pass(?:word|wd|phrase)|secret(?!ar)|(?:access|refresh|id|auth|bearer)token|(?:api|access|private)key|cookie|"
+    r"credential|sessionid|authorization|otpcode|pincode"
+)
 
 
 @dataclass(frozen=True)
@@ -79,8 +85,20 @@ _CARD_PREFIX = re.compile(r"^(4|5[1-5]|2[2-7]|3[0-8]|6)")
 
 
 def _card_ok(raw: str) -> bool:
-    digits = re.sub(r"[ -]", "", raw)
+    digits = re.sub(r"[ .\-]", "", raw)
     return 13 <= len(digits) <= 19 and bool(_CARD_PREFIX.match(digits)) and luhn_ok(digits)
+
+
+def _mask_card(m: re.Match[str]) -> str:
+    """A number next to a card widens the match (qty 1 4111 1111 ...): also try whole digit groups inside it, longest
+    first. Never part of a group: some window of any long id would pass the Luhn check."""
+    raw = m.group(0)
+    groups = list(re.finditer(r"\d+", raw))
+    spans = [(a.start(), b.end()) for i, a in enumerate(groups) for b in groups[i:]]
+    for start, end in sorted(spans, key=lambda s: s[0] - s[1]):
+        if _card_ok(raw[start:end]):
+            return raw[:start] + "[CARD]" + raw[end:]
+    return raw
 
 
 def _iban_ok(raw: str) -> bool:
@@ -105,13 +123,15 @@ CORE_RULES: tuple[Rule, ...] = (
     # credentials embedded in URLs: scheme://user:pass@host
     Rule(
         "url_credentials",
-        # the scheme stays bounded: unbounded, a long a-b-c-... run costs quadratic time, on the event loop
-        re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{0,63}://[^\s:/@]*):([^\s@/]+)@"),
+        # starts at "://", not the scheme: the text before it stays as it is, and looking for a scheme costs quadratic
+        # time on a long a-b-c-... run, on the event loop
+        re.compile(r"(://[^\s:/@]*):([^\s@/]+)@"),
         lambda m: f"{m.group(1)}:{REDACTED}@",
     ),
     Rule(
         "jwt",
-        re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
+        # the first part stops at "-eyJ", where the next attempt starts: scanning past it costs quadratic time
+        re.compile(r"\beyJ(?:[A-Za-z0-9_]|-(?!eyJ)){5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
         _const("[JWT]"),
     ),
     Rule(
@@ -124,17 +144,20 @@ CORE_RULES: tuple[Rule, ...] = (
         re.compile(r"(?i)\b(basic)\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])"),
         lambda m: f"{m.group(1)} {REDACTED}",
     ),
-    # password=x  token: x  "api_key": "x"  'secret'='x'  (query strings, logfmt, JSON, headers)
-    # The prefix count stays bounded for the same reason as the scheme above. A longer name still matches, starting
-    # from a later segment, and the whole name is kept in the output.
+    # password=x  token: x  "api_key": "x"  'secret'='x'  \"pwd\":\"x\"  :token=>"x"  (query strings, logfmt, JSON
+    # and JSON inside a string, headers, Ruby). It starts at the secret word: what comes before stays as it is, and
+    # matching a long a-b-c-... prefix costs quadratic time, on the event loop. The word after the second | may follow
+    # any letters (userPassword, PGPASSWORD); the shorter ones could not (bypass=1, compass=2).
     Rule(
         "kv_secret",
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])([\"']?)((?:[a-z0-9]+[_.\-]){0,8}(?:access|refresh|id|auth|csrf|xsrf|bearer)?"
-            r"[_\-]?(?:" + _SECRET_WORDS + r"))\1(\s*[=:]\s*)(?!\[[A-Z_]+\])"
-            r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s&,;\"'<>)\]}]+)"
+            r"(?i)((?<![A-Za-z0-9])(?:access|refresh|id|auth|csrf|xsrf|bearer)?[_\-]?(?:" + _SECRET_WORDS + r")"
+            r"|pass(?:word|wd|phrase)|secret(?:[_\-]?key)?|(?:access|refresh|id|auth)[_\-]?token|"
+            r"(?:api|access|private)[_\-]?key|cookie|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
+            r"(\\?[\"']?)(\s*(?:=>|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
+            r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
-        lambda m: m.group(1) + m.group(2) + m.group(1) + m.group(3) + _mask_value(m.group(4)),
+        lambda m: m.group(1) + m.group(2) + m.group(3) + _mask_value(m.group(4)),
     ),
     Rule(
         "email",
@@ -143,9 +166,9 @@ CORE_RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "card",
-        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,18}\d(?![\d\-])"),
-        _const("[CARD]"),
-        _card_ok,
+        # with dots only as four groups of four: longer decimals (3.141592653589793) must not pass for a card
+        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,18}\d(?![\d\-])|(?<![\d.])\d{4}(?:\.\d{4}){3}(?![\d.])"),
+        _mask_card,
     ),
 )
 
@@ -276,7 +299,7 @@ PROFILES: dict[str, Profile] = {
 
 
 def _squash(name: str) -> str:
-    return re.sub(r"[_.\-\s]", "", name).lower()
+    return re.sub(r"[\W_]", "", name).lower()
 
 
 class Redactor:
@@ -291,20 +314,21 @@ class Redactor:
             rules.append(Rule(custom.name, custom.pattern, _const(custom.replacement)))
         self.rules = tuple(rules)
         self._extra_fields = tuple(filter(None, map(_squash, cfg.extra_sensitive_fields)))
-        self._exclude_fields = {f.lower() for f in cfg.exclude_fields}
+        self._exclude_fields = {_squash(f) for f in cfg.exclude_fields}
 
     @property
     def active_rules(self) -> list[str]:
         return [r.name for r in self.rules]
 
     def is_sensitive_field(self, name: str) -> bool:
-        low = name.lower()
-        if low in self._exclude_fields:
-            return False
         squashed = _squash(name)
+        if squashed in self._exclude_fields:  # the whole name only: excluding "id" must not expose session_id
+            return False
         if any(extra in squashed for extra in self._extra_fields):
             return True
-        return bool(_SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name))
+        return bool(
+            _SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name) or _SQUASHED_SENSITIVE.search(squashed)
+        )
 
     def _allowed(self, text: str) -> bool:
         return any(p.fullmatch(text) for p in self._cfg.allow)

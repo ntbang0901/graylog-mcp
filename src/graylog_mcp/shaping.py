@@ -58,6 +58,7 @@ _AT_FRAME = re.compile(r"^\s+at\s+\S")  # Java, Kotlin, Scala, Node, .NET
 _PY_FRAME = re.compile(r'^\s+File "[^"]+", line \d+')
 _GO_FILE = re.compile(r"^\t\S.*:\d+(?: \+0x[0-9a-fA-F]+)?$")
 _GO_FUNC = re.compile(r"^(created by \S.*|[\w./*()\[\]{}$-]+\(.*\))$")
+_GO_FUNC_MAX_LINE = 2000  # longer lines skip _GO_FUNC: it costs quadratic time on a run of "(", on the event loop
 
 
 @dataclass
@@ -83,7 +84,7 @@ def _tokenize(lines: list[str]) -> list[str | _Frame]:
                 frame.lines.append(nxt)
                 i += 1
             items.append(frame)
-        elif nxt is not None and _GO_FUNC.match(line) and _GO_FILE.match(nxt):
+        elif nxt is not None and len(line) <= _GO_FUNC_MAX_LINE and _GO_FUNC.match(line) and _GO_FILE.match(nxt):
             items.append(_Frame([line, nxt]))
             i += 1
         elif _AT_FRAME.match(line) or _GO_FILE.match(line):

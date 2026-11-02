@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Breaking:** a `.graylog-mcp.toml` found in a repository no longer takes effect on its own, because a committed file
+  could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `username`, `*_env`,
+  `include`, `[http]` and redaction `allow`, `exclude_fields`, `profile` and `patterns` settings need
+  `graylog-mcp trust` on each machine, and again when they change. Run it once in each repository you already use.
+  `--config`, `GRAYLOG_MCP_CONFIG` and the user config are unchanged.
+- Redaction masks more shapes of secrets in log text: JSON inside a string, `=>`, unclosed quotes, `password=<x>`,
+  `password=[x]`, and names such as `userPassword`, `PGPASSWORD`, `secretKey`, `JSESSIONID`. Field names match more
+  spellings (`dbPassword1`, `accesstoken`, `req_cookies`). A card number next to another number, or written
+  `4111.1111.1111.1111`, is masked.
+- `exclude_fields` names a whole field in any spelling: `order_note` also excludes `orderNote`, and still does not
+  exclude `order_note_id`.
+
 ### Changed
 - Smaller answers for the tools that return the most text: `search_logs` is capped at 12000 characters
   (`limits.search_output_chars`), `context_around` at 8000 (`limits.context_output_chars`) and `get_message` without
@@ -141,8 +154,9 @@ All notable changes to this project are documented here. The format follows
   `X-Frame-Options` and `Referrer-Policy` on every response, including 401/403/415.
 
 ### Fixed
-- One long log value could stall the server: redaction took quadratic time on runs like `a-b-c-...` (26 s at 32 KB,
-  on the event loop), and now takes linear time.
+- One long log value could stall the server: redaction and stack trace compaction took quadratic time on some runs of
+  characters (26 s at 32 KB, on the event loop), and now take linear time.
+- `context_around` stays under its cap when the anchor alone is too long, and names what it cut.
 - Memory that only grew in a long-running server: suggestions offered after an empty search and never run again
   are now dropped after 30 minutes (at most 2000 kept); the shared server keeps at most 256 repositories (the
   least recently used goes) and closes a Graylog client once a config change replaces it and its running requests

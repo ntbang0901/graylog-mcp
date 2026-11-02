@@ -130,6 +130,36 @@ async def test_get_message_never_exceeds_its_cap(make_app, fields):
     assert len(dumps(res)) <= 4000 and res["truncated"]
 
 
+async def test_get_message_keeps_some_of_an_escape_heavy_message_while_short_fields_remain(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", message='"' * 3000, **{f"field_{i:03}": "v" for i in range(120)})
+    res = await tools.get_message(app, "graylog_3/big")
+    assert len(dumps(res)) <= 4000 and res["message"]["message"].startswith('"')
+
+
+async def test_get_message_never_cuts_ts_or_ref(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    long_id = "i" * 300
+    _add(fake, _id=long_id, message="M" * 5000)
+    res = await tools.get_message(app, f"graylog_3/{long_id}")
+    assert res["message"]["ref"] == f"graylog_3/{long_id}" and "ts" in res["message"]
+    assert "ref" not in res["cut_fields"] and len(dumps(res)) <= 4000
+
+
+@pytest.mark.parametrize("value", ["\x01" * 3000, ["x" * 3000] * 40], ids=["control-chars", "list"])
+async def test_context_stays_under_its_cap_with_an_oversized_anchor(make_app, value):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, seconds_ago=100, _id="anc", message=value)
+    _add(fake, seconds_ago=99, message="near")
+    res = await tools.context_around(app, "graylog_3/anc", seconds=60)
+    assert len(dumps(res)) <= 8000 and res["truncated"]
+    assert "cut_fields" in res and "get_message" in res["hint"]
+    assert any(m["message"] == "near" for m in res["messages"])
+
+
 async def test_get_message_counts_the_names_it_cannot_list(make_app):
     app, fake = make_app()
     fake.messages = []

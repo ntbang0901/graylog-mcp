@@ -3,8 +3,9 @@ import time
 
 import pytest
 
-from graylog_mcp.config import CustomPattern, RedactionConfig
+from graylog_mcp.config import CustomPattern, RedactionConfig, StacktraceConfig
 from graylog_mcp.redact import Redactor, luhn_ok
+from graylog_mcp.shaping import compact_stacktrace
 
 CORE = Redactor()
 ALL = Redactor(RedactionConfig(packs=("vn", "us", "eu", "uk", "in"), vn_cmnd=True))
@@ -213,10 +214,139 @@ def test_long_values_cost_linear_time(unit):
     assert time.monotonic() - started < 5
 
 
-@pytest.mark.parametrize("name", ["a.b.c.d.e.f.g.h.i.j.k.password", "a_b_c_d_e_f_g_h_i_j_k_token"])
-def test_secret_behind_many_prefixes_is_still_masked(name):
-    masked = Redactor().text(f"{name}=fake-value")
-    assert masked.startswith(name) and "fake-value" not in masked
+@pytest.mark.parametrize(
+    "unit", ["eyJ-", "eyJa.", "(", "password=", 'password=\\"', "token:", ".eyJ", "4111 ", "://a:b", "a://", "secret "]
+)
+def test_more_long_values_cost_linear_time(unit):
+    started = time.monotonic()
+    _from_toml(profile="strict").text(unit * (128_000 // len(unit)))
+    assert time.monotonic() - started < 5
+
+
+def test_a_long_line_of_brackets_is_quick_to_shape():
+    started = time.monotonic()
+    compact_stacktrace("(" * 400_000 + "\nx", StacktraceConfig())
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a.b.c.d.e.f.g.h.i.j.k.password=fake-value",
+        "a_b_c_d_e_f_g_h_i_j_k_token=fake-value",
+        '"spring.kafka.properties.sasl.jaas.config.ssl.key.store.password":"fake-value"',
+        '"a-b-c-d-e-f-g-h-i-token": "fake-value"',
+        "--password=fake-value",
+        ".password=fake-value",
+        "a..password=fake-value",
+    ],
+)
+def test_secret_behind_many_prefixes_is_still_masked(text):
+    assert "fake-value" not in Redactor().text(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "postgres://admin:fake-value@db:5432",
+        "a" * 70 + "://user:fake-value@localhost/x",
+        "reqid=" + "ab12" * 20 + "postgres://admin:fake-value@10.0.0.1:5432",
+    ],
+)
+def test_url_passwords_are_masked_whatever_comes_before(text):
+    masked = Redactor().text(text)
+    assert "fake-value" not in masked and "[REDACTED]@" in masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{\\"password\\":\\"fake-value\\"}',
+        ':password=>"fake-value"',
+        "password => fake-value",
+        'password="fake-value',
+        "password=<fake-value>",
+        "password=[fake-value]",
+        "password=[fakevalue]",
+        "userPassword=fake-value",
+        "dbpassword=fake-value",
+        "PGPASSWORD=fake-value",
+        "secretKey=fake-value",
+        "JSESSIONID=fake-value",
+    ],
+)
+def test_secret_shapes_in_log_text(text):
+    masked = Redactor().text(text)
+    assert "fake-value" not in masked and "fakevalue" not in masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["bypass=1", "compass=north", "secretary=bob", "max_tokens=100", "password=[REDACTED]", "authority=root"],
+)
+def test_look_alikes_in_log_text_stay(text):
+    assert Redactor().text(text) == text
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "accesstoken",
+        "refreshtoken",
+        "userpassword",
+        "dbpassword",
+        "db_password1",
+        "dbPassword1",
+        "accessTokenValue",
+        "api_keys",
+        "id_tokens",
+        "req_cookies",
+        "xapikey",
+        "otpCode",
+        "mysecret",
+    ],
+)
+def test_core_field_names_match_common_spellings(name):
+    assert Redactor().is_sensitive_field(name)
+
+
+@pytest.mark.parametrize("name", ["total_tokens", "undersecretary", "logger_name", "hostname", "monkey"])
+def test_core_field_names_leave_look_alikes(name):
+    assert not Redactor().is_sensitive_field(name)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "qty 1 4111 1111 1111 1111",
+        "4111 1111 1111 1111 12/29",
+        "5 4111111111111111",
+        "4111.1111.1111.1111",
+    ],
+)
+def test_a_card_next_to_another_number_is_masked(text):
+    assert "[CARD]" in Redactor().text(text) and "1111 1111" not in Redactor().text(text)
+
+
+@pytest.mark.parametrize("text", ["3.141592653589793", "12345678901234567", "1234.5678", "4111.1111"])
+def test_numbers_that_are_not_cards_stay(text):
+    assert Redactor().text(text) == text
+
+
+def test_a_token_inside_a_dashed_run_is_still_masked():
+    token = "eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl"
+    assert "[JWT]" in Redactor().text(f"x-{token}") and "[JWT]" in Redactor().text(f"eyJ-{token}")
+
+
+def test_exclude_fields_names_a_field_in_any_spelling_but_not_a_part_of_one():
+    red = _from_toml(profile="pii", sensitive_fields=["order_note"], exclude_fields=["order_note", "phone", "id"])
+    assert not red.is_sensitive_field("orderNote") and not red.is_sensitive_field("order-note")
+    assert red.is_sensitive_field("phone_number") and red.is_sensitive_field("session_id")
+
+
+def test_field_names_ignore_any_separator():
+    red = _from_toml(profile="pii")
+    assert all(red.is_sensitive_field(n) for n in ("first@name", "first:name", "first/name", "first name"))
 
 
 def test_profile_is_a_base_the_file_extends_and_exclude_wins():
