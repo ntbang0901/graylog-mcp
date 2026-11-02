@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp import secrets, trust
+from graylog_mcp import secrets
 from graylog_mcp.backends import Graylog
 from graylog_mcp.config import PROJECT_CONFIG_NAMES, ConfigError
 from graylog_mcp.redact import Redactor
@@ -125,8 +125,6 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
     project_dir = opts.project_dir.resolve()
     path = next((project_dir / n for n in PROJECT_CONFIG_NAMES if (project_dir / n).exists()), None)
     path = path or project_dir / PROJECT_CONFIG_NAMES[0]
-    if not opts.force:  # below it offers the file's url and token_env as defaults, and tests them with a saved secret
-        trust.guard(path)
     data = configfile.load_raw(path)
     if data and not opts.force:
         p.out(f"Updating existing {path}")
@@ -257,8 +255,6 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
 
     configfile.validate(data, base_dir=path.parent)
     backup = configfile.save(path, data)
-    if opts.force:  # nothing of the old file is left, so nothing unreviewed is being accepted
-        trust.record(path)
     p.out(f"\nSaved {path}" + (f" (previous version in {backup.name})" if backup else ""))
 
     # ---------------------------------------------------------------- clients

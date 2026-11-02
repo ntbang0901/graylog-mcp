@@ -76,7 +76,7 @@ def track(
         if not instance and app is not None:
             with contextlib.suppress(Exception):
                 instance = app.config.instance(None).name
-        # without an App (its config was refused or is broken) the core rules still apply
+        # without an App (its config is broken) the core rules still apply
         redact = (app.redactor if app is not None else Redactor()).text
         args: dict[str, str] = {}
         for key in ARG_KEYS:

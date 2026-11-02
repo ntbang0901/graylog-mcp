@@ -10,7 +10,7 @@ VERSIONS = ["4.3.15+1234567", "5.0.13+083613e", "5.2.4", "6.1.2", "7.0.1"]
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch, tmp_path_factory, request):
+def _clean_env(monkeypatch, tmp_path_factory):
     # never read or write the real user's saved secrets
     monkeypatch.setenv("GRAYLOG_MCP_SECRETS", str(tmp_path_factory.mktemp("secrets") / "secrets.toml"))
     for name in [
@@ -43,10 +43,6 @@ def _clean_env(monkeypatch, tmp_path_factory, request):
 
     monkeypatch.setattr(service, "probe", probe)
     monkeypatch.setenv("TEST_GRAYLOG_TOKEN", "secret-token")
-    if request.path.name != "test_trust.py":  # the project configs other tests write stand for reviewed ones
-        from graylog_mcp import trust
-
-        monkeypatch.setattr(trust, "check", lambda path: None)
 
 
 def make_config(**overrides):

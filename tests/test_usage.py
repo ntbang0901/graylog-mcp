@@ -17,7 +17,7 @@ def _lines() -> list[dict]:
 
 
 def test_a_call_without_an_app_is_still_redacted():
-    # a repository whose config was refused: the query and the error still go through the core rules
+    # a repository whose config is broken: the query and the error still go through the core rules
     usage.track(
         "search_logs",
         None,
