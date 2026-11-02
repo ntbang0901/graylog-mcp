@@ -93,6 +93,10 @@ class Limits:
     max_value_chars: int = 2000
     max_message_chars: int = 20000
     max_output_chars: int = 24000
+    # lower caps for the tools that return the most text; max_output_chars still applies when it is lower
+    search_output_chars: int = 12000
+    message_output_chars: int = 4000  # get_message without 'fields'
+    context_output_chars: int = 8000
     max_groups: int = 100
     sample_concurrency: int = 4
     scan_concurrency: int = 8
@@ -666,8 +670,9 @@ def _parse_limits(data: Any) -> Limits:
     limits = Limits(**values)
     if limits.default_limit > limits.max_limit:
         raise ConfigError("limits: default_limit must not exceed max_limit")
-    if limits.max_output_chars < 2000:
-        raise ConfigError("limits.max_output_chars: must be at least 2000")
+    for name in ("max_output_chars", "search_output_chars", "message_output_chars", "context_output_chars"):
+        if getattr(limits, name) < 2000:
+            raise ConfigError(f"limits.{name}: must be at least 2000")
     return limits
 
 

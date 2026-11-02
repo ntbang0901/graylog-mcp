@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from graylog_mcp import __version__, rca, scan, tools, usage
-from graylog_mcp.client import GraylogError
+from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.shared import AppPool
@@ -87,7 +87,7 @@ Suggested investigation flow:
 1. Size the problem: count_logs / log_histogram (the 'onset' field marks when a spike started).
 2. Group it: error_summary (exact counts per exception/logger/source, first/last seen, one sample).
 3. Before/after a deploy or incident start: compare_periods with split_at.
-4. Drill down: search_logs with a narrow query; get_message with a 'ref' for the full message.
+4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.
 5. Follow one request across services: trace_request with a trace/correlation/request id.
 6. See what happened around one message: context_around with its 'ref'.
 Counts from count_logs, error_summary, top_values and log_histogram are exact (computed by Graylog);
@@ -101,26 +101,15 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempot
 
 Instance = Annotated[
     str | None,
-    Field(
-        description="Graylog instance from list_instances: '<group>/<environment>' such as 'payment/prod', "
-        "a group ('payment'), an environment ('staging') or an instance name; the default when omitted"
-    ),
+    Field(description="Instance from list_instances, e.g. 'payment/prod'; the default when omitted"),
 ]
 Query = Annotated[str, Field(description="Lucene query, '*' for everything")]
-Range = Annotated[
-    str | None, Field(description="Relative range ending now (or at to_time): '15m', '2h', '1d', '1h30m'")
-]
-FromTime = Annotated[
-    str | None,
-    Field(description="Absolute start: ISO 8601 or 'YYYY-MM-DD HH:MM' in the instance timezone; overrides range"),
-]
-ToTime = Annotated[str | None, Field(description="Absolute end, same formats as from_time; default now")]
+Range = Annotated[str | None, Field(description="Relative range ending now or at to_time: '15m', '2h', '1d'")]
+FromTime = Annotated[str | None, Field(description="Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'")]
+ToTime = Annotated[str | None, Field(description="Absolute end; default now")]
 Streams = Annotated[
     list[str] | None,
-    Field(
-        description="Stream titles or ids to search in. When omitted: the repository's focus (its service) if "
-        "one is set, else every stream. ['*'] searches every stream and every service"
-    ),
+    Field(description="Stream titles or ids; default the repository's focus, else all. ['*'] for everything"),
 ]
 
 
@@ -176,6 +165,8 @@ def build_server(app: App | AppPool) -> MCPServer:
 
     async def call(fn: Callable[..., Any], **kwargs: Any) -> str:
         started, app, result, text, error = time.monotonic(), None, None, "", None
+        sent = [0]
+        requests_sent.set(sent)
         try:
             app = current()
             result = fn(app, **kwargs)
@@ -190,7 +181,7 @@ def build_server(app: App | AppPool) -> MCPServer:
             error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            usage.track(fn.__name__, app, kwargs, result, error, started, len(text))
+            usage.track(fn.__name__, app, kwargs, result, error, started, len(text), sent[0])
 
     # ------------------------------------------------------------------ search
 
@@ -258,7 +249,10 @@ def build_server(app: App | AppPool) -> MCPServer:
 
     async def get_message(
         ref: Annotated[str, Field(description="'index/message_id' from a previous result's 'ref', or a message id")],
-        fields: Annotated[list[str] | None, Field(description="Only these fields; all fields when omitted")] = None,
+        fields: Annotated[
+            list[str] | None,
+            Field(description="Only these fields, each up to its full size; ['*'] for all of them in full"),
+        ] = None,
         compact_stacktrace: Annotated[
             bool, Field(description="Fold framework stack frames (default true); false for the raw trace")
         ] = True,
@@ -268,7 +262,12 @@ def build_server(app: App | AppPool) -> MCPServer:
             tools.get_message, ref=ref, fields=fields, compact_stacktrace=compact_stacktrace, instance=instance
         )
 
-    register(get_message, "One message with all its fields (redacted), by ref.", "Get message")
+    register(
+        get_message,
+        "One message with all its fields (redacted), by ref. Long values are cut to keep the answer small: "
+        "'cut_fields' names them with their size; pass those names in 'fields' to read them.",
+        "Get message",
+    )
 
     # ------------------------------------------------------------------ investigation
 

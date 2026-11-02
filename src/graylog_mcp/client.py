@@ -16,6 +16,7 @@ import logging
 import random
 import re
 import ssl
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -35,6 +36,8 @@ READ_ONLY_POSTS = frozenset({"views/search/sync", "search/messages", "search/agg
 RETRY_STATUSES = frozenset({429, 502, 503, 504})
 RETRY_BASE_SECONDS = 0.5
 RETRY_MAX_SECONDS = 10.0
+# HTTP requests of the current tool call, retries included; a list so the tasks it gathers add to the same count
+requests_sent: ContextVar[list[int] | None] = ContextVar("requests_sent", default=None)
 
 
 class GraylogError(Exception):
@@ -202,6 +205,8 @@ class GraylogClient:
         while True:
             try:
                 async with self._slots:
+                    if (sent := requests_sent.get()) is not None:
+                        sent[0] += 1
                     resp = await self._send(method, path, clean, json)
             except _Retryable as exc:
                 if attempt >= self.cfg.retries:

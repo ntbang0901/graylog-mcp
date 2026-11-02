@@ -118,7 +118,8 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
 - `count_logs` — exact number of matching messages.
-- `get_message` — one message with all fields, by `index/id` ref.
+- `get_message` — one message with all fields, by `index/id` ref. Long values are cut and listed in `cut_fields`;
+  name them in `fields` to read them in full.
 
 **Investigate**
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all

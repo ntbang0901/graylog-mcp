@@ -123,8 +123,9 @@ class App:
             default_fields=gl.cfg.default_fields,
         )
 
-    def budget(self) -> Budget:
-        return Budget(self.config.limits.max_output_chars)
+    def budget(self, tool_limit: int | None = None) -> Budget:
+        limit = self.config.limits.max_output_chars
+        return Budget(min(limit, tool_limit) if tool_limit else limit)
 
     def limit(self, value: int | None) -> int:
         lim = self.config.limits
@@ -314,7 +315,7 @@ async def search_logs(
     recover.LEARNED.observe(gl.cfg.name, query or "*", len(page.messages))
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
-    budget = app.budget()
+    budget = app.budget(app.config.limits.search_output_chars)
     out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset, rewritten=rewritten)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
@@ -464,6 +465,30 @@ async def _fetch_message(app: App, gl: Graylog, ref: str) -> RawMessage:
     return found
 
 
+def _fit_message(out: dict[str, Any], msg: dict[str, Any], limit: int) -> None:
+    """Cut the longest values until ``out`` fits, 'message' last, and name them so the model can ask for them."""
+    if len(dumps(out)) <= limit:
+        return
+    cut: dict[str, int] = {}
+    out.update(truncated=True, cut_fields=cut, hint="values were cut to fit; pass names from cut_fields in 'fields'")
+    protected = {"ts", "ref", "source", "level"}
+    while len(dumps(out)) > limit:
+        names = [k for k in msg if k not in protected]
+        if not names:
+            break
+        key = max(names, key=lambda k: (k != "message", len(dumps(msg[k]))))
+        size = len(dumps(msg[key]))
+        cut.setdefault(key, size)
+        if size <= 200:
+            del msg[key]
+            continue
+        keep = max(100, size - (len(dumps(out)) - limit) - 50)
+        if isinstance(msg[key], str) and keep < len(msg[key]):
+            msg[key] = msg[key][:keep]
+        else:
+            msg[key] = f"[omitted: {size} chars]"
+
+
 async def get_message(
     app: App,
     ref: str,
@@ -490,21 +515,10 @@ async def get_message(
         except GraylogError:
             msg["streams"] = stream_ids
     out: dict[str, Any] = {"instance": gl.cfg.name, "message": msg}
-    limit = app.config.limits.max_output_chars
-    protected = {"ts", "ref", "source", "level"}
-    while len(dumps(out)) > limit:
-        candidates = [k for k in msg if k not in protected and len(dumps(msg[k])) > 200]
-        if not candidates:
-            break
-        key = max(candidates, key=lambda k: len(dumps(msg[k])))
-        size = len(dumps(msg[key]))
-        excess = len(dumps(out)) - limit
-        keep = max(100, size - excess - 50)
-        if isinstance(msg[key], str) and keep < len(msg[key]):
-            msg[key] = truncate(msg[key][:keep], keep)
-        else:
-            msg[key] = f"[omitted: {size} chars]"
-        out["truncated"] = True
+    limits = app.config.limits
+    # naming fields asks for those values: only the overall cap applies then
+    limit = limits.max_output_chars if fields else min(limits.max_output_chars, limits.message_output_chars)
+    _fit_message(out, msg, limit)
     return out
 
 
@@ -662,6 +676,7 @@ async def context_around(
     shaper = app.shaper(gl)
     anchor_key = anchor.id
     lines = []
+    distance: dict[int, int] = {}
     for m in merged:
         entry = shaper.message(m.fields, m.index, m.id, limit=SAMPLE_CHARS)
         mts = parse_graylog_ts(m.fields.get("timestamp"))
@@ -669,8 +684,9 @@ async def context_around(
         entry = {"dt": f"{'+' if delta >= 0 else ''}{delta}ms", **entry}
         if anchor_key and m.id == anchor_key:
             entry["anchor"] = True
+        distance[id(entry)] = abs(delta)
         lines.append(entry)
-    budget = app.budget()
+    budget = app.budget(app.config.limits.context_output_chars)
     out: dict[str, Any] = {
         "instance": gl.cfg.name,
         "anchor": shaper.message(anchor.fields, anchor.index, anchor.id, limit=SAMPLE_CHARS),
@@ -680,7 +696,9 @@ async def context_around(
         "more_after": more_after,
     }
     budget.take(out)
-    out["messages"] = budget.fit(lines)
+    # nearest first: fitting in time order would drop everything after the anchor
+    kept = {id(entry) for entry in budget.fit(sorted(lines, key=lambda e: distance[id(e)]))}
+    out["messages"] = [entry for entry in lines if id(entry) in kept]
     out["truncated"] = budget.truncated
     return out
 

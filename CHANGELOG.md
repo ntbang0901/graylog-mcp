@@ -6,7 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Smaller answers for the tools that return the most text: `search_logs` is capped at 12000 characters
+  (`limits.search_output_chars`), `context_around` at 8000 (`limits.context_output_chars`) and `get_message` without
+  `fields` at 4000 (`limits.message_output_chars`), all under `limits.max_output_chars`. `get_message` names what it
+  cut in `cut_fields`; passing those names in `fields` returns them. `context_around` keeps the lines nearest the
+  anchor when it has to cut, so the lines after it are no longer the first to go.
+- Shorter tool parameter descriptions, to spend fewer tokens on every session.
+
 ### Added
+- `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
+  and `truncated`.
 - A shared server on a VM for the team: clients name their repository by identity (git remote such as
   `github.com/acme/payment-api`, or the folder name) instead of a folder the server cannot read; groups list
   repositories by remote or name and `[repos."<repository>"]` holds each one's focus and defaults. `http.repo_paths`
