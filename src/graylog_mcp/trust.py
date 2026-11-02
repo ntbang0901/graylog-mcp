@@ -145,7 +145,12 @@ def check(path: Path) -> None:
 
 
 def applies(path: Path) -> bool:
-    """Whether a repository could have committed this config file, as named or at the end of its symlinks."""
+    """Whether a repository could have committed this config file, as named or at the end of its symlinks. The user
+    config is the user's own, even when it is kept in a dotfiles repository."""
+    from graylog_mcp.setup.service import user_config_path
+
+    if path.resolve() == user_config_path().resolve():
+        return False
     return any(p.name in PROJECT_CONFIG_NAMES or _repositories(p) for p in (path, path.resolve()))
 
 

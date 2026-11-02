@@ -70,6 +70,16 @@ def _with_text_before(before: re.Pattern[str]) -> Callable[[re.Match[str]], str]
     return allow_text
 
 
+_KV_NAME_START = re.compile(r"(?i)(?<![A-Za-z0-9])[\"']?(?:[a-z0-9]+[_.\-])*[a-z0-9]*$")
+
+
+def _kv_allow_text(m: re.Match[str]) -> str:
+    """The whole name for an allow pattern, so id_token=.* does not also open valid_token=. An opening quote counts
+    only when the name closes it."""
+    text = _with_text_before(_KV_NAME_START)(m)
+    return text[1:] if text[0] in "\"'" and m.group(2)[-1:] != text[0] else text
+
+
 def _const(text: str) -> Callable[[re.Match[str]], str]:
     return lambda _m: text
 
@@ -197,7 +207,7 @@ CORE_RULES: tuple[Rule, ...] = (
             r"(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
         lambda m: m.group(1) + m.group(2) + m.group(3) + _mask_value(m.group(4)),
-        allow_text=_with_text_before(re.compile(r"(?i)(?<![A-Za-z0-9])[\"']?(?:[a-z0-9]+[_.\-])*$")),
+        allow_text=_kv_allow_text,
     ),
     Rule(
         "email",

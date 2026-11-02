@@ -423,6 +423,30 @@ def test_an_allow_pattern_does_not_see_more_than_the_secret_and_its_name(allow, 
     assert "fake-value" not in _from_toml(allow=[allow]).text(text)
 
 
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("id_token=.*", "valid_token=fake-value"),
+        ("auth_token=.*", "oauth_token=fake-value"),
+        ("'token=.*", "'token=fake-value"),
+    ],
+)
+def test_an_allow_pattern_does_not_open_a_longer_name(allow, text):
+    assert "fake-value" not in _from_toml(allow=[allow]).text(text)
+
+
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("userPassword=public", "userPassword=public"),
+        ("oauth_token=.*", "oauth_token=public"),
+        ('"token"=.*', '"token"=public'),
+    ],
+)
+def test_an_allow_pattern_for_the_whole_name_still_works(allow, text):
+    assert _from_toml(allow=[allow]).text(text) == text
+
+
 def test_digits_another_rule_recognises_are_not_taken_for_a_card():
     assert _from_toml(packs=["vn"]).text("6122 3741 4114 0912 345 678") == "6122 3741 4114 [PHONE]"
     account = CustomPattern("account", re.compile(r"\d{4}( \d{4}){4}"), "[ACCT]")

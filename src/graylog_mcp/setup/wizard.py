@@ -276,7 +276,11 @@ async def run_init(opts: InitOptions, p: Prompter) -> int:
             p.out(f"  ! unknown client {client!r}, skipped")
             continue
         scope = clients.CLIENTS[client].scopes[0]
-        result = clients.install(client, scope, project_dir, path, secret_names, source=opts.source)
+        try:
+            result = clients.install(client, scope, project_dir, path, secret_names, source=opts.source)
+        except ValueError as exc:  # the config is saved by now: say what stopped this client and carry on
+            p.out(f"  ! {clients.CLIENTS[client].title}: {exc}")
+            continue
         p.out(f"  ✓ {clients.CLIENTS[client].title}: {'updated' if result.replaced else 'added'} in {result.path}")
         if clients.CLIENTS[client].note:
             p.out(f"    {clients.CLIENTS[client].note}")

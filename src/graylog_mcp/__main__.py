@@ -582,7 +582,7 @@ def _trust(argv: list[str]) -> int:
         return 0
     print(f"{found} sets:")
     for name, value in accepted.items():
-        print(f"  {trust.label(name)} = {json.dumps(value, default=str)}")
+        print(f"  {json.dumps(name[0])[1:-1]}: {trust.label(name)} = {json.dumps(value, default=str)}")
     if not args.yes:
         if not sys.stdin.isatty():
             print("graylog-mcp trust: nothing accepted; a person must confirm this in a terminal", file=sys.stderr)

@@ -17,6 +17,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from graylog_mcp.redact import Redactor
+
 MAX_BYTES = 4_000_000
 KEEP_LINES = 20_000
 # arguments worth seeing again (redacted): what was searched for
@@ -74,20 +76,18 @@ def track(
         if not instance and app is not None:
             with contextlib.suppress(Exception):
                 instance = app.config.instance(None).name
+        # without an App (its config was refused or is broken) the core rules still apply
+        redact = (app.redactor if app is not None else Redactor()).text
         args: dict[str, str] = {}
         for key in ARG_KEYS:
             value = kwargs.get(key)
             if value not in (None, ""):
-                text = str(value)
-                if app is not None:
-                    text = app.redactor.text(text)
-                args[key] = text[:300]
+                args[key] = redact(str(value))[:300]
         params: dict[str, str] = {}
         for key in PARAM_KEYS:
             value = kwargs.get(key)
             if value not in (None, "", 0):
-                text = str(value)
-                params[key] = (app.redactor.text(text) if app is not None else text)[:100]
+                params[key] = redact(str(value))[:100]
         from graylog_mcp.shared import current_repo
 
         repo = current_repo.get()
@@ -121,7 +121,7 @@ def track(
         if isinstance(result, dict) and result.get("suggestions"):
             entry["suggested"] = len(result["suggestions"])
         if error:
-            entry["error"] = (app.redactor.text(error) if app is not None else error)[:300]
+            entry["error"] = redact(error)[:300]
         if repo:
             entry["repo"] = Path(repo).name
         write(entry)

@@ -1129,9 +1129,9 @@ def include_paths(data: dict[str, Any], base_dir: Path) -> list[tuple[Path, Path
     for item in includes:
         try:
             literal = base_dir / Path(item).expanduser()
-        except RuntimeError:  # ~name of a user this machine does not have
-            raise ConfigError(f"include: cannot expand {item!r}") from None
-        path = literal.resolve()
+            path = literal.resolve()
+        except (RuntimeError, ValueError):  # ~name of a user this machine does not have; a NUL byte in the path
+            raise ConfigError(f"include: cannot read the path {item!r}") from None
         if not path.is_file():
             raise ConfigError(f"include: file not found: {path}")
         found.append((literal, path))

@@ -407,6 +407,54 @@ def test_start_uses_the_real_file_of_a_symlinked_config(tmp_path):
     assert _start_config(str(link)) == real.resolve()
 
 
+def test_the_user_config_is_the_users_own_even_in_a_dotfiles_repository(tmp_path, monkeypatch):
+    dotfiles = tmp_path / "dotfiles"
+    (dotfiles / ".git").mkdir(parents=True)
+    (dotfiles / "config.toml").write_text(INSTANCE, encoding="utf-8")
+    home = tmp_path / "xdg"
+    (home / "graylog-mcp").mkdir(parents=True)
+    (home / "graylog-mcp" / "config.toml").symlink_to(dotfiles / "config.toml")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    assert load_config(str(home / "graylog-mcp" / "config.toml")).instance(None).url == "https://graylog.test"
+    assert load_config(str(dotfiles / "config.toml")).instance(None).url == "https://graylog.test"
+
+
+def test_a_nul_byte_in_an_include_is_a_config_error(repo):
+    (repo / ".graylog-mcp.toml").write_text('include = "a\\u0000b"\n', encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(repo_dir=repo)
+    trust.refuse_untrusted(repo / ".graylog-mcp.toml")
+
+
+def test_init_says_what_stopped_a_client_and_carries_on(tmp_path, capsys):
+    victim = tmp_path / "victim"
+    victim.write_text("{}", encoding="utf-8")
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    (project / ".mcp.json").symlink_to(victim)
+    args = [
+        "init",
+        "--project-dir",
+        str(project),
+        "--yes",
+        "--env",
+        "prod=https://graylog.test",
+        "--client",
+        "claude-code",
+    ]
+    assert main(args) == 0
+    out = capsys.readouterr().out
+    assert "symbolic link" in out and "Next steps" in out
+    assert victim.read_text(encoding="utf-8") == "{}"
+
+
+def test_the_review_says_which_file_sets_a_value(repo, capsys):
+    (repo / "base.toml").write_text(INSTANCE, encoding="utf-8")
+    (repo / ".graylog-mcp.toml").write_text('include = "base.toml"\n', encoding="utf-8")
+    assert main(["trust", "--yes", str(repo)]) == 0
+    assert "base.toml: instances.main.url" in capsys.readouterr().out
+
+
 def test_repos_needs_approval(tmp_path):
     file = tmp_path / ".graylog-mcp.toml"
     file.write_text('[groups.a]\nrepos = ["~/other"]\n', encoding="utf-8")
