@@ -670,11 +670,15 @@ def _install(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     project_dir = Path(args.project_dir).resolve()
     config_file = Path(args.config).resolve() if args.config else find_project_config(project_dir)
-    secrets = (
-        configfile.secret_envs(configfile.load_raw(config_file), config_file.parent)
-        if config_file
-        else ["GRAYLOG_TOKEN"]
-    )
+    try:
+        secrets = (
+            configfile.secret_envs(configfile.load_raw(config_file), config_file.parent)
+            if config_file
+            else ["GRAYLOG_TOKEN"]
+        )
+    except ConfigError as exc:
+        print(f"graylog-mcp install: {exc}", file=sys.stderr)
+        return 2
     spec = clients.CLIENTS[args.client]
     scope = args.scope or spec.scopes[0]
     try:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graylog_mcp.__main__ import _start_config, main
+from graylog_mcp.__main__ import _group_folders, _start_config, main
 from graylog_mcp.config import ConfigError, load_config
 from graylog_mcp.setup import configfile, remote
 
@@ -149,6 +149,28 @@ def test_invalid_utf8_is_a_config_error(repo):
     file.write_bytes(b'url = "\xff"\n')
     with pytest.raises(ConfigError):
         load_config(str(file))
+
+
+@pytest.mark.parametrize("content", [b"x = [", b'url = "\xff"\n'], ids=["invalid-toml", "invalid-utf8"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["install", "claude-code", "--scope", "project", "--project-dir", "{repo}"],
+        ["init", "--project-dir", "{repo}", "--yes"],
+    ],
+    ids=["install", "init"],
+)
+def test_commands_report_a_broken_config_without_a_traceback(repo, capsys, command, content):
+    (repo / ".graylog-mcp.toml").write_bytes(content)
+    assert main([part.format(repo=repo) for part in command]) == 2
+    assert "invalid TOML" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("content", [b"x = [", b'url = "\xff"\n'], ids=["invalid-toml", "invalid-utf8"])
+def test_group_folders_of_a_broken_config_are_empty(repo, content):
+    file = repo / ".graylog-mcp.toml"
+    file.write_bytes(content)
+    assert _group_folders(file) == []
 
 
 @pytest.mark.parametrize(

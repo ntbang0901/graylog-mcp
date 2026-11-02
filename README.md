@@ -401,8 +401,11 @@ Commit a `.graylog-mcp.toml` at the root of your application repository with one
 The server finds it from the current directory or any parent up to the repository root, so everyone working
 in the repo gets the same setup. Tokens stay out of the file: each instance names its environment variable.
 
-**Only start the server in repositories you trust.** The file is applied as it is: its `url` and `token_env` decide
-where a saved token is sent, and its `[redaction]` settings can switch masking off.
+**Only use this with repositories you trust.** The file is applied as it is, with no approval step, and with the
+shared server, opening a client in the repository is enough. Its `url`, `proxy`, `verify_tls` and `*_env` settings
+decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can switch masking
+off, `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
+did not write before you run `start`, `init` or `install` there, or open a client in that repository.
 
 ```toml
 # .graylog-mcp.toml
