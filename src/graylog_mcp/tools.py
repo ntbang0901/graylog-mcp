@@ -470,8 +470,8 @@ _SHORT_VALUE = 200  # JSON characters; a shorter value is dropped whole rather t
 
 def _next_cut(sizes: dict[str, int], over: int) -> str | None:
     """Long values first; 'message' when trimming it is enough; else short fields, so 'message' keeps some text."""
-    # ts and ref are never cut: they are not fields 'fields' could return, and ref is how the model gets back here
-    longest = [k for k, size in sizes.items() if k not in {"ts", "ref", "message"} and size > _SHORT_VALUE]
+    # ref is never cut: it is how the model gets back here. A real ts is short; a long one is a log field named ts.
+    longest = [k for k, size in sizes.items() if k not in {"ref", "message"} and size > _SHORT_VALUE]
     if longest:
         return max(longest, key=sizes.__getitem__)
     message = sizes.get("message", 0)
@@ -720,7 +720,8 @@ async def context_around(
         "more_after": more_after,
     }
     # the header gets half at most: JSON escapes can make a sample far longer than SAMPLE_CHARS
-    _fit_message(out, out["anchor"], app.config.limits.context_output_chars // 2)
+    limits = app.config.limits
+    _fit_message(out, out["anchor"], min(limits.max_output_chars, limits.context_output_chars) // 2)
     if "cut_fields" in out:
         out["hint"] = "values of the anchor were cut to fit; get_message with its ref returns them"
     budget.take(out)

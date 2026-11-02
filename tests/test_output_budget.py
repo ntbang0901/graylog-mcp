@@ -145,7 +145,24 @@ async def test_get_message_never_cuts_ts_or_ref(make_app):
     _add(fake, _id=long_id, message="M" * 5000)
     res = await tools.get_message(app, f"graylog_3/{long_id}")
     assert res["message"]["ref"] == f"graylog_3/{long_id}" and "ts" in res["message"]
-    assert "ref" not in res["cut_fields"] and len(dumps(res)) <= 4000
+    assert "ref" not in res["cut_fields"] and "ts" not in res["cut_fields"] and len(dumps(res)) <= 4000
+
+
+async def test_a_log_field_named_ts_cannot_break_the_cap(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", ts='"' * 15000)
+    res = await tools.get_message(app, "graylog_3/big")
+    assert len(dumps(res)) <= 4000
+
+
+async def test_context_stays_under_a_lower_overall_cap(make_app):
+    app, fake = make_app(limits={"max_output_chars": 2000})
+    fake.messages = []
+    _add(fake, seconds_ago=100, _id="anc", message="\x01" * 3000)
+    _add(fake, seconds_ago=99, message="near")
+    res = await tools.context_around(app, "graylog_3/anc", seconds=60)
+    assert len(dumps(res)) <= 2000
 
 
 @pytest.mark.parametrize("value", ["\x01" * 3000, ["x" * 3000] * 40], ids=["control-chars", "list"])

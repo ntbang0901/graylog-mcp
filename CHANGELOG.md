@@ -7,11 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Security
-- **Breaking:** a `.graylog-mcp.toml` found in a repository no longer takes effect on its own, because a committed file
-  could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `username`, `*_env`,
-  `include`, `[http]` and redaction `allow`, `exclude_fields`, `profile` and `patterns` settings need
-  `graylog-mcp trust` on each machine, and again when they change. Run it once in each repository you already use.
-  `--config`, `GRAYLOG_MCP_CONFIG` and the user config are unchanged.
+- **Breaking:** a `.graylog-mcp.toml` or `graylog-mcp.toml` no longer takes effect on its own, because a committed file
+  could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `auth`, `username`, `*_env`,
+  `include`, `only_groups`, `[http]` and `[redaction]` settings need `graylog-mcp trust` on each machine, and again when
+  they change. Run it once in each repository you already use. This also applies through `--config` and
+  `GRAYLOG_MCP_CONFIG`; a config with another name, and the user config, are unchanged.
 - Redaction masks more shapes of secrets in log text: JSON inside a string, `=>`, unclosed quotes, `password=<x>`,
   `password=[x]`, and names such as `userPassword`, `PGPASSWORD`, `secretKey`, `JSESSIONID`. Field names match more
   spellings (`dbPassword1`, `accesstoken`, `req_cookies`). A card number next to another number, or written

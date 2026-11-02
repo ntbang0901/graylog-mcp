@@ -1118,21 +1118,34 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
-def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
-    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
-    data = dict(data)
-    includes = data.pop("include", [])
+def include_paths(data: dict[str, Any], base_dir: Path) -> list[tuple[Path, Path]]:
+    """The files ``include`` names, each as written and with its symlinks resolved."""
+    includes = data.get("include", [])
     if isinstance(includes, str):
         includes = [includes]
     if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
         raise ConfigError("include: expected a path or a list of paths")
-    merged: dict[str, Any] = {}
+    found = []
     for item in includes:
-        path = (base_dir / Path(item).expanduser()).resolve()
-        if path in seen:
-            raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
+        try:
+            literal = base_dir / Path(item).expanduser()
+        except RuntimeError:  # ~name of a user this machine does not have
+            raise ConfigError(f"include: cannot expand {item!r}") from None
+        path = literal.resolve()
         if not path.is_file():
             raise ConfigError(f"include: file not found: {path}")
+        found.append((literal, path))
+    return found
+
+
+def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    paths = include_paths(data, base_dir)
+    data = {k: v for k, v in data.items() if k != "include"}
+    merged: dict[str, Any] = {}
+    for _, path in paths:
+        if path in seen:
+            raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
         try:
             with path.open("rb") as fh:
                 inner = tomllib.load(fh)
@@ -1149,7 +1162,8 @@ def read_config_file(path: Path) -> dict[str, Any]:
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
-    return resolve_includes(data, path.parent, (path.resolve(),))
+    # from the real folder of a symlinked file, as trust.settings does: else the two read different includes
+    return resolve_includes(data, path.resolve().parent, (path.resolve(),))
 
 
 # --------------------------------------------------------------------------- entry points
@@ -1237,16 +1251,15 @@ def load_config(
 ) -> Config:
     """Load and validate the configuration. Raises ``ConfigError`` on any problem. ``repo``: a repository
     known by its identity only (its folder is not read)."""
-    if not path:
-        from graylog_mcp import trust  # local import: trust reads this module
-
-        trust.check_discovered(repo_dir)
     file_path = Path(path).expanduser() if path else default_config_path(repo_dir)
     data: dict[str, Any] = {}
     source = "env"
     if file_path is not None:
         if not file_path.is_file():
             raise ConfigError(f"config file not found: {file_path}")
+        from graylog_mcp import trust  # local import: trust reads this module
+
+        trust.guard(file_path)
         data = read_config_file(file_path)
         source = str(file_path)
     if repo is not None:

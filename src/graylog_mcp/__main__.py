@@ -259,7 +259,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
-       graylog-mcp trust [FOLDER]             accept the url, token and redaction settings of a repository's config
+       graylog-mcp trust [FOLDER|FILE]        accept the url, token and redaction settings of a repository's config
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
@@ -553,25 +553,36 @@ def _trust(argv: list[str]) -> int:
         prog="graylog-mcp trust",
         description="Accept the url, token and redaction settings of a repository's .graylog-mcp.toml on this machine",
     )
-    parser.add_argument("folder", nargs="?", default=".", help="the repository, or a folder inside it (default: here)")
+    parser.add_argument(
+        "target", nargs="?", default=".", help="a repository, a folder in it, or the file (default: here)"
+    )
+    parser.add_argument("--yes", "-y", action="store_true", help="do not ask, for a script that already reviewed it")
     args = parser.parse_args(argv)
-    found = find_project_config(Path(args.folder).expanduser())
+    target = Path(args.target).expanduser()
+    found = target if target.is_file() else find_project_config(target)
     if found is None:
-        print(f"graylog-mcp trust: no .graylog-mcp.toml found from {args.folder}", file=sys.stderr)
+        print(f"graylog-mcp trust: no .graylog-mcp.toml found from {args.target}", file=sys.stderr)
         return 2
     try:
         accepted = trust.settings(found)
-        trust.record(found)
     except ConfigError as exc:
         print(f"graylog-mcp trust: {exc}", file=sys.stderr)
         return 2
     if not accepted:
         print(f"{found} has no settings that need trust")
         return 0
-    print(f"✓ trusted {found}, with these settings:")
+    print(f"{found} sets:")
     for name, value in accepted.items():
-        print(f"  {name} = {json.dumps(value, ensure_ascii=False, default=str)}")
-    print("  this machine asks again if they change")
+        print(f"  {trust.label(name)} = {json.dumps(value, ensure_ascii=False, default=str)}")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("graylog-mcp trust: nothing accepted; a person must confirm this in a terminal", file=sys.stderr)
+            return 2
+        if input("Use these settings on this machine? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print("nothing accepted")
+            return 1
+    trust.record(found)
+    print("✓ trusted; this machine asks again if they change")
     return 0
 
 
@@ -839,13 +850,12 @@ def _start(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     _setup_logging("WARNING")
 
-    if not args.config:  # _start_config turns what it finds into a path the server is told to use
-        try:
-            trust.check_discovered()
-        except ConfigError as exc:
-            print(f"graylog-mcp start: {exc}", file=sys.stderr)
-            return 2
     config_file = _start_config(args.config)
+    try:
+        trust.guard(config_file)
+    except ConfigError as exc:
+        print(f"graylog-mcp start: {exc}", file=sys.stderr)
+        return 2
     have = service.installed()
     print(f"graylog-mcp {have.label}")
     print(f"  config: {config_file}{'' if config_file.exists() else ' (created when you add the first environment)'}")

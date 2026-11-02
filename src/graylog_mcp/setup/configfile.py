@@ -62,17 +62,22 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
-    # what this tool writes needs no review, but saving must not accept what an untrusted file already held
-    accepted = path.name in PROJECT_CONFIG_NAMES and (not path.exists() or trust.is_trusted(path))
     backup = None
     if path.exists():
         backup = path.with_name(path.name + ".bak")
         shutil.copy2(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
+    write_text(path, text)
+    return backup
+
+
+def write_text(path: Path, text: str) -> None:
+    """What this tool writes needs no review, but writing must not accept what an untrusted file already held."""
+    fresh = not path.exists() and not path.is_symlink()
+    accepted = path.name in PROJECT_CONFIG_NAMES and (fresh or (path.exists() and trust.is_trusted(path)))
     path.write_text(text, encoding="utf-8")
     if accepted:
         trust.record(path)
-    return backup
 
 
 def save(path: Path, data: dict[str, Any]) -> Path | None:

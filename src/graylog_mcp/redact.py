@@ -90,15 +90,28 @@ def _card_ok(raw: str) -> bool:
 
 
 def _mask_card(m: re.Match[str]) -> str:
-    """A number next to a card widens the match (qty 1 4111 1111 ...): also try whole digit groups inside it, longest
-    first. Never part of a group: some window of any long id would pass the Luhn check."""
+    """A number next to a card widens the match (qty 1 4111 1111 ...), so look for cards inside it. Only whole digit
+    groups of four or more, or the whole match: a window of any long id or number list would pass the Luhn check."""
     raw = m.group(0)
-    groups = list(re.finditer(r"\d+", raw))
-    spans = [(a.start(), b.end()) for i, a in enumerate(groups) for b in groups[i:]]
-    for start, end in sorted(spans, key=lambda s: s[0] - s[1]):
-        if _card_ok(raw[start:end]):
-            return raw[:start] + "[CARD]" + raw[end:]
-    return raw
+    if _card_ok(raw):
+        return "[CARD]"
+    groups = [g for g in re.finditer(r"\d+", raw) if len(g.group()) >= 4]
+    out, pos, first = [], 0, 0
+    while first < len(groups):
+        last, digits = None, 0
+        for i in range(first, len(groups)):
+            digits += len(groups[i].group())
+            if digits > 19:
+                break
+            if _card_ok(raw[groups[first].start() : groups[i].end()]):
+                last = i
+        if last is None:
+            first += 1
+            continue
+        out.append(raw[pos : groups[first].start()] + "[CARD]")
+        pos = groups[last].end()
+        first = last + 1
+    return "".join(out) + raw[pos:]
 
 
 def _iban_ok(raw: str) -> bool:
@@ -130,9 +143,12 @@ CORE_RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "jwt",
-        # the first part stops at "-eyJ", where the next attempt starts: scanning past it costs quadratic time
-        re.compile(r"\beyJ(?:[A-Za-z0-9_]|-(?!eyJ)){5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
-        _const("[JWT]"),
+        # once per run of token characters, from its first eyJ: trying again at each "-eyJ" costs quadratic time
+        re.compile(
+            r"(?<![A-Za-z0-9_-])((?:(?!\beyJ)[A-Za-z0-9_-])*)"
+            r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"
+        ),
+        lambda m: f"{m.group(1)}[JWT]",
     ),
     Rule(
         "bearer",
@@ -153,7 +169,7 @@ CORE_RULES: tuple[Rule, ...] = (
         re.compile(
             r"(?i)((?<![A-Za-z0-9])(?:access|refresh|id|auth|csrf|xsrf|bearer)?[_\-]?(?:" + _SECRET_WORDS + r")"
             r"|pass(?:word|wd|phrase)|secret(?:[_\-]?key)?|(?:access|refresh|id|auth)[_\-]?token|"
-            r"(?:api|access|private)[_\-]?key|cookie|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
+            r"(?:api|access|private)[_\-]?key|cookies?|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
             r"(\\?[\"']?)(\s*(?:=>|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
             r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
@@ -167,7 +183,7 @@ CORE_RULES: tuple[Rule, ...] = (
     Rule(
         "card",
         # with dots only as four groups of four: longer decimals (3.141592653589793) must not pass for a card
-        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,18}\d(?![\d\-])|(?<![\d.])\d{4}(?:\.\d{4}){3}(?![\d.])"),
+        re.compile(r"(?<![\d\-])(?:\d[ -]?){12,}\d(?![\d\-])|(?<![\d.])\d{4}(?:\.\d{4}){3}(?![\d.])"),
         _mask_card,
     ),
 )

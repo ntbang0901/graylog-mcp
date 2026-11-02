@@ -215,7 +215,26 @@ def test_long_values_cost_linear_time(unit):
 
 
 @pytest.mark.parametrize(
-    "unit", ["eyJ-", "eyJa.", "(", "password=", 'password=\\"', "token:", ".eyJ", "4111 ", "://a:b", "a://", "secret "]
+    "unit",
+    [
+        "eyJ-",
+        "aeyJ",
+        "eyJabcde.",
+        "x-eyJ_",
+        "(",
+        "password=",
+        'password=\\"',
+        "token:",
+        ".eyJ",
+        "4111 ",
+        "1 ",
+        "1-",
+        "12 ",
+        "1 1-",
+        "://a:b",
+        "a://",
+        "secret ",
+    ],
 )
 def test_more_long_values_cost_linear_time(unit):
     started = time.monotonic()
@@ -322,20 +341,32 @@ def test_core_field_names_leave_look_alikes(name):
         "4111 1111 1111 1111 12/29",
         "5 4111111111111111",
         "4111.1111.1111.1111",
+        "order 1234 4111 1111 1111 1111",
+        "id=12345 4111 1111 1111 1111 end",
     ],
 )
 def test_a_card_next_to_another_number_is_masked(text):
     assert "[CARD]" in Redactor().text(text) and "1111 1111" not in Redactor().text(text)
 
 
-@pytest.mark.parametrize("text", ["3.141592653589793", "12345678901234567", "1234.5678", "4111.1111"])
+def test_every_card_in_a_list_is_masked():
+    masked = Redactor().text("4111 1111 1111 1111 5500 0000 0000 0004")
+    assert masked == "[CARD] [CARD]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["3.141592653589793", "12345678901234567", "1234.5678", "4111.1111", "4 5 6 7 8 9 1 2 3 4 5 6 7 8 9 1 2 3 4 5 6"],
+)
 def test_numbers_that_are_not_cards_stay(text):
     assert Redactor().text(text) == text
 
 
 def test_a_token_inside_a_dashed_run_is_still_masked():
     token = "eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl"
-    assert "[JWT]" in Redactor().text(f"x-{token}") and "[JWT]" in Redactor().text(f"eyJ-{token}")
+    assert Redactor().text(f"x-{token}") == "x-[JWT]" and Redactor().text(f"eyJ-{token}") == "[JWT]"
+    assert Redactor().text("eyJhbGciOiJ-eyJh.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4fw") == "[JWT]"
+    assert Redactor().text(f"a.{token}") == "a.[JWT]"
 
 
 def test_exclude_fields_names_a_field_in_any_spelling_but_not_a_part_of_one():

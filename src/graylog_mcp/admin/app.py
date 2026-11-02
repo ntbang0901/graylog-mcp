@@ -94,6 +94,7 @@ class AdminState:
 
     async def app(self) -> tools.App:
         """A tools.App for the current file; rebuilt when the file or the secrets change."""
+        trust.guard(self.path)  # on every call: a git pull can change the file while the page is open
         data = self.raw()
         stat = self.path.stat() if self.path.exists() else None
         secret_state = tuple(secret_store.source(n) for n in configfile.secret_envs(data, self.path.parent))
@@ -386,7 +387,7 @@ def build_app(state: AdminState) -> Starlette:
             if data.get("instances"):
                 configfile.save(state.path, data)
             else:  # an empty config does not validate; keep the other settings
-                state.path.write_text(configfile.render(data), encoding="utf-8")
+                configfile.write_text(state.path, configfile.render(data))
         except ConfigError as exc:
             return _err(str(exc))
         return JSONResponse({"ok": True})
@@ -945,8 +946,6 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         loopback = False
     if not loopback:
         raise ConfigError("the admin UI writes files on this machine and only listens on 127.0.0.1 / localhost")
-    if not config:  # the page tests connections with what the file says
-        trust.check_discovered(project_dir)
     port = _free_port(host, port)
     token = secrets.token_urlsafe(24)
     state = AdminState(
@@ -955,6 +954,7 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         token,
         allowed_hosts=("127.0.0.1", "localhost", "::1"),
     )
+    trust.guard(state.path)
     url = f"http://{'localhost' if host == 'localhost' else host}:{port}/#token={token}"
     print(f"graylog-mcp admin UI for {state.path}")
     print(f"  open: {url}")

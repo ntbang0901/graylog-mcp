@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from graylog_mcp import shared, trust
 from graylog_mcp.__main__ import main
-from graylog_mcp.config import ConfigError, UntrustedConfig, load_config
+from graylog_mcp.admin.app import AdminState
+from graylog_mcp.config import ConfigError, UntrustedConfig, load_config, read_config_file
 from graylog_mcp.setup import configfile
 from graylog_mcp.shared import AppPool
 
@@ -29,12 +32,13 @@ def test_a_cloned_config_is_refused_and_says_what_to_do(repo):
     with pytest.raises(UntrustedConfig) as exc:
         load_config(repo_dir=repo)
     message = str(exc.value)
-    assert "url" in message and "token_env" in message and f"graylog-mcp trust {repo}" in message
+    assert "url" in message and "token_env" in message and "A person must read" in message
+    assert f"graylog-mcp trust {repo / '.graylog-mcp.toml'}" in message
     assert "graylog.test" not in message
 
 
 def test_trust_accepts_it_until_a_sensitive_setting_changes(repo, capsys):
-    assert main(["trust", str(repo)]) == 0
+    assert main(["trust", "--yes", str(repo)]) == 0
     assert '"https://graylog.test"' in capsys.readouterr().out
     assert load_config(repo_dir=repo).instance(None).url == "https://graylog.test"
 
@@ -42,6 +46,21 @@ def test_trust_accepts_it_until_a_sensitive_setting_changes(repo, capsys):
     file.write_text(file.read_text(encoding="utf-8").replace("graylog.test", "collector.test"), encoding="utf-8")
     with pytest.raises(UntrustedConfig, match="changed since it was trusted"):
         load_config(repo_dir=repo)
+
+
+def test_trust_needs_a_person_at_a_terminal(repo, capsys, monkeypatch):
+    assert main(["trust", str(repo)]) == 2  # stdin is not a terminal, as for an agent running the command
+    assert "must confirm" in capsys.readouterr().err
+    assert not trust.is_trusted(repo / ".graylog-mcp.toml")
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert main(["trust", str(repo)]) == 1
+    assert not trust.is_trusted(repo / ".graylog-mcp.toml")
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert main(["trust", str(repo)]) == 0
+    assert trust.is_trusted(repo / ".graylog-mcp.toml")
 
 
 def test_other_settings_can_change_without_asking_again(repo):
@@ -53,8 +72,9 @@ def test_other_settings_can_change_without_asking_again(repo):
 
 def test_a_config_with_nothing_sensitive_needs_no_trust(tmp_path):
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".graylog-mcp.toml").write_text('[focus]\nservice = "api"\n', encoding="utf-8")
-    trust.check_discovered(tmp_path)
+    file = tmp_path / ".graylog-mcp.toml"
+    file.write_text('[focus]\nservice = "api"\n', encoding="utf-8")
+    trust.check(file)
 
 
 @pytest.mark.parametrize(
@@ -64,13 +84,18 @@ def test_a_config_with_nothing_sensitive_needs_no_trust(tmp_path):
         '[redaction]\nexclude_fields = ["password"]\n',
         '[redaction]\nprofile = "basic"\n',
         '[redaction]\npatterns = [{name = "x", regex = "x"}]\n',
+        "[redaction]\npacks = []\n",
+        "[redaction]\nsensitive_fields = []\n",
         '[groups.g.environments.e]\nurl = "https://graylog.test"\n',
         '[environments.e]\nproxy = "http://proxy.test"\n',
         'include = "other.toml"\n',
         "[http]\nport = 1\n",
+        '[instances.main]\nauth = "token"\n',
+        'only_groups = "*"\n',
     ],
 )
 def test_each_sensitive_setting_is_covered(tmp_path, section):
+    (tmp_path / "other.toml").write_text("", encoding="utf-8")
     file = tmp_path / ".graylog-mcp.toml"
     file.write_text(section, encoding="utf-8")
     assert trust.settings(file)
@@ -80,7 +105,17 @@ def test_a_committed_file_cannot_switch_redaction_off(repo):
     trust.record(repo / ".graylog-mcp.toml")
     file = repo / ".graylog-mcp.toml"
     file.write_text(file.read_text(encoding="utf-8") + '\n[redaction]\nallow = [".*"]\n', encoding="utf-8")
-    with pytest.raises(UntrustedConfig, match="allow"):
+    with pytest.raises(UntrustedConfig, match="redaction"):
+        load_config(repo_dir=repo)
+
+
+def test_a_committed_file_cannot_drop_what_a_trusted_include_masks(repo):
+    (repo / "company.toml").write_text('[redaction]\npacks = ["vn"]\n', encoding="utf-8")
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('include = "company.toml"\n' + INSTANCE, encoding="utf-8")
+    trust.record(file)
+    file.write_text(file.read_text(encoding="utf-8") + "\n[redaction]\npacks = []\n", encoding="utf-8")
+    with pytest.raises(UntrustedConfig):
         load_config(repo_dir=repo)
 
 
@@ -89,28 +124,150 @@ def test_the_shared_server_refuses_an_untrusted_folder_until_it_is_trusted(repo,
     pool = AppPool()
     with pytest.raises(ConfigError, match="graylog-mcp trust"):
         pool.get(str(repo))
-    assert main(["trust", str(repo)]) == 0
+    assert main(["trust", "--yes", str(repo)]) == 0
     assert pool.get(str(repo)).instances["main"].cfg.url == "https://graylog.test"
 
 
-def test_a_path_the_user_named_is_theirs(repo, monkeypatch):
+def test_a_project_file_is_checked_however_it_was_reached(repo, monkeypatch):
     file = repo / ".graylog-mcp.toml"
+    with pytest.raises(UntrustedConfig):  # what 'graylog-mcp install' writes in a client's config
+        monkeypatch.setenv("GRAYLOG_MCP_CONFIG", str(file))
+        load_config(repo_dir=repo)
+    monkeypatch.delenv("GRAYLOG_MCP_CONFIG")
+    with pytest.raises(UntrustedConfig):  # what 'graylog-mcp start' passes to the background server
+        load_config(str(file))
+
+
+def test_the_pinned_config_of_a_shared_server_is_checked_on_every_reload(repo, monkeypatch):
+    monkeypatch.setattr(shared, "RELOAD_SECONDS", 0)
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('timezone = "UTC"\n', encoding="utf-8")
+    pool = AppPool(config_path=str(file))
+    with pytest.raises(ConfigError) as nothing_to_serve:
+        pool.get("acme.test/team/repo")
+    assert "trust" not in str(nothing_to_serve.value)
+    file.write_text(INSTANCE, encoding="utf-8")  # a later commit
+    with pytest.raises(ConfigError, match="graylog-mcp trust"):
+        pool.get("acme.test/team/repo")
+
+
+def test_a_file_with_another_name_is_the_users_own(repo):
+    file = repo / "prod.toml"
+    file.write_text(INSTANCE, encoding="utf-8")
     assert load_config(str(file)).instance(None).url == "https://graylog.test"
-    monkeypatch.setenv("GRAYLOG_MCP_CONFIG", str(file))
-    assert load_config(repo_dir=repo).instance(None).url == "https://graylog.test"
+
+
+def test_init_does_not_test_a_saved_token_against_an_untrusted_url(repo, monkeypatch, capsys):
+    monkeypatch.setenv("TEST_GRAYLOG_TOKEN", "fake-saved-token")
+    assert main(["init", "--project-dir", str(repo), "--yes"]) == 2
+    assert "graylog-mcp trust" in capsys.readouterr().err
+
+
+async def test_an_open_admin_page_checks_a_file_a_pull_changed(repo):
+    state = AdminState(repo, None, "fake-token")
+    with pytest.raises(UntrustedConfig):
+        await state.app()
+    trust.record(state.path)
+    await state.app()
+    state.path.write_text(INSTANCE.replace("graylog.test", "collector.test"), encoding="utf-8")
+    with pytest.raises(UntrustedConfig):
+        await state.app()
+    await state._app.close()
+
+
+def test_trust_and_the_loader_read_the_same_includes_through_a_symlink(repo):
+    real = repo / "sub" / "real.toml"
+    real.parent.mkdir()
+    real.write_text('include = "inc.toml"\n', encoding="utf-8")
+    (repo / "sub" / "inc.toml").write_text(INSTANCE, encoding="utf-8")
+    (repo / "inc.toml").write_text(INSTANCE.replace("graylog.test", "collector.test"), encoding="utf-8")
+    file = repo / ".graylog-mcp.toml"
+    file.unlink()
+    file.symlink_to("sub/real.toml")
+
+    assert read_config_file(file)["instances"]["main"]["url"] == "https://graylog.test"
+    trust.record(file)
+    (repo / "sub" / "inc.toml").write_text(INSTANCE.replace("graylog.test", "evil.test"), encoding="utf-8")
+    with pytest.raises(UntrustedConfig):
+        trust.check(file)
+
+
+def test_a_project_file_cannot_point_outside_through_a_symlink(tmp_path):
+    outside = tmp_path / "outside.toml"
+    outside.write_text(INSTANCE, encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".graylog-mcp.toml").symlink_to(outside)
+    with pytest.raises(ConfigError, match="outside its repository"):
+        trust.check(repo / ".graylog-mcp.toml")
+
+
+def test_a_dangling_include_is_refused(repo):
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('include = "missing.toml"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="file not found"):
+        trust.settings(file)
+
+
+@pytest.mark.parametrize("value", ["5", '"~nosuchuser-graylog-mcp/x.toml"'], ids=["not-a-path", "unknown-user"])
+def test_a_malformed_include_is_a_config_error(repo, value):
+    (repo / ".graylog-mcp.toml").write_text(f"include = {value}\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(repo_dir=repo)
+
+
+def test_dots_in_names_cannot_hide_a_second_url(repo):
+    # both tables are the same dotted name: a joined string would let the second replace the first
+    good = '[groups."corp.environments.x".environments.prod]\nurl = "https://graylog.test"\n'
+    evil = '[groups.corp.environments."x.environments.prod"]\nurl = "https://evil.test"\n'
+    file = repo / ".graylog-mcp.toml"
+    file.write_text(good, encoding="utf-8")
+    trust.record(file)
+    file.write_text(evil + good, encoding="utf-8")
+    with pytest.raises(UntrustedConfig):
+        trust.check(file)
+    assert len(trust.settings(file)) == 2
 
 
 def test_an_included_file_in_the_repository_counts_by_content(repo):
-    shared = repo / "ops" / "graylog.toml"
-    shared.parent.mkdir()
-    shared.write_text(INSTANCE, encoding="utf-8")
-    (repo / ".graylog-mcp.toml").write_text('include = "ops/graylog.toml"\n', encoding="utf-8")
-    trust.record(repo / ".graylog-mcp.toml")
-    trust.check_discovered(repo)
+    included = repo / "ops" / "graylog.toml"
+    included.parent.mkdir()
+    included.write_text(INSTANCE, encoding="utf-8")
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('include = "ops/graylog.toml"\n', encoding="utf-8")
+    trust.record(file)
+    trust.check(file)
 
-    shared.write_text(INSTANCE.replace("graylog.test", "collector.test"), encoding="utf-8")
+    included.write_text(INSTANCE.replace("graylog.test", "collector.test"), encoding="utf-8")
     with pytest.raises(UntrustedConfig):
-        trust.check_discovered(repo)
+        trust.check(file)
+
+
+def test_a_submodule_does_not_make_its_parent_repository_outside(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "inc.toml").write_text(INSTANCE, encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: ../.git/modules/sub\n", encoding="utf-8")
+    file = sub / ".graylog-mcp.toml"
+    file.write_text('include = "../inc.toml"\n', encoding="utf-8")
+    trust.record(file)
+
+    (tmp_path / "inc.toml").write_text(INSTANCE.replace("graylog.test", "evil.test"), encoding="utf-8")
+    with pytest.raises(UntrustedConfig):
+        trust.check(file)
+
+
+def test_an_include_cannot_leave_the_repository_through_a_symlink(tmp_path):
+    outside = tmp_path / "outside.toml"
+    outside.write_text("", encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "inc.toml").symlink_to(outside)
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('include = "inc.toml"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="through a symlink"):
+        trust.check(file)
 
 
 def test_an_included_file_outside_the_repository_counts_by_path(tmp_path):
@@ -118,11 +275,23 @@ def test_an_included_file_outside_the_repository_counts_by_path(tmp_path):
     outside.write_text(INSTANCE, encoding="utf-8")
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
-    (repo / ".graylog-mcp.toml").write_text('include = "../shared.toml"\n', encoding="utf-8")
-    trust.record(repo / ".graylog-mcp.toml")
+    file = repo / ".graylog-mcp.toml"
+    file.write_text('include = "../shared.toml"\n', encoding="utf-8")
+    trust.record(file)
 
     outside.write_text(INSTANCE + '\n[instances.other]\nurl = "https://other.test"\n', encoding="utf-8")
-    trust.check_discovered(repo)  # the user's own file on this machine: edits do not stop every repository
+    trust.check(file)  # the user's own file on this machine: edits do not stop every repository
+
+
+def test_terminal_escapes_in_a_key_cannot_hide_a_line_of_the_review(repo, capsys):
+    file = repo / ".graylog-mcp.toml"
+    file.write_text(INSTANCE + '[presets.a]\nargs = {"\\u001b[1A\\u001b[2K_env" = "x"}\n', encoding="utf-8")
+    assert main(["trust", "--yes", str(repo)]) == 0
+    assert "\x1b" not in capsys.readouterr().out
+    with pytest.raises(UntrustedConfig) as exc:
+        file.write_text(file.read_text(encoding="utf-8").replace("graylog.test", "evil.test"), encoding="utf-8")
+        trust.check(file)
+    assert "\x1b" not in str(exc.value)
 
 
 def test_what_this_tool_writes_is_trusted(tmp_path):
@@ -131,11 +300,26 @@ def test_what_this_tool_writes_is_trusted(tmp_path):
     trust.check(target)
 
 
+def test_a_write_keeps_a_trusted_file_trusted(repo):
+    target = repo / ".graylog-mcp.toml"
+    trust.record(target)
+    configfile.write_text(target, '[redaction]\nprofile = "pii"\n')
+    trust.check(target)
+
+
 def test_saving_does_not_accept_what_an_untrusted_file_held(repo):
     target = repo / ".graylog-mcp.toml"
     configfile.save_text(target, target.read_text(encoding="utf-8") + '\n[focus]\nservice = "api"\n')
     with pytest.raises(UntrustedConfig):
         trust.check(target)
+
+
+def test_writing_through_a_dangling_symlink_is_not_trusted(tmp_path):
+    (tmp_path / ".git").mkdir()
+    target = tmp_path / ".graylog-mcp.toml"
+    os.symlink(tmp_path / "elsewhere.toml", target)
+    configfile.write_text(target, INSTANCE)
+    assert not trust.is_trusted(target)
 
 
 def test_a_broken_file_is_not_trusted(repo):
@@ -151,8 +335,9 @@ def test_trust_without_a_config_says_so(tmp_path, capsys):
     assert "no .graylog-mcp.toml" in capsys.readouterr().err
 
 
-def test_serve_prints_the_trust_message_without_the_setup_hint(repo, monkeypatch, capsys):
+def test_commands_print_the_trust_message_without_a_setup_hint(repo, monkeypatch, capsys):
     monkeypatch.chdir(repo)
     assert main(["serve", "--check"]) == 2
+    assert main(["doctor"]) == 2
     err = capsys.readouterr().err
-    assert "graylog-mcp trust" in err and "guided setup" not in err
+    assert err.count("graylog-mcp trust") == 2 and "guided setup" not in err and "fix:" not in err

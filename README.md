@@ -408,12 +408,15 @@ settings apply only after you accept them on your machine. Read the file, then r
 graylog-mcp trust            # or: graylog-mcp trust /path/to/repo
 ```
 
-Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `username`, any `*_env`, `include`, `[http]`, and
-`allow`, `exclude_fields`, `profile` and `patterns` under `[redaction]`. Until you accept them the server refuses the
-file and sends nothing to Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as
-`[focus]`, `presets`, `[limits]` or `timezone`, can change freely. A file included from the same repository counts by
-its content, one outside it by its path. `init` and the admin page accept what they write themselves, and a path you
-name with `--config` or `GRAYLOG_MCP_CONFIG` needs no approval.
+It shows the settings and asks you to confirm in a terminal (`--yes` skips that, for a script that already reviewed
+them). Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `auth`, `username`, any `*_env`, `include`,
+`only_groups`, `[http]` and all of `[redaction]`. Until you accept them the server refuses the file and sends nothing to
+Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as `[focus]`, `presets`,
+`[limits]` or `timezone`, can change freely. A file included from the same repository counts by its content, one
+outside it by its path. `init` and the admin page accept what they write themselves.
+
+Any file named `.graylog-mcp.toml` or `graylog-mcp.toml` needs this, also through `--config` or `GRAYLOG_MCP_CONFIG`.
+A config with another name, such as `/etc/graylog-mcp/prod.toml` in a container, is treated as yours and does not.
 
 ```toml
 # .graylog-mcp.toml
