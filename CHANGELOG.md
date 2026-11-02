@@ -33,7 +33,7 @@ All notable changes to this project are documented here. The format follows
 - Shorter tool parameter descriptions, to spend fewer tokens on every session.
 - The admin page is redesigned: the Dashboard leads with a ruled list of environments and their state in words,
   health is no longer a coloured dot, and the theme follows the OS until you pick one, with a checkbox to go back to it (it was dark by default).
-  Same pages, API and shortcuts.
+  Same pages, API and shortcuts. Its dark theme is charcoal rather than near black.
 
 ### Added
 - `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
