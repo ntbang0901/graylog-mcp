@@ -19,7 +19,6 @@ A repository is named in one of two ways:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
@@ -48,7 +47,6 @@ log = logging.getLogger(__name__)
 REPO_HEADER = "X-Graylog-MCP-Repo"
 RELOAD_SECONDS = 5.0  # how often a repository's config is read again (edits apply without a restart)
 MAX_ENTRIES = 256  # repositories kept; the key comes from the client, so the least recently used is dropped
-RETIRE_SECONDS = 60.0  # a replaced Graylog client closes after this, so requests still using it can finish
 
 # an absolute folder whatever the server's system: /x from macOS or Linux, C:\ or \\server\share from Windows
 _ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
@@ -105,7 +103,6 @@ class AppPool:
         self.repo_paths = repo_paths  # read the folders clients name (the server runs on their machine)
         self.graylogs: list[Graylog] = []
         self.entries: dict[Path | str, _Entry] = {}  # insertion order = recency, oldest first
-        self._retired: list[Graylog] = []  # replaced clients waiting to close
         self._closing: set[asyncio.Task[None]] = set()
         self.default = App.create(default, graylog=self._graylog) if default is not None else None
 
@@ -197,22 +194,14 @@ class AppPool:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # no event loop: nothing can have been using the client
             return
-        self._retired.extend(unused)
         for gl in unused:
-            task = loop.create_task(self._close_later(gl))
+            task = loop.create_task(gl.client.retire())
             self._closing.add(task)
             task.add_done_callback(self._closing.discard)
 
-    async def _close_later(self, gl: Graylog) -> None:
-        await asyncio.sleep(RETIRE_SECONDS)
-        with contextlib.suppress(Exception):
-            await gl.aclose()
-        self._retired.remove(gl)
-
     async def close(self) -> None:
-        for task in list(self._closing):
-            task.cancel()
-        for gl in [*self.graylogs, *self._retired]:
+        await asyncio.gather(*self._closing, return_exceptions=True)
+        for gl in self.graylogs:
             try:
                 await gl.aclose()
             except Exception as exc:  # pragma: no cover - closing is best effort

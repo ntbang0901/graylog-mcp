@@ -1,4 +1,5 @@
 import re
+import time
 
 import pytest
 
@@ -171,6 +172,53 @@ def test_profile_strict_masks_ipv4_and_every_pack():
     assert {"vn_cccd", "us_ssn", "iban", "uk_nino", "in_pan"} <= set(red.active_rules)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("refused to 203.0.113.7. retry", "refused to [IP]. retry"),
+        ("refused to 203.0.113.7.", "refused to [IP]."),
+        ("host.203.0.113.7:80", "host.[IP]:80"),
+        ("build 1.2.3.4.5", "build 1.2.3.4.5"),  # five parts is not an address
+    ],
+)
+def test_profile_strict_ipv4_edges(text, expected):
+    assert _from_toml(profile="strict").text(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("profile", "names"),
+    [
+        ("pii", ["firstName", "first-name", "first.name", "FIRST_NAME", "dateOfBirth", "customer.name", "homeAddress"]),
+        ("finance", ["accountNumber", "bank-account", "taxId", "routingNumber"]),
+        ("strict", ["firstName", "taxId"]),
+    ],
+)
+def test_profile_fields_match_any_spelling(profile, names):
+    red = _from_toml(profile=profile)
+    assert red.fields(dict.fromkeys(names, "x")) == dict.fromkeys(names, "[REDACTED]")
+
+
+def test_sensitive_fields_from_the_file_match_any_spelling():
+    assert _from_toml(sensitive_fields=["order_note"]).is_sensitive_field("orderNote")
+    assert not _from_toml(sensitive_fields=["_"]).is_sensitive_field("anything")
+
+
+@pytest.mark.parametrize(
+    "unit", ["a-", "a.", "a_", "ab-", "a+", "a%", "a:", "a=", "a/", "a@", "1.", "'a", 'a"', "x://"]
+)
+def test_long_values_cost_linear_time(unit):
+    # a-b-c-... took 26 s at 32 KB when these regexes backtracked; this budget is far above linear
+    started = time.monotonic()
+    _from_toml(profile="strict").text(unit * (128_000 // len(unit)))
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize("name", ["a.b.c.d.e.f.g.h.i.j.k.password", "a_b_c_d_e_f_g_h_i_j_k_token"])
+def test_secret_behind_many_prefixes_is_still_masked(name):
+    masked = Redactor().text(f"{name}=fake-value")
+    assert masked.startswith(name) and "fake-value" not in masked
+
+
 def test_profile_is_a_base_the_file_extends_and_exclude_wins():
     red = _from_toml(profile="pii", sensitive_fields=["order_note"], exclude_fields=["phone"])
     assert red.is_sensitive_field("order_note") and red.is_sensitive_field("first_name")
@@ -182,3 +230,5 @@ def test_profile_unknown_name_lists_the_choices():
 
     with pytest.raises(ConfigError, match=r"unknown profile 'nope'.*basic"):
         _from_toml(profile="nope")
+    with pytest.raises(ConfigError, match="unknown profile"):
+        _from_toml(profile=["pii"])

@@ -10,13 +10,16 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 from graylog_mcp import __version__, shared
 from graylog_mcp.__main__ import build_http_app, main
+from graylog_mcp.client import GraylogClient
 from graylog_mcp.config import ConfigError
 from graylog_mcp.setup import clients
 from graylog_mcp.shared import REPO_HEADER, AppPool
+from tests.conftest import make_config
 from tests.fake_graylog import FakeGraylog
 from tests.test_repos import make_repo, org
 
@@ -196,13 +199,56 @@ def test_pool_keeps_a_bounded_number_of_repositories(tmp_path, monkeypatch):
 async def test_pool_closes_a_client_replaced_by_a_config_change(tmp_path, monkeypatch):
     pay, _ = workspace(tmp_path)
     monkeypatch.setattr(shared, "RELOAD_SECONDS", 0)
-    monkeypatch.setattr(shared, "RETIRE_SECONDS", 0)
     pool = AppPool()
     old = pool.get(str(pay)).instances["payment/prod"]
     org = tmp_path / "org.toml"
     org.write_text(org.read_text(encoding="utf-8").replace("https://", "https://new-"), encoding="utf-8")
     new = pool.get(str(pay)).instances["payment/prod"]
     assert new is not old and old not in pool.graylogs and new in pool.graylogs
-    await asyncio.sleep(0.05)  # the retired client closes after its grace period
-    assert old not in pool._retired and not pool._closing
+    await asyncio.gather(*pool._closing)
+    assert old.client._retired and not new.client._retired
     await pool.close()
+
+
+async def test_retired_client_waits_for_running_requests_and_does_not_leak():
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"ok": True})
+
+    client = GraylogClient(make_config().instance(None), httpx.MockTransport(handler))
+    running = asyncio.create_task(client.get("system"))
+    await started.wait()
+    http = client.http
+
+    await client.retire()
+    assert not http.is_closed  # the request above is still using it
+
+    release.set()
+    assert await running == {"ok": True}
+    assert http.is_closed and client._client is None
+
+    # a call still holding the old App: the request works and leaves no open client behind
+    assert await client.get("system") == {"ok": True}
+    assert client._client is None
+
+
+async def test_a_request_during_close_gets_a_new_client():
+    client = GraylogClient(make_config().instance(None), httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    closing = client.http
+    gate = asyncio.Event()
+    real_close = closing.aclose
+
+    async def slow_close():
+        await gate.wait()
+        await real_close()
+
+    closing.aclose = slow_close
+    task = asyncio.create_task(client.aclose())
+    await asyncio.sleep(0)
+    assert client.http is not closing
+    gate.set()
+    await task
+    await client.aclose()

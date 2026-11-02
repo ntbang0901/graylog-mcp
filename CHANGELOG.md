@@ -10,8 +10,9 @@ All notable changes to this project are documented here. The format follows
 - Smaller answers for the tools that return the most text: `search_logs` is capped at 12000 characters
   (`limits.search_output_chars`), `context_around` at 8000 (`limits.context_output_chars`) and `get_message` without
   `fields` at 4000 (`limits.message_output_chars`), all under `limits.max_output_chars`. `get_message` names what it
-  cut in `cut_fields`; passing those names in `fields` returns them. `context_around` keeps the lines nearest the
-  anchor when it has to cut, so the lines after it are no longer the first to go.
+  cut in `cut_fields` (`cut_more` counts any it had no room to list); passing those names in `fields` returns them.
+  `context_around` keeps the lines nearest the anchor when it has to cut, so the lines after it are no longer the
+  first to go.
 - Shorter tool parameter descriptions, to spend fewer tokens on every session.
 - The admin page is redesigned: the Dashboard leads with a ruled list of environments and their state in words,
   health is no longer a coloured dot, and the theme follows the OS until you pick one, with a checkbox to go back to it (it was dark by default).
@@ -140,9 +141,14 @@ All notable changes to this project are documented here. The format follows
   `X-Frame-Options` and `Referrer-Policy` on every response, including 401/403/415.
 
 ### Fixed
+- One long log value could stall the server: redaction took quadratic time on runs like `a-b-c-...` (26 s at 32 KB,
+  on the event loop), and now takes linear time.
 - Memory that only grew in a long-running server: suggestions offered after an empty search and never run again
   are now dropped after 30 minutes (at most 2000 kept); the shared server keeps at most 256 repositories (the
-  least recently used goes) and closes a Graylog client once a config change replaces it.
+  least recently used goes) and closes a Graylog client once a config change replaces it and its running requests
+  finish.
+- `sensitive_fields` in the redaction config match any spelling of a name: `order_note` also masks `orderNote`,
+  `order-note` and `order.note`.
 - Windows: the `.mcp.json` written for a repository carries the repository folder itself in the `X-Graylog-MCP-Repo`
   header (Claude Code has no `PWD` there, so `${PWD:-}` was empty and every tool failed with `no repository given
   and no default configuration`); an earlier file is fixed in place. `start` also says why the config it serves

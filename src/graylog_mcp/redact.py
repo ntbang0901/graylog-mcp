@@ -105,7 +105,8 @@ CORE_RULES: tuple[Rule, ...] = (
     # credentials embedded in URLs: scheme://user:pass@host
     Rule(
         "url_credentials",
-        re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://[^\s:/@]*):([^\s@/]+)@"),
+        # the scheme stays bounded: unbounded, a long a-b-c-... run costs quadratic time, on the event loop
+        re.compile(r"(?i)\b([a-z][a-z0-9+.\-]{0,63}://[^\s:/@]*):([^\s@/]+)@"),
         lambda m: f"{m.group(1)}:{REDACTED}@",
     ),
     Rule(
@@ -124,10 +125,12 @@ CORE_RULES: tuple[Rule, ...] = (
         lambda m: f"{m.group(1)} {REDACTED}",
     ),
     # password=x  token: x  "api_key": "x"  'secret'='x'  (query strings, logfmt, JSON, headers)
+    # The prefix count stays bounded for the same reason as the scheme above. A longer name still matches, starting
+    # from a later segment, and the whole name is kept in the output.
     Rule(
         "kv_secret",
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])([\"']?)((?:[a-z0-9]+[_.\-])*(?:access|refresh|id|auth|csrf|xsrf|bearer)?"
+            r"(?i)(?<![A-Za-z0-9])([\"']?)((?:[a-z0-9]+[_.\-]){0,8}(?:access|refresh|id|auth|csrf|xsrf|bearer)?"
             r"[_\-]?(?:" + _SECRET_WORDS + r"))\1(\s*[=:]\s*)(?!\[[A-Z_]+\])"
             r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s&,;\"'<>)\]}]+)"
         ),
@@ -221,8 +224,9 @@ class Profile:
     patterns: tuple[tuple[str, str, str], ...] = ()  # (name, regex, replacement)
 
 
-# Field names are matched as substrings, so each entry is specific: a bare "name" or "address" would also
-# hide logger_name, hostname and ip_address.
+# Field names are matched as substrings, ignoring case and separators (first_name also matches firstName and
+# first.name), so each entry is specific: a bare "name" or "address" would also hide logger_name, hostname and
+# ip_address.
 _PII_FIELDS = (
     "full_name",
     "first_name",
@@ -253,18 +257,26 @@ _FINANCE_FIELDS = (
 PROFILES: dict[str, Profile] = {
     "basic": Profile("Core rules only: secrets, credentials, emails, card numbers (the default)."),
     "pii": Profile(
-        "Core rules, plus personal names, phone numbers, birth dates and street addresses.", (), _PII_FIELDS
+        "Core rules, plus fields named for personal names, phone numbers, birth dates and street addresses.",
+        (),
+        _PII_FIELDS,
     ),
     "finance": Profile(
-        "Core rules, plus bank account, card and tax fields, and IBAN values.", ("eu",), _FINANCE_FIELDS
+        "Core rules, plus fields named for bank accounts, cards and tax ids, and IBAN values.",
+        ("eu",),
+        _FINANCE_FIELDS,
     ),
     "strict": Profile(
         "Everything above, every country pack and IPv4 addresses. Noisy: version numbers like 1.2.3.4 are masked too.",
         tuple(PACKS),
         _PII_FIELDS + _FINANCE_FIELDS,
-        (("ipv4", r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])", "[IP]"),),
+        (("ipv4", r"(?<!\d)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)", "[IP]"),),
     ),
 }
+
+
+def _squash(name: str) -> str:
+    return re.sub(r"[_.\-\s]", "", name).lower()
 
 
 class Redactor:
@@ -278,7 +290,7 @@ class Redactor:
         for custom in cfg.patterns:
             rules.append(Rule(custom.name, custom.pattern, _const(custom.replacement)))
         self.rules = tuple(rules)
-        self._extra_fields = tuple(f.lower() for f in cfg.extra_sensitive_fields)
+        self._extra_fields = tuple(filter(None, map(_squash, cfg.extra_sensitive_fields)))
         self._exclude_fields = {f.lower() for f in cfg.exclude_fields}
 
     @property
@@ -289,7 +301,8 @@ class Redactor:
         low = name.lower()
         if low in self._exclude_fields:
             return False
-        if any(extra == low or extra in low for extra in self._extra_fields):
+        squashed = _squash(name)
+        if any(extra in squashed for extra in self._extra_fields):
             return True
         return bool(_SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name))
 

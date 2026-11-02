@@ -683,7 +683,7 @@ def _parse_redaction(data: Any) -> RedactionConfig:
         raise ConfigError("redaction: expected a table")
     _check_keys("redaction", data, _REDACTION_KEYS)
     profile_name = data.get("profile", "basic")
-    if profile_name not in PROFILES:
+    if not isinstance(profile_name, str) or profile_name not in PROFILES:
         raise ConfigError(f"redaction.profile: unknown profile {profile_name!r}; available: {', '.join(PROFILES)}")
     profile = PROFILES[profile_name]
     # the profile is the base; what the file lists is added on top

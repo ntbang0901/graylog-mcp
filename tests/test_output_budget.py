@@ -76,6 +76,93 @@ async def test_get_message_with_many_short_fields_still_fits(make_app):
     assert all(name in res["cut_fields"] or name in res["message"] for name in (f"field_{i}" for i in range(60)))
 
 
+@pytest.mark.parametrize(
+    "text",
+    ['"' * 2100, "\n" * 2100, '{"a": "b"}\n' * 800, ("x" * 74 + "\n") * 106],
+    ids=["quotes", "newlines", "json-lines", "lines"],
+)
+async def test_get_message_trims_values_with_escapes_instead_of_omitting_them(make_app, text):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", message=text, full_message="x")
+    res = await tools.get_message(app, "graylog_3/big")
+    assert len(dumps(res)) <= 4000
+    assert res["message"]["message"] == text[: len(res["message"]["message"])]
+    assert len(dumps(res)) > 3000  # the cap was used, not most of it thrown away
+
+
+async def test_get_message_trims_the_message_before_dropping_short_fields(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", message="M" * 3800, trace_id="abc-123", logger="acme.orders", status="500")
+    res = await tools.get_message(app, "graylog_3/big")
+    msg = res["message"]
+    assert len(dumps(res)) <= 4000
+    assert (msg["trace_id"], msg["logger"], msg["status"]) == ("abc-123", "acme.orders", "500")
+    assert list(res["cut_fields"]) == ["message"]
+
+
+async def test_get_message_drops_short_fields_when_trimming_is_not_enough(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="wide", message="M" * 3000, **{f"field_{i:03}": "v" for i in range(400)})
+    res = await tools.get_message(app, "graylog_3/wide")
+    assert len(dumps(res)) <= 4000
+    assert res["message"]["message"].startswith("MMM")  # not replaced by a placeholder
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {f"kubernetes_label_{i:04}": "v" for i in range(500)},
+        {f"{i}" + "n" * 2000: "v" for i in range(5)},
+        {"source": "s" * 15000},
+        {"level": "l" * 15000},
+        {"payload": {"nested": "x" * 15000}},
+    ],
+    ids=["many-fields", "long-names", "long-source", "long-level", "non-string"],
+)
+async def test_get_message_never_exceeds_its_cap(make_app, fields):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="big", **fields)
+    res = await tools.get_message(app, "graylog_3/big")
+    assert len(dumps(res)) <= 4000 and res["truncated"]
+
+
+async def test_get_message_counts_the_names_it_cannot_list(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, _id="wide", **{f"kubernetes_label_{i:04}": "v" for i in range(500)})
+    res = await tools.get_message(app, "graylog_3/wide")
+    kept = [k for k in res["message"] if k.startswith("kubernetes_label")]
+    assert len(kept) + len(res["cut_fields"]) + res["cut_more"] == 500
+
+
+async def test_context_keeps_shorter_lines_after_one_that_does_not_fit(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, seconds_ago=100, _id="anc", message="anchor")
+    for i in range(1, 7):
+        _add(fake, seconds_ago=100 + i, message=f"long {i} " + "L" * 3000)
+    for i in range(7, 17):
+        _add(fake, seconds_ago=100 + i, message=f"short{i}")
+    res = await tools.context_around(app, "graylog_3/anc", seconds=60)
+    texts = " ".join(m["message"] for m in res["messages"])
+    assert len(dumps(res)) <= 8000 and res["truncated"]
+    assert "long 6" not in texts and "short7" in texts and "short8" in texts
+
+
+async def test_context_keeps_lines_when_the_anchor_itself_does_not_fit_again(make_app):
+    app, fake = make_app(limits={"context_output_chars": 2000})
+    fake.messages = []
+    _add(fake, seconds_ago=100, _id="anc", message="A" * 900)
+    for i in range(1, 6):
+        _add(fake, seconds_ago=100 - i, message=f"near{i}")
+    res = await tools.context_around(app, "graylog_3/anc", seconds=60)
+    assert any(m["message"].startswith("near") for m in res["messages"])
+
+
 async def test_context_keeps_both_sides_of_the_anchor_when_cut(make_app):
     app, fake = make_app()
     fake.messages = []
