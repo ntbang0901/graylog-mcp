@@ -62,6 +62,7 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
+    _refuse_symlink(path)  # before the backup too, which would copy what the link points to into the repository
     backup = backup_file(path) if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)
     write_text(path, text)
@@ -77,10 +78,14 @@ def backup_file(path: Path) -> Path:
     return backup
 
 
-def write_text(path: Path, text: str) -> None:
-    """What this tool writes needs no review, but writing must not accept what an untrusted file already held."""
+def _refuse_symlink(path: Path) -> None:
     if path.name in PROJECT_CONFIG_NAMES and path.is_symlink():
         raise ConfigError(f"{path} is a symbolic link: edit the file it points to, or replace it")
+
+
+def write_text(path: Path, text: str) -> None:
+    """What this tool writes needs no review, but writing must not accept what an untrusted file already held."""
+    _refuse_symlink(path)
     accepted = trust.applies(path) and (not path.exists() or trust.is_trusted(path))
     path.write_text(text, encoding="utf-8")
     if accepted:

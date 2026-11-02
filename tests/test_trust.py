@@ -351,6 +351,62 @@ def test_folders_of_an_untrusted_config_are_not_touched(repo):
     assert _group_folders(file) == []
 
 
+def test_one_file_has_one_digest_however_it_was_reached(repo, tmp_path_factory):
+    (repo / "config.toml").write_text(INSTANCE, encoding="utf-8")
+    link = tmp_path_factory.mktemp("home") / "ops.toml"
+    link.symlink_to(repo / "config.toml")
+    trust.record(link)
+    trust.check(repo / "config.toml")
+    trust.record(repo / "config.toml")
+    trust.check(link)
+
+
+def test_a_refused_write_makes_no_backup_of_what_the_link_points_to(tmp_path):
+    private = tmp_path / "private.toml"
+    private.write_text(INSTANCE, encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    target = repo / ".graylog-mcp.toml"
+    target.symlink_to(private)
+    with pytest.raises(ConfigError, match="symbolic link"):
+        configfile.save_text(target, INSTANCE)
+    assert not (repo / ".graylog-mcp.toml.bak").exists()
+
+
+def test_invalid_utf8_is_a_config_error(repo):
+    file = repo / ".graylog-mcp.toml"
+    file.write_bytes(b'url = "\xff"\n')
+    with pytest.raises(ConfigError):
+        trust.settings(file)
+    with pytest.raises(ConfigError):
+        load_config(str(file))
+    trust.refuse_untrusted(file)
+
+
+def test_refusals_to_write_are_messages_not_tracebacks(tmp_path, capsys):
+    victim = tmp_path / "victim"
+    victim.write_text("{}", encoding="utf-8")
+    config = tmp_path / "company.toml"
+    config.write_text('[groups.acme.environments.prod]\nurl = "https://graylog.test"\n', encoding="utf-8")
+    folder = tmp_path / "project"
+    (folder / ".git").mkdir(parents=True)
+    (folder / ".mcp.json").symlink_to(victim)
+    assert main(["repo", "--config", str(config), "add", "acme", str(folder)]) == 2
+    assert "symbolic link" in capsys.readouterr().err
+    assert victim.read_text(encoding="utf-8") == "{}"
+
+
+def test_start_uses_the_real_file_of_a_symlinked_config(tmp_path):
+    from graylog_mcp.__main__ import _start_config
+
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.parent.mkdir()
+    real.write_text("", encoding="utf-8")
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    assert _start_config(str(link)) == real.resolve()
+
+
 def test_repos_needs_approval(tmp_path):
     file = tmp_path / ".graylog-mcp.toml"
     file.write_text('[groups.a]\nrepos = ["~/other"]\n', encoding="utf-8")

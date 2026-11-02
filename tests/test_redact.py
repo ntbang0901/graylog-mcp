@@ -234,6 +234,11 @@ def test_long_values_cost_linear_time(unit):
         "1-",
         "12 ",
         "1 1-",
+        "1234 ",
+        "12345 ",
+        "1234.",
+        "4111-",
+        "1234567890 ",
         "://a:b",
         "a://",
         "secret ",
@@ -404,6 +409,36 @@ def test_an_allow_pattern_sees_the_whole_name_or_url():
     allowed = "https://ci:public@"
     assert _from_toml(allow=[allowed]).text(f"{allowed}localhost/x") == f"{allowed}localhost/x"
     assert "fake-value" not in _from_toml(allow=[allowed]).text("https://ci:fake-value@example.test")
+
+
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("--token=.*", "--token=fake-value"),
+        ("-x://.*@", "-x://u:fake-value@10.0.0.1"),
+        ("x-eyJ.*", "x-eyJabcde.eyJabcde.fake-value"),
+    ],
+)
+def test_an_allow_pattern_does_not_see_more_than_the_secret_and_its_name(allow, text):
+    assert "fake-value" not in _from_toml(allow=[allow]).text(text)
+
+
+def test_digits_another_rule_recognises_are_not_taken_for_a_card():
+    assert _from_toml(packs=["vn"]).text("6122 3741 4114 0912 345 678") == "6122 3741 4114 [PHONE]"
+    account = CustomPattern("account", re.compile(r"\d{4}( \d{4}){4}"), "[ACCT]")
+    assert Redactor(RedactionConfig(patterns=(account,))).text("5602 6509 4912 1050 2575") == "[ACCT]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ids 9458 7839 4018 6520 9182 4003 7191 7800 ok",
+        "6551.1552 3371.4882",
+        "4 5 6 7 8 9 1 2 3 4 5 6 7 8 9 1 2 3 4 5 6",
+    ],
+)
+def test_a_list_of_numbers_is_not_taken_for_a_card(text):
+    assert Redactor().text(text) == text
 
 
 def test_exclude_fields_names_a_field_in_any_spelling_but_not_a_part_of_one():

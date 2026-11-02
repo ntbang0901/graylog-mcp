@@ -551,7 +551,7 @@ def _repo(argv: list[str]) -> int:
                 source = "shared" if args.shared else "git"
                 installed = clients.install("claude-code", "project", folder, project, names, source)
                 print(f"  ✓ Claude Code: {installed.path}")
-    except ConfigError as exc:
+    except (ConfigError, ValueError) as exc:
         print(f"graylog-mcp repo: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -766,11 +766,10 @@ def _install(argv: list[str]) -> int:
 def _start_config(arg: str | None) -> Path:
     from graylog_mcp.setup import service
 
-    # not resolved: the server checks this path on every load, and a symlink can give a committed file any name
     if arg:
-        return Path(arg).expanduser().absolute()
+        return Path(arg).expanduser().resolve()
     found = default_config_path()
-    return found.absolute() if found is not None else service.user_config_path()
+    return found.resolve() if found is not None else service.user_config_path()
 
 
 def _group_folders(config_file: Path) -> list[Path]:
@@ -1043,7 +1042,11 @@ def _connect(argv: list[str]) -> int:
         return 0
     if args.project is not None:
         _stable_exe()  # its headersHelper runs 'graylog-mcp headers' from PATH
-        path = remote.write_project(folder, remote.project_entry(url, folder))
+        try:
+            path = remote.write_project(folder, remote.project_entry(url, folder))
+        except ValueError as exc:
+            print(f"graylog-mcp connect: {exc}", file=sys.stderr)
+            return 2
         print(f"✓ Claude Code: {path} (no secret in it: commit it; each teammate runs 'graylog-mcp connect {url}')")
         return 0
     entry = remote.user_entry(url)

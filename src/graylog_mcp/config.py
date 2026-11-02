@@ -1149,7 +1149,7 @@ def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...
         try:
             with path.open("rb") as fh:
                 inner = tomllib.load(fh)
-        except tomllib.TOMLDecodeError as exc:
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             raise ConfigError(f"{path}: invalid TOML: {exc}") from None
         merged = _deep_merge(merged, resolve_includes(inner, path.parent, (*seen, path)))
     return _deep_merge(merged, data)
@@ -1160,7 +1160,7 @@ def read_config_file(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
     return resolve_includes(data, path.parent, (path.resolve(),))
 

@@ -15,9 +15,9 @@ that fully matches an allow pattern is kept as is).
 from __future__ import annotations
 
 import re
-import string
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 from graylog_mcp.config import RedactionConfig
@@ -56,8 +56,18 @@ class Rule:
     # Lower runs first. Loose patterns (phone numbers, bare 9-digit ids) run last so that
     # validated, more specific ones (IBAN, card) win on overlapping text.
     priority: int = 50
-    # Characters before the match that belong to it for an allow pattern: the regex starts later only to stay linear.
-    prefix: str = ""
+    # What an allow pattern compares against.
+    allow_text: Callable[[re.Match[str]], str] = lambda m: m.group(0)
+
+
+def _with_text_before(before: re.Pattern[str]) -> Callable[[re.Match[str]], str]:
+    """For a rule whose regex starts late to stay linear: the match, with what comes before it that belongs to it."""
+
+    def allow_text(m: re.Match[str]) -> str:
+        found = before.search(m.string[max(0, m.start() - 256) : m.start()])
+        return (found.group(0) if found else "") + m.group(0)
+
+    return allow_text
 
 
 def _const(text: str) -> Callable[[re.Match[str]], str]:
@@ -93,17 +103,25 @@ def _card_ok(raw: str) -> bool:
 
 
 _CARD_SHAPES = ((4, 4, 4, 4), (4, 6, 5))  # digits per group of a card as printed
+_CARD_RUN_MAX_GROUPS = 6  # a card and a number or two beside it; a longer run is a list of numbers
 
 
 def _mask_card_in_numbers(m: re.Match[str]) -> str:
     """A number next to a card (1234 4111 1111 1111 1111) defeats the "card" rule, so look inside the run. Only for
-    whole digit groups printed as a card, or one run of digits: any window of a number list would pass the Luhn check
-    too often."""
+    whole digit groups printed as a card with one separator, or one run of digits, and not in a long list: too many
+    windows of a number list would pass the Luhn check."""
     raw = m.group(0)
     groups = list(re.finditer(r"\d+", raw))
+    if len(groups) > _CARD_RUN_MAX_GROUPS:
+        return raw
     out, pos, first = [], 0, 0
     while first < len(groups):
-        shapes = [len(s) for s in _CARD_SHAPES if tuple(len(g.group()) for g in groups[first:][: len(s)]) == s]
+        shapes = []
+        for shape in _CARD_SHAPES:
+            window = groups[first : first + len(shape)]
+            separators = {raw[a.end() : b.start()] for a, b in pairwise(window)}
+            if tuple(len(g.group()) for g in window) == shape and len(separators) == 1:
+                shapes.append(len(shape))
         for count in [*shapes, 1]:
             start, end = groups[first].start(), groups[first + count - 1].end()
             if _card_ok(raw[start:end]):
@@ -142,7 +160,7 @@ CORE_RULES: tuple[Rule, ...] = (
         # time on a long a-b-c-... run, on the event loop
         re.compile(r"(://[^\s:/@]*):([^\s@/]+)@"),
         lambda m: f"{m.group(1)}:{REDACTED}@",
-        prefix=string.ascii_letters + string.digits + "+.-",
+        allow_text=_with_text_before(re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*$")),
     ),
     Rule(
         "jwt",
@@ -152,6 +170,7 @@ CORE_RULES: tuple[Rule, ...] = (
             r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"
         ),
         lambda m: f"{m.group(1)}[JWT]",
+        allow_text=lambda m: m.group(0)[len(m.group(1)) :],
     ),
     Rule(
         "bearer",
@@ -178,7 +197,7 @@ CORE_RULES: tuple[Rule, ...] = (
             r"(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
         lambda m: m.group(1) + m.group(2) + m.group(3) + _mask_value(m.group(4)),
-        prefix=string.ascii_letters + string.digits + "_.-\"'",
+        allow_text=_with_text_before(re.compile(r"(?i)(?<![A-Za-z0-9])[\"']?(?:[a-z0-9]+[_.\-])*$")),
     ),
     Rule(
         "email",
@@ -191,13 +210,13 @@ CORE_RULES: tuple[Rule, ...] = (
         _const("[CARD]"),
         _card_ok,
     ),
-    Rule(
-        "card_in_numbers",
-        # dots only between groups of four or more: a decimal (3.141592653589793) must not pass for a card
-        re.compile(r"(?<![\d\-.])(?:\d{4,}(?:[ .\-]\d{4,})+|\d{13,19})(?!\d|[\-.]\d)"),
-        _mask_card_in_numbers,
-        priority=60,  # after the packs: a spaced IBAN holds groups that can look like a card
-    ),
+)
+# Runs after every other rule, custom patterns too: digits another rule recognises must not be taken for a card.
+_CARD_IN_NUMBERS = Rule(
+    "card_in_numbers",
+    # dots only between groups of four or more: a decimal (3.141592653589793) must not pass for a card
+    re.compile(r"(?<![\d\-.])(?:\d{4,}(?:[ .\-]\d{4,})+|\d{13,19})(?![\d\-]|\.\d)"),
+    _mask_card_in_numbers,
 )
 
 
@@ -340,7 +359,7 @@ class Redactor:
         rules.sort(key=lambda r: r.priority)  # stable: core rules keep their order
         for custom in cfg.patterns:
             rules.append(Rule(custom.name, custom.pattern, _const(custom.replacement)))
-        self.rules = tuple(rules)
+        self.rules = (*rules, _CARD_IN_NUMBERS)
         self._extra_fields = tuple(filter(None, map(_squash, cfg.extra_sensitive_fields)))
         self._exclude_fields = {_squash(f) for f in cfg.exclude_fields}
 
@@ -361,10 +380,7 @@ class Redactor:
     def _allowed(self, rule: Rule, m: re.Match[str]) -> bool:
         if not self._cfg.allow:
             return False
-        start = m.start()
-        while start > 0 and m.start() - start < 256 and m.string[start - 1] in rule.prefix:
-            start -= 1
-        text = m.string[start : m.end()]
+        text = rule.allow_text(m)
         return any(p.fullmatch(text) for p in self._cfg.allow)
 
     def _apply(self, rule: Rule, value: str) -> str:

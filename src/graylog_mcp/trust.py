@@ -57,7 +57,7 @@ def _read(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
 
 
@@ -78,10 +78,10 @@ def settings(path: Path) -> dict[tuple[str, ...], Any]:
     Files it includes from its own repository count too, since a later commit can change them. A file outside the
     repository counts by its path only: it belongs to this machine, and changing a shared config must not stop every
     repository using it. A symlink leaving the repository would turn the first kind into the second."""
-    root = _root(path)
     first = path.resolve()
-    if not first.is_relative_to(root):
+    if not first.is_relative_to(_root(path)):
         raise UntrustedConfig(f"{path} points outside its repository through a symlink")
+    root = _root(first)  # of the file itself, so the digest is the same however the file was reached
     found: dict[tuple[str, ...], Any] = {}
     # the first file's includes start beside it as written, as read_config_file does, even if it is a symlink
     pending = [(first, path.parent)]
@@ -168,7 +168,8 @@ def refuse_untrusted(path: Path) -> None:
 def accept_written(path: Path) -> None:
     """Accept what this tool just wrote, which is that file only: what it includes still needs a person."""
     found = settings(path)
-    own = path.resolve().relative_to(_root(path)).as_posix()
+    first = path.resolve()
+    own = first.relative_to(_root(first)).as_posix()
     if all(name[0] == own for name in found):
         record(path, found)
 
