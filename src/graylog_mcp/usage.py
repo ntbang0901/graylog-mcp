@@ -17,10 +17,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from graylog_mcp.redact import Redactor
+
 MAX_BYTES = 4_000_000
 KEEP_LINES = 20_000
 # arguments worth seeing again (redacted): what was searched for
 ARG_KEYS = ("query", "trace_id", "field", "ref", "group_by", "contains")
+# what shaped the result, kept apart from "args": the admin page replays those as a tool call
+PARAM_KEYS = ("range", "from_time", "to_time", "fields", "limit", "offset")
 # tools whose empty result means "searched and found nothing"
 SEARCH_TOOLS = frozenset(
     {"search_logs", "count_logs", "log_histogram", "trace_request", "top_values", "context_around"}
@@ -55,7 +59,14 @@ def results_of(result: Any) -> int | None:
 
 
 def track(
-    tool: str, app: Any, kwargs: dict[str, Any], result: Any, error: str | None, started: float, chars: int
+    tool: str,
+    app: Any,
+    kwargs: dict[str, Any],
+    result: Any,
+    error: str | None,
+    started: float,
+    chars: int,
+    requests: int = 0,
 ) -> None:
     """Record one tool call; never raises (usage must not break a call)."""
     if not enabled():
@@ -65,14 +76,18 @@ def track(
         if not instance and app is not None:
             with contextlib.suppress(Exception):
                 instance = app.config.instance(None).name
+        # without an App (its config was refused or is broken) the core rules still apply
+        redact = (app.redactor if app is not None else Redactor()).text
         args: dict[str, str] = {}
         for key in ARG_KEYS:
             value = kwargs.get(key)
             if value not in (None, ""):
-                text = str(value)
-                if app is not None:
-                    text = app.redactor.text(text)
-                args[key] = text[:300]
+                args[key] = redact(str(value))[:300]
+        params: dict[str, str] = {}
+        for key in PARAM_KEYS:
+            value = kwargs.get(key)
+            if value not in (None, "", 0):
+                params[key] = redact(str(value))[:100]
         from graylog_mcp.shared import current_repo
 
         repo = current_repo.get()
@@ -89,12 +104,24 @@ def track(
             entry["results"] = found
         if args:
             entry["args"] = args
+        if params:
+            entry["params"] = params
+        if requests:
+            entry["requests"] = requests
+        if isinstance(result, dict):
+            returned = result.get("returned")
+            if not isinstance(returned, int) and isinstance(result.get("messages"), list):
+                returned = len(result["messages"])
+            if isinstance(returned, int):
+                entry["returned"] = returned  # lines in this answer; "results" is what the query matched
+            if result.get("truncated"):
+                entry["truncated"] = True
         if isinstance(result, dict) and result.get("rewritten"):
             entry["rewritten"] = True  # a safe or learned fix ran instead of the query as written
         if isinstance(result, dict) and result.get("suggestions"):
             entry["suggested"] = len(result["suggestions"])
         if error:
-            entry["error"] = (app.redactor.text(error) if app is not None else error)[:300]
+            entry["error"] = redact(error)[:300]
         if repo:
             entry["repo"] = Path(repo).name
         write(entry)

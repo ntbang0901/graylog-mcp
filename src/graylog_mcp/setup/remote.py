@@ -77,6 +77,8 @@ def user_entry(url: str) -> dict[str, Any]:
 def write_project(folder: Path, entry: dict[str, Any]) -> Path:
     """Add or replace the graylog entry of ``folder/.mcp.json``, keeping the other servers."""
     path = folder / ".mcp.json"
+    if not path.resolve().is_relative_to(folder.resolve()):  # a repository could have committed it as a symlink
+        raise ValueError(f"{path} leads outside {folder} through a symbolic link: replace it first")
     data: dict[str, Any] = {}
     if path.is_file():
         text = path.read_text(encoding="utf-8").strip()

@@ -18,6 +18,7 @@ A repository is named in one of two ways:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -45,6 +46,7 @@ log = logging.getLogger(__name__)
 
 REPO_HEADER = "X-Graylog-MCP-Repo"
 RELOAD_SECONDS = 5.0  # how often a repository's config is read again (edits apply without a restart)
+MAX_ENTRIES = 256  # repositories kept; the key comes from the client, so the least recently used is dropped
 
 # an absolute folder whatever the server's system: /x from macOS or Linux, C:\ or \\server\share from Windows
 _ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
@@ -100,7 +102,8 @@ class AppPool:
         self.transport = transport
         self.repo_paths = repo_paths  # read the folders clients name (the server runs on their machine)
         self.graylogs: list[Graylog] = []
-        self.entries: dict[Path | str, _Entry] = {}
+        self.entries: dict[Path | str, _Entry] = {}  # insertion order = recency, oldest first
+        self._closing: set[asyncio.Task[None]] = set()
         self.default = App.create(default, graylog=self._graylog) if default is not None else None
 
     def _graylog(self, cfg: InstanceConfig) -> Graylog:
@@ -125,11 +128,18 @@ class AppPool:
                 )
             return self.default
         key, info = self.identify(repo)
-        entry = self.entries.get(key)
+        entry = self.entries.pop(key, None)
         now = time.monotonic()
-        if entry is None or now - entry.checked >= RELOAD_SECONDS:
+        reloaded = entry is None or now - entry.checked >= RELOAD_SECONDS
+        if reloaded:
             entry = self._load(key, info, entry, now)
-            self.entries[key] = entry
+        assert entry is not None
+        self.entries[key] = entry  # re-inserted last: most recently used
+        evicted = len(self.entries) > MAX_ENTRIES
+        while len(self.entries) > MAX_ENTRIES:
+            del self.entries[next(iter(self.entries))]
+        if reloaded or evicted:
+            self._retire_unused()
         if entry.app is None:
             raise ConfigError(f"repository {key}: {entry.error}")
         return entry.app
@@ -173,7 +183,24 @@ class AppPool:
         found = [e.app for e in self.entries.values() if e.app is not None]
         return [self.default, *found] if self.default is not None else found
 
+    def _retire_unused(self) -> None:
+        """Stop keeping clients no App uses any more (a changed instance setting makes a new client)."""
+        in_use = {id(gl) for app in self.apps() for gl in app.instances.values()}
+        unused = [gl for gl in self.graylogs if id(gl) not in in_use]
+        if not unused:
+            return
+        self.graylogs = [gl for gl in self.graylogs if id(gl) in in_use]
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no event loop: nothing can have been using the client
+            return
+        for gl in unused:
+            task = loop.create_task(gl.client.retire())
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
+
     async def close(self) -> None:
+        await asyncio.gather(*self._closing, return_exceptions=True)
         for gl in self.graylogs:
             try:
                 await gl.aclose()

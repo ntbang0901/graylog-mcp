@@ -6,7 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Breaking:** a `.graylog-mcp.toml` or `graylog-mcp.toml` no longer takes effect on its own, because a committed file
+  could send a saved token to another host or switch masking off. Its `url`, `proxy`, TLS, `auth`, `username`, `*_env`,
+  `include`, `only_groups`, `repos`, `[http]` and `[redaction]` settings need `graylog-mcp trust` on each machine, and
+  again when they change. Run it once in each repository you already use. This also applies through `--config` and
+  `GRAYLOG_MCP_CONFIG`, and to any config inside a git repository; a config with another name elsewhere, and the user
+  config, are unchanged.
+- A `.bak` committed as a symlink is no longer written through when saving a config or a client's `.mcp.json`, and a
+  committed project config, `.mcp.json`, `.cursor` or `.vscode` that is a symlink leading out of the repository is no
+  longer written at all: either could overwrite a file outside the repository.
+- Redaction masks more shapes of secrets in log text: JSON inside a string, `=>`, unclosed quotes, `password=<x>`,
+  `password=[x]`, and names such as `userPassword`, `PGPASSWORD`, `secretKey`, `JSESSIONID`. Field names match more
+  spellings (`dbPassword1`, `accesstoken`, `req_cookies`). A card number next to another number, or written
+  `4111.1111.1111.1111`, is masked.
+- `exclude_fields` names a whole field in any spelling: `order_note` also excludes `orderNote`, and still does not
+  exclude `order_note_id`.
+
+### Changed
+- Smaller answers for the tools that return the most text: `search_logs` is capped at 12000 characters
+  (`limits.search_output_chars`), `context_around` at 8000 (`limits.context_output_chars`) and `get_message` without
+  `fields` at 4000 (`limits.message_output_chars`), all under `limits.max_output_chars`. `get_message` names what it
+  cut in `cut_fields` (`cut_more` counts any it had no room to list); passing those names in `fields` returns them.
+  `context_around` keeps the lines nearest the anchor when it has to cut, so the lines after it are no longer the
+  first to go.
+- Shorter tool parameter descriptions, to spend fewer tokens on every session.
+- The admin page is redesigned: the Dashboard leads with a ruled list of environments and their state in words,
+  health is no longer a coloured dot, and the theme follows the OS until you pick one, with a checkbox to go back to it (it was dark by default).
+  Same pages, API and shortcuts.
+
 ### Added
+- `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
+  and `truncated`.
 - A shared server on a VM for the team: clients name their repository by identity (git remote such as
   `github.com/acme/payment-api`, or the folder name) instead of a folder the server cannot read; groups list
   repositories by remote or name and `[repos."<repository>"]` holds each one's focus and defaults. `http.repo_paths`
@@ -119,8 +150,23 @@ All notable changes to this project are documented here. The format follows
 - Groups x user-defined environments: `[groups.<g>.environments.<e>]` (instances `<g>/<e>`), shared
   `[environments.<e>]` settings, `default_group` / `default_environment`, and `include` for one company-wide
   file. The `instance` argument accepts `payment/prod`, `payment prod`, a group or an environment.
+- Redaction profiles: `[redaction] profile = "basic" | "pii" | "finance" | "strict"` (or
+  `GRAYLOG_REDACTION_PROFILE`, or the Profile list on the admin UI's Redaction page) starts from a ready-made set
+  of packs, sensitive field names and patterns; `packs`, `sensitive_fields` and `patterns` add to it, and
+  `exclude_fields` / `allow` always win.
+- The admin UI sends `Content-Security-Policy` (no framing, no foreign hosts), `X-Content-Type-Options`,
+  `X-Frame-Options` and `Referrer-Policy` on every response, including 401/403/415.
 
 ### Fixed
+- One long log value could stall the server: redaction and stack trace compaction took quadratic time on some runs of
+  characters (26 s at 32 KB, on the event loop), and now take linear time.
+- `context_around` stays under its cap when the anchor alone is too long, and names what it cut.
+- Memory that only grew in a long-running server: suggestions offered after an empty search and never run again
+  are now dropped after 30 minutes (at most 2000 kept); the shared server keeps at most 256 repositories (the
+  least recently used goes) and closes a Graylog client once a config change replaces it and its running requests
+  finish.
+- `sensitive_fields` in the redaction config match any spelling of a name: `order_note` also masks `orderNote`,
+  `order-note` and `order.note`.
 - Windows: the `.mcp.json` written for a repository carries the repository folder itself in the `X-Graylog-MCP-Repo`
   header (Claude Code has no `PWD` there, so `${PWD:-}` was empty and every tool failed with `no repository given
   and no default configuration`); an earlier file is fixed in place. `start` also says why the config it serves

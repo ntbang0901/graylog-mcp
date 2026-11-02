@@ -46,6 +46,7 @@ from graylog_mcp.timerange import TimeRange, format_ts
 AUTO_WEIGHT = 0.75
 AUTO_MIN_USES = 2
 PENDING_SECONDS = 1800  # a suggestion counts as used when it is run within this time
+MAX_PENDING = 2000  # offered suggestions remembered at once
 MAX_CANDIDATES = 8
 COUNT_TIMEOUT = 8.0
 FIELD_CACHE_SECONDS = 300.0
@@ -259,7 +260,15 @@ class Learned:
                 rule["offered"] = int(rule.get("offered", 0)) + 1
                 rule["last"] = round(now)
                 self.pending[f"{instance}|{normalize(c.query)}"] = (c.key, now)
+            self._prune_pending(now)
             self._save(rules)
+
+    def _prune_pending(self, now: float) -> None:
+        """A suggestion never run again would stay here for good: drop expired ones, then the oldest."""
+        for key in [k for k, (_, offered) in self.pending.items() if now - offered > PENDING_SECONDS]:
+            del self.pending[key]
+        for key in sorted(self.pending, key=lambda k: self.pending[k][1])[: max(0, len(self.pending) - MAX_PENDING)]:
+            del self.pending[key]
 
     def observe(self, instance: str, query: str, found: int) -> str | None:
         """After any search: if it ran a pending suggestion and found something, the rule was used."""

@@ -123,8 +123,9 @@ class App:
             default_fields=gl.cfg.default_fields,
         )
 
-    def budget(self) -> Budget:
-        return Budget(self.config.limits.max_output_chars)
+    def budget(self, tool_limit: int | None = None) -> Budget:
+        limit = self.config.limits.max_output_chars
+        return Budget(min(limit, tool_limit) if tool_limit else limit)
 
     def limit(self, value: int | None) -> int:
         lim = self.config.limits
@@ -314,7 +315,7 @@ async def search_logs(
     recover.LEARNED.observe(gl.cfg.name, query or "*", len(page.messages))
     shaper = app.shaper(gl)
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
-    budget = app.budget()
+    budget = app.budget(app.config.limits.search_output_chars)
     out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset, rewritten=rewritten)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
@@ -464,6 +465,61 @@ async def _fetch_message(app: App, gl: Graylog, ref: str) -> RawMessage:
     return found
 
 
+_SHORT_VALUE = 200  # JSON characters; a shorter value is dropped whole rather than trimmed
+
+
+def _next_cuts(sizes: dict[str, int], over: int) -> list[str]:
+    """Long values first; 'message' when trimming it is enough; else short fields, so 'message' keeps some text.
+    Short fields come as many as it takes at once: a message can have thousands, and each pass measures the output."""
+    # ref is never cut: it is how the model gets back here. A real ts is short; a long one is a log field named ts.
+    longest = [k for k, size in sizes.items() if k not in {"ref", "message"} and size > _SHORT_VALUE]
+    if longest:
+        return [max(longest, key=sizes.__getitem__)]
+    message = sizes.get("message", 0)
+    if message > _SHORT_VALUE and message - over >= _SHORT_VALUE:
+        return ["message"]
+    droppable = [k for k in sizes if k not in {"ts", "ref", "source", "level", "message"}]
+    picked: list[str] = []
+    needed = over - max(0, message - _SHORT_VALUE)
+    for key in sorted(droppable, key=lambda k: len(k) + sizes[k], reverse=True):
+        picked.append(key)
+        needed -= len(key) + sizes[key] + 4  # quotes, colon and comma around them
+        if needed <= 0:
+            break
+    return picked or (["message"] if message > _SHORT_VALUE else [])
+
+
+def _fit_message(out: dict[str, Any], msg: dict[str, Any], limit: int) -> None:
+    """Cut values until ``out`` fits and name them so the model can ask for them; the names have their own share."""
+    if len(dumps(out)) <= limit:
+        return
+    cut: dict[str, int] = {}
+    unlisted: set[str] = set()
+    out.update(truncated=True, cut_fields=cut, hint="values were cut to fit; pass names from cut_fields in 'fields'")
+    sizes = {k: len(dumps(v)) for k, v in msg.items()}
+    while (over := len(dumps(out)) - limit) > 0:
+        keys = _next_cuts(sizes, over)
+        if not keys:
+            break
+        for key in keys:
+            if key not in cut:
+                if len(dumps(cut)) + len(dumps(key)) < limit // 4:
+                    cut[key] = sizes[key]
+                else:
+                    unlisted.add(key)
+                    out["cut_more"] = len(unlisted)
+            if sizes[key] <= _SHORT_VALUE:
+                del msg[key], sizes[key]
+                continue
+            # sizes are in JSON characters and escapes make them longer than the text: keep the same share of the
+            # text, and if escapes are uneven the next pass takes the rest
+            value = msg[key]
+            left = sizes[key] - (len(dumps(out)) - limit)
+            fits = isinstance(value, str) and left >= _SHORT_VALUE // 2
+            msg[key] = value[: int(len(value) * left / sizes[key])] if fits else f"[omitted: {sizes[key]} chars]"
+            sizes[key] = len(dumps(msg[key]))
+
+
 async def get_message(
     app: App,
     ref: str,
@@ -490,21 +546,10 @@ async def get_message(
         except GraylogError:
             msg["streams"] = stream_ids
     out: dict[str, Any] = {"instance": gl.cfg.name, "message": msg}
-    limit = app.config.limits.max_output_chars
-    protected = {"ts", "ref", "source", "level"}
-    while len(dumps(out)) > limit:
-        candidates = [k for k in msg if k not in protected and len(dumps(msg[k])) > 200]
-        if not candidates:
-            break
-        key = max(candidates, key=lambda k: len(dumps(msg[k])))
-        size = len(dumps(msg[key]))
-        excess = len(dumps(out)) - limit
-        keep = max(100, size - excess - 50)
-        if isinstance(msg[key], str) and keep < len(msg[key]):
-            msg[key] = truncate(msg[key][:keep], keep)
-        else:
-            msg[key] = f"[omitted: {size} chars]"
-        out["truncated"] = True
+    limits = app.config.limits
+    # naming fields asks for those values: only the overall cap applies then
+    limit = limits.max_output_chars if fields else min(limits.max_output_chars, limits.message_output_chars)
+    _fit_message(out, msg, limit)
     return out
 
 
@@ -662,6 +707,7 @@ async def context_around(
     shaper = app.shaper(gl)
     anchor_key = anchor.id
     lines = []
+    distance: dict[int, int] = {}
     for m in merged:
         entry = shaper.message(m.fields, m.index, m.id, limit=SAMPLE_CHARS)
         mts = parse_graylog_ts(m.fields.get("timestamp"))
@@ -669,8 +715,9 @@ async def context_around(
         entry = {"dt": f"{'+' if delta >= 0 else ''}{delta}ms", **entry}
         if anchor_key and m.id == anchor_key:
             entry["anchor"] = True
+        distance[id(entry)] = abs(delta)
         lines.append(entry)
-    budget = app.budget()
+    budget = app.budget(app.config.limits.context_output_chars)
     out: dict[str, Any] = {
         "instance": gl.cfg.name,
         "anchor": shaper.message(anchor.fields, anchor.index, anchor.id, limit=SAMPLE_CHARS),
@@ -679,9 +726,17 @@ async def context_around(
         "more_before": more_before,
         "more_after": more_after,
     }
+    # the header gets half at most: JSON escapes can make a sample far longer than SAMPLE_CHARS
+    limits = app.config.limits
+    _fit_message(out, out["anchor"], min(limits.max_output_chars, limits.context_output_chars) // 2)
+    if "cut_fields" in out:
+        out["hint"] = "values of the anchor were cut to fit; get_message with its ref returns them"
     budget.take(out)
-    out["messages"] = budget.fit(lines)
-    out["truncated"] = budget.truncated
+    # nearest first: fitting in time order would drop everything after the anchor.
+    # Not budget.fit: it stops at the first long line, and shorter lines further out still help.
+    kept = {id(entry) for entry in sorted(lines, key=lambda e: distance[id(e)]) if budget.take(entry)}
+    out["messages"] = [entry for entry in lines if id(entry) in kept]
+    out["truncated"] = budget.truncated or "cut_fields" in out
     return out
 
 

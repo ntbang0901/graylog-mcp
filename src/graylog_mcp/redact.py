@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 from graylog_mcp.config import RedactionConfig
@@ -38,6 +39,12 @@ _SENSITIVE_FIELD = re.compile(
 )
 # camelCase names (accessToken, clientSecret, userPassword)
 _CAMEL_SENSITIVE = re.compile(r"(Password|Passwd|Secret|Token|ApiKey|AccessKey|PrivateKey|Cookie|Authorization)$")
+# Any spelling of the words that mean little else (dbPassword1, accesstoken, req_cookies), matched against the name
+# without separators. A bare "token" stays out: total_tokens counts model tokens.
+_SQUASHED_SENSITIVE = re.compile(
+    r"pass(?:word|wd|phrase)|secret(?!ar)|(?:access|refresh|id|auth|bearer)token|(?:api|access|private)key|cookie|"
+    r"credential|sessionid|authorization|otpcode|pincode"
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,28 @@ class Rule:
     # Lower runs first. Loose patterns (phone numbers, bare 9-digit ids) run last so that
     # validated, more specific ones (IBAN, card) win on overlapping text.
     priority: int = 50
+    # What an allow pattern compares against.
+    allow_text: Callable[[re.Match[str]], str] = lambda m: m.group(0)
+
+
+def _with_text_before(before: re.Pattern[str]) -> Callable[[re.Match[str]], str]:
+    """For a rule whose regex starts late to stay linear: the match, with what comes before it that belongs to it."""
+
+    def allow_text(m: re.Match[str]) -> str:
+        found = before.search(m.string[max(0, m.start() - 256) : m.start()])
+        return (found.group(0) if found else "") + m.group(0)
+
+    return allow_text
+
+
+_KV_NAME_START = re.compile(r"(?i)(?<![A-Za-z0-9])[\"']?(?:[a-z0-9]+[_.\-])*[a-z0-9]*$")
+
+
+def _kv_allow_text(m: re.Match[str]) -> str:
+    """The whole name for an allow pattern, so id_token=.* does not also open valid_token=. An opening quote counts
+    only when the name closes it."""
+    text = _with_text_before(_KV_NAME_START)(m)
+    return text[1:] if text[0] in "\"'" and m.group(2)[-1:] != text[0] else text
 
 
 def _const(text: str) -> Callable[[re.Match[str]], str]:
@@ -79,8 +108,40 @@ _CARD_PREFIX = re.compile(r"^(4|5[1-5]|2[2-7]|3[0-8]|6)")
 
 
 def _card_ok(raw: str) -> bool:
-    digits = re.sub(r"[ -]", "", raw)
+    digits = re.sub(r"[ .\-]", "", raw)
     return 13 <= len(digits) <= 19 and bool(_CARD_PREFIX.match(digits)) and luhn_ok(digits)
+
+
+_CARD_SHAPES = ((4, 4, 4, 4), (4, 6, 5))  # digits per group of a card as printed
+_CARD_RUN_MAX_GROUPS = 6  # a card and a number or two beside it; a longer run is a list of numbers
+
+
+def _mask_card_in_numbers(m: re.Match[str]) -> str:
+    """A number next to a card (1234 4111 1111 1111 1111) defeats the "card" rule, so look inside the run. Only for
+    whole digit groups printed as a card with one separator, or one run of digits, and not in a long list: too many
+    windows of a number list would pass the Luhn check."""
+    raw = m.group(0)
+    groups = list(re.finditer(r"\d+", raw))
+    if len(groups) > _CARD_RUN_MAX_GROUPS:
+        return raw
+    out, pos, first = [], 0, 0
+    while first < len(groups):
+        shapes = []
+        for shape in _CARD_SHAPES:
+            window = groups[first : first + len(shape)]
+            separators = {raw[a.end() : b.start()] for a, b in pairwise(window)}
+            if tuple(len(g.group()) for g in window) == shape and len(separators) == 1:
+                shapes.append(len(shape))
+        for count in [*shapes, 1]:
+            start, end = groups[first].start(), groups[first + count - 1].end()
+            if _card_ok(raw[start:end]):
+                out.append(raw[pos:start] + "[CARD]")
+                pos = end
+                first += count
+                break
+        else:
+            first += 1
+    return "".join(out) + raw[pos:]
 
 
 def _iban_ok(raw: str) -> bool:
@@ -105,13 +166,21 @@ CORE_RULES: tuple[Rule, ...] = (
     # credentials embedded in URLs: scheme://user:pass@host
     Rule(
         "url_credentials",
-        re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://[^\s:/@]*):([^\s@/]+)@"),
+        # starts at "://", not the scheme: the text before it stays as it is, and looking for a scheme costs quadratic
+        # time on a long a-b-c-... run, on the event loop
+        re.compile(r"(://[^\s:/@]*):([^\s@/]+)@"),
         lambda m: f"{m.group(1)}:{REDACTED}@",
+        allow_text=_with_text_before(re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*$")),
     ),
     Rule(
         "jwt",
-        re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
-        _const("[JWT]"),
+        # once per run of token characters, from its first eyJ: trying again at each "-eyJ" costs quadratic time
+        re.compile(
+            r"(?<![A-Za-z0-9_-])((?:(?!\beyJ)[A-Za-z0-9_-])*)"
+            r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"
+        ),
+        lambda m: f"{m.group(1)}[JWT]",
+        allow_text=lambda m: m.group(0)[len(m.group(1)) :],
     ),
     Rule(
         "bearer",
@@ -123,15 +192,22 @@ CORE_RULES: tuple[Rule, ...] = (
         re.compile(r"(?i)\b(basic)\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])"),
         lambda m: f"{m.group(1)} {REDACTED}",
     ),
-    # password=x  token: x  "api_key": "x"  'secret'='x'  (query strings, logfmt, JSON, headers)
+    # password=x  token: x  "api_key": "x"  'secret'='x'  \"pwd\":\"x\"  :token=>"x"  (query strings, logfmt, JSON
+    # and JSON inside a string, headers, Ruby). It starts at the secret word: what comes before stays as it is, and
+    # matching a long a-b-c-... prefix costs quadratic time, on the event loop. The word after the second | may follow
+    # any letters (userPassword, PGPASSWORD); the shorter ones could not (bypass=1, compass=2).
     Rule(
         "kv_secret",
         re.compile(
-            r"(?i)(?<![A-Za-z0-9])([\"']?)((?:[a-z0-9]+[_.\-])*(?:access|refresh|id|auth|csrf|xsrf|bearer)?"
-            r"[_\-]?(?:" + _SECRET_WORDS + r"))\1(\s*[=:]\s*)(?!\[[A-Z_]+\])"
-            r"(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s&,;\"'<>)\]}]+)"
+            r"(?i)((?<![A-Za-z0-9])(?:access|refresh|id|auth|csrf|xsrf|bearer)?[_\-]?(?:" + _SECRET_WORDS + r")"
+            r"|pass(?:word|wd|phrase)|secret(?:[_\-]?key)?|(?:access|refresh|id|auth)[_\-]?token|"
+            r"(?:api|access|private)[_\-]?key|cookies?|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
+            r"(\\?[\"']?)(\s*(?:=>|:=|==|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
+            r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|<[^>\n]{0,256}>|\[[^\]\n]{0,256}\]|"
+            r"(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),
-        lambda m: m.group(1) + m.group(2) + m.group(1) + m.group(3) + _mask_value(m.group(4)),
+        lambda m: m.group(1) + m.group(2) + m.group(3) + _mask_value(m.group(4)),
+        allow_text=_kv_allow_text,
     ),
     Rule(
         "email",
@@ -144,6 +220,13 @@ CORE_RULES: tuple[Rule, ...] = (
         _const("[CARD]"),
         _card_ok,
     ),
+)
+# Runs after every other rule, custom patterns too: digits another rule recognises must not be taken for a card.
+_CARD_IN_NUMBERS = Rule(
+    "card_in_numbers",
+    # dots only between groups of four or more: a decimal (3.141592653589793) must not pass for a card
+    re.compile(r"(?<![\d\-.])(?:\d{4,}(?:[ .\-]\d{4,})+|\d{13,19})(?![\d\-]|\.\d)"),
+    _mask_card_in_numbers,
 )
 
 
@@ -211,6 +294,71 @@ PACKS: dict[str, Callable[[RedactionConfig], list[Rule]]] = {
 }
 
 
+@dataclass(frozen=True)
+class Profile:
+    """A ready-made bundle of redaction settings, chosen with ``[redaction] profile``."""
+
+    summary: str
+    packs: tuple[str, ...] = ()
+    sensitive_fields: tuple[str, ...] = ()
+    patterns: tuple[tuple[str, str, str], ...] = ()  # (name, regex, replacement)
+
+
+# Field names are matched as substrings, ignoring case and separators (first_name also matches firstName and
+# first.name), so each entry is specific: a bare "name" or "address" would also hide logger_name, hostname and
+# ip_address.
+_PII_FIELDS = (
+    "full_name",
+    "first_name",
+    "last_name",
+    "customer_name",
+    "birthdate",
+    "birthday",
+    "date_of_birth",
+    "phone",
+    "mobile",
+    "home_address",
+    "billing_address",
+    "shipping_address",
+    "street",
+)
+_FINANCE_FIELDS = (
+    "account_number",
+    "bank_account",
+    "card_number",
+    "cardnumber",
+    "cvv",
+    "cvc",
+    "iban",
+    "routing_number",
+    "tax_id",
+)
+
+PROFILES: dict[str, Profile] = {
+    "basic": Profile("Core rules only: secrets, credentials, emails, card numbers (the default)."),
+    "pii": Profile(
+        "Core rules, plus fields named for personal names, phone numbers, birth dates and street addresses.",
+        (),
+        _PII_FIELDS,
+    ),
+    "finance": Profile(
+        "Core rules, plus fields named for bank accounts, cards and tax ids, and IBAN values.",
+        ("eu",),
+        _FINANCE_FIELDS,
+    ),
+    "strict": Profile(
+        "Everything above, every country pack and IPv4 addresses. Noisy: version numbers like 1.2.3.4 are masked too.",
+        tuple(PACKS),
+        _PII_FIELDS + _FINANCE_FIELDS,
+        (("ipv4", r"(?<!\d)(?<!\d\.)(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)", "[IP]"),),
+    ),
+}
+
+
+def _squash(name: str) -> str:
+    return re.sub(r"[\W_]", "", name).lower()
+
+
 class Redactor:
     def __init__(self, cfg: RedactionConfig | None = None):
         cfg = cfg or RedactionConfig()
@@ -221,23 +369,28 @@ class Redactor:
         rules.sort(key=lambda r: r.priority)  # stable: core rules keep their order
         for custom in cfg.patterns:
             rules.append(Rule(custom.name, custom.pattern, _const(custom.replacement)))
-        self.rules = tuple(rules)
-        self._extra_fields = tuple(f.lower() for f in cfg.extra_sensitive_fields)
-        self._exclude_fields = {f.lower() for f in cfg.exclude_fields}
+        self.rules = (*rules, _CARD_IN_NUMBERS)
+        self._extra_fields = tuple(filter(None, map(_squash, cfg.extra_sensitive_fields)))
+        self._exclude_fields = {_squash(f) for f in cfg.exclude_fields}
 
     @property
     def active_rules(self) -> list[str]:
         return [r.name for r in self.rules]
 
     def is_sensitive_field(self, name: str) -> bool:
-        low = name.lower()
-        if low in self._exclude_fields:
+        squashed = _squash(name)
+        if squashed in self._exclude_fields:  # the whole name only: excluding "id" must not expose session_id
             return False
-        if any(extra == low or extra in low for extra in self._extra_fields):
+        if any(extra in squashed for extra in self._extra_fields):
             return True
-        return bool(_SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name))
+        return bool(
+            _SENSITIVE_FIELD.search(name) or _CAMEL_SENSITIVE.search(name) or _SQUASHED_SENSITIVE.search(squashed)
+        )
 
-    def _allowed(self, text: str) -> bool:
+    def _allowed(self, rule: Rule, m: re.Match[str]) -> bool:
+        if not self._cfg.allow:
+            return False
+        text = rule.allow_text(m)
         return any(p.fullmatch(text) for p in self._cfg.allow)
 
     def _apply(self, rule: Rule, value: str) -> str:
@@ -245,7 +398,7 @@ class Redactor:
             matched = m.group(0)
             if rule.validate is not None and not rule.validate(matched):
                 return matched
-            if self._allowed(matched):
+            if self._allowed(rule, m):
                 return matched
             return rule.replace(m)
 

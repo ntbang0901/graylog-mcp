@@ -16,6 +16,7 @@ import secrets
 import socket
 import time
 import webbrowser
+from collections.abc import MutableMapping
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, recover, scan, tools, usage
+from graylog_mcp import __version__, rca, recover, scan, tools, trust, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
@@ -34,13 +35,14 @@ from graylog_mcp.config import (
     PROJECT_CONFIG_NAMES,
     Config,
     ConfigError,
+    UntrustedConfig,
     detect_repo,
     find_project_config,
     is_repo_path,
     resolve_repo_path,
 )
 from graylog_mcp.config import _parse_redaction as parse_redaction
-from graylog_mcp.redact import PACKS, Redactor
+from graylog_mcp.redact import PACKS, PROFILES, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
 from graylog_mcp.setup.detect import detect, local_timezone
 from graylog_mcp.shaping import dumps
@@ -275,6 +277,21 @@ def _groups_view(config: Config | None, base_dir: Path, url: str | None = None) 
     ]
 
 
+# index.html carries its own inline script and style, so the CSP must allow 'unsafe-inline' for them;
+# it still blocks framing, foreign hosts and <base>/form hijacking. Tighten with a nonce if the page is split.
+_SECURITY_HEADERS = [
+    (k.encode(), v.encode())
+    for k, v in {
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+    }.items()
+]
+
+
 def build_app(state: AdminState) -> Starlette:
     static = resources.files("graylog_mcp.admin").joinpath("static/index.html")
 
@@ -321,6 +338,7 @@ def build_app(state: AdminState) -> Starlette:
                 "secrets_file": str(secret_store.path()),
                 "clients": client_list,
                 "packs": sorted(PACKS),
+                "profiles": {name: p.summary for name, p in PROFILES.items()},
                 "tools": sorted(TOOLS),
                 "local_timezone": local_timezone(),
             }
@@ -369,7 +387,7 @@ def build_app(state: AdminState) -> Starlette:
             if data.get("instances"):
                 configfile.save(state.path, data)
             else:  # an empty config does not validate; keep the other settings
-                state.path.write_text(configfile.render(data), encoding="utf-8")
+                configfile.write_text(state.path, configfile.render(data))
         except ConfigError as exc:
             return _err(str(exc))
         return JSONResponse({"ok": True})
@@ -876,12 +894,18 @@ def build_app(state: AdminState) -> Starlette:
     ]
     inner = Starlette(routes=routes)
 
-    async def guard(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    async def guard(scope: dict[str, Any], receive: Any, send_raw: Any) -> None:
         if scope["type"] == "lifespan":
-            await inner(scope, receive, send)
+            await inner(scope, receive, send_raw)
             return
         if scope["type"] != "http":
             return
+
+        async def send(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), *_SECURITY_HEADERS]}
+            await send_raw(message)
+
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
         host = headers.get("host", "").rsplit(":", 1)[0].strip("[]")
         if state.allowed_hosts and host not in state.allowed_hosts:
@@ -895,6 +919,11 @@ def build_app(state: AdminState) -> Starlette:
             # a JSON content type cannot be sent cross-site without a CORS preflight
             if scope["method"] in ("POST", "PUT") and "application/json" not in headers.get("content-type", ""):
                 await JSONResponse({"error": "JSON body required"}, status_code=415)(scope, receive, send)
+                return
+            try:  # on every call: a git pull can change the file while the page is open, and it tests connections
+                trust.refuse_untrusted(state.path)
+            except UntrustedConfig as exc:
+                await JSONResponse({"error": str(exc)}, status_code=409)(scope, receive, send)
                 return
         await inner(scope, receive, send)
 
@@ -930,6 +959,7 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         token,
         allowed_hosts=("127.0.0.1", "localhost", "::1"),
     )
+    trust.refuse_untrusted(state.path)
     url = f"http://{'localhost' if host == 'localhost' else host}:{port}/#token={token}"
     print(f"graylog-mcp admin UI for {state.path}")
     print(f"  open: {url}")

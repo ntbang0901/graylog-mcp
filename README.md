@@ -118,7 +118,8 @@ All tools are annotated `readOnlyHint` and accept an optional `instance`.
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
 - `count_logs` — exact number of matching messages.
-- `get_message` — one message with all fields, by `index/id` ref.
+- `get_message` — one message with all fields, by `index/id` ref. Long values are cut and listed in `cut_fields`;
+  name them in `fields` to read them in full.
 
 **Investigate**
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
@@ -334,7 +335,24 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
     URLs, PEM private keys, card numbers that pass the Luhn check;
   - packs enabled in config: `vn` (phone numbers, 12-digit CCCD, optional 9-digit CMND), `us` (SSN),
     `eu` (IBAN with checksum), `uk` (NINO), `in` (Aadhaar, PAN);
-  - your own regexes, plus an allow-list and excluded field names to avoid false positives.
+  - a ready-made `profile` (below), then your own `packs`, `sensitive_fields` and regexes on top, plus an
+    allow-list and excluded field names to avoid false positives.
+
+  | `profile` | Adds to the core rules |
+  |-----------|------------------------|
+  | `basic` (default) | nothing |
+  | `pii` | field names for personal names, phone, birth date, home/billing/shipping address, street |
+  | `finance` | field names for account, card, CVV, IBAN, routing and tax ids; the `eu` pack (IBAN) |
+  | `strict` | `pii` + `finance` + every country pack + IPv4 addresses (noisy: `1.2.3.4` version numbers are masked) |
+
+  ```toml
+  [redaction]
+  profile = "pii"
+  packs = ["vn"]                    # added to the profile's packs
+  sensitive_fields = ["order_note"] # added to the profile's field names
+  exclude_fields = ["phone"]        # always wins over the profile
+  ```
+
   Grouping keys (`top_values`, `error_summary`) are masked too.
 - **Stack traces** (Java/Kotlin, Python, .NET, Go, Node): exception lines, `Caused by` blocks and frames
   from `app_packages` are kept; the rest becomes `… N frames`. Without `app_packages`, the first N frames
@@ -361,6 +379,7 @@ Environment variables:
 | `GRAYLOG_VERIFY_TLS`, `GRAYLOG_CA_BUNDLE`, `GRAYLOG_PROXY` | TLS and proxy for the env-only instance |
 | `GRAYLOG_TIMEZONE` | display timezone and zone for naive times (default UTC) |
 | `GRAYLOG_REDACTION_PACKS` | e.g. `vn,eu` |
+| `GRAYLOG_REDACTION_PROFILE` | `basic`, `pii`, `finance` or `strict` |
 | `GRAYLOG_APP_PACKAGES` | e.g. `com.acme,/srv/app/` |
 | `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
 | `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
@@ -381,6 +400,24 @@ See [`examples/config.toml`](examples/config.toml) for every option.
 Commit a `.graylog-mcp.toml` at the root of your application repository with one instance per environment.
 The server finds it from the current directory or any parent up to the repository root, so everyone working
 in the repo gets the same setup. Tokens stay out of the file: each instance names its environment variable.
+
+A file that arrives with a clone could point a saved token at another host or switch masking off, so its sensitive
+settings apply only after you accept them on your machine. Read the file, then run:
+
+```bash
+graylog-mcp trust            # or: graylog-mcp trust /path/to/repo
+```
+
+It shows the settings and asks you to confirm in a terminal (`--yes` skips that, for a script that already reviewed
+them). Sensitive means `url`, `proxy`, `ca_bundle`, `verify_tls`, `auth`, `username`, any `*_env`, `include`,
+`only_groups`, `repos`, `[http]` and all of `[redaction]`. Until you accept them the server refuses the file and sends nothing to
+Graylog; if they change later (a `git pull`, say) it asks again. Everything else, such as `[focus]`, `presets`,
+`[limits]` or `timezone`, can change freely. A file included from the same repository counts by its content, one
+outside it by its path. `init` and the admin page accept what they write themselves.
+
+Any file named `.graylog-mcp.toml` or `graylog-mcp.toml`, and any config inside a git repository, needs this, also
+through `--config` or `GRAYLOG_MCP_CONFIG`. Your user config, even kept in a dotfiles repository, and a config with
+another name outside a repository, such as `/etc/graylog-mcp/prod.toml` in a container, are treated as yours and do not.
 
 ```toml
 # .graylog-mcp.toml
@@ -477,8 +514,9 @@ rules before it is written**. It stays on your machine, is trimmed past 4 MB, an
 server's environment turns it off.
 
 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
-save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Dark by default, with a
-light theme and a phone layout; neutral grays with one blue for data, red and green only for state.
+save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Light or dark follows
+the OS until you pick one (the **Follow OS theme** checkbox goes back to it), with a phone layout; ruled lists in plain ink, teal only for what is healthy, red only for
+failures.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password

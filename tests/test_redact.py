@@ -1,9 +1,11 @@
 import re
+import time
 
 import pytest
 
-from graylog_mcp.config import CustomPattern, RedactionConfig
+from graylog_mcp.config import CustomPattern, RedactionConfig, StacktraceConfig
 from graylog_mcp.redact import Redactor, luhn_ok
+from graylog_mcp.shaping import compact_stacktrace
 
 CORE = Redactor()
 ALL = Redactor(RedactionConfig(packs=("vn", "us", "eu", "uk", "in"), vn_cmnd=True))
@@ -136,3 +138,354 @@ def test_nested_values():
 def test_luhn():
     assert luhn_ok("4111111111111111")
     assert not luhn_ok("4111111111111112")
+
+
+# --------------------------------------------------------------------------- profiles
+
+
+def _from_toml(**redaction):
+    from graylog_mcp.config import _parse_redaction
+
+    return Redactor(_parse_redaction(redaction))
+
+
+def test_profile_basic_is_the_default():
+    assert _from_toml().rules == Redactor().rules
+    assert _from_toml(profile="basic").is_sensitive_field("full_name") is False
+
+
+def test_profile_pii_masks_personal_fields_but_not_look_alikes():
+    red = _from_toml(profile="pii")
+    assert red.fields({"full_name": "An Nguyen", "phone": "x"}) == {"full_name": "[REDACTED]", "phone": "[REDACTED]"}
+    # logger_name / ip_address / hostname must stay readable
+    assert red.fields({"logger_name": "acme.Pay", "ip_address": "10.0.0.1"})["logger_name"] == "acme.Pay"
+
+
+def test_profile_finance_adds_iban_pack():
+    iban = "DE89 3704 0044 0532 0130 00"
+    assert "[IBAN]" in _from_toml(profile="finance").text(f"pay {iban}")
+    assert iban in _from_toml().text(f"pay {iban}")
+
+
+def test_profile_strict_masks_ipv4_and_every_pack():
+    red = _from_toml(profile="strict")
+    assert red.text("from 203.0.113.7 ok") == "from [IP] ok"
+    assert {"vn_cccd", "us_ssn", "iban", "uk_nino", "in_pan"} <= set(red.active_rules)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("refused to 203.0.113.7. retry", "refused to [IP]. retry"),
+        ("refused to 203.0.113.7.", "refused to [IP]."),
+        ("host.203.0.113.7:80", "host.[IP]:80"),
+        ("build 1.2.3.4.5", "build 1.2.3.4.5"),  # five parts is not an address
+    ],
+)
+def test_profile_strict_ipv4_edges(text, expected):
+    assert _from_toml(profile="strict").text(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("profile", "names"),
+    [
+        ("pii", ["firstName", "first-name", "first.name", "FIRST_NAME", "dateOfBirth", "customer.name", "homeAddress"]),
+        ("finance", ["accountNumber", "bank-account", "taxId", "routingNumber"]),
+        ("strict", ["firstName", "taxId"]),
+    ],
+)
+def test_profile_fields_match_any_spelling(profile, names):
+    red = _from_toml(profile=profile)
+    assert red.fields(dict.fromkeys(names, "x")) == dict.fromkeys(names, "[REDACTED]")
+
+
+def test_sensitive_fields_from_the_file_match_any_spelling():
+    assert _from_toml(sensitive_fields=["order_note"]).is_sensitive_field("orderNote")
+    assert not _from_toml(sensitive_fields=["_"]).is_sensitive_field("anything")
+
+
+@pytest.mark.parametrize(
+    "unit", ["a-", "a.", "a_", "ab-", "a+", "a%", "a:", "a=", "a/", "a@", "1.", "'a", 'a"', "x://"]
+)
+def test_long_values_cost_linear_time(unit):
+    # a-b-c-... took 26 s at 32 KB when these regexes backtracked; this budget is far above linear
+    started = time.monotonic()
+    _from_toml(profile="strict").text(unit * (128_000 // len(unit)))
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "eyJ-",
+        "aeyJ",
+        "eyJabcde.",
+        "x-eyJ_",
+        "(",
+        "password=",
+        "password=<a ",
+        "password=[a ",
+        "password:=",
+        'password=\\"',
+        "token:",
+        ".eyJ",
+        "4111 ",
+        "1 ",
+        "1-",
+        "12 ",
+        "1 1-",
+        "1234 ",
+        "12345 ",
+        "1234.",
+        "4111-",
+        "1234567890 ",
+        "://a:b",
+        "a://",
+        "secret ",
+    ],
+)
+def test_more_long_values_cost_linear_time(unit):
+    started = time.monotonic()
+    _from_toml(profile="strict").text(unit * (128_000 // len(unit)))
+    assert time.monotonic() - started < 5
+
+
+def test_a_long_line_of_brackets_is_quick_to_shape():
+    started = time.monotonic()
+    compact_stacktrace("(" * 400_000 + "\nx", StacktraceConfig())
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a.b.c.d.e.f.g.h.i.j.k.password=fake-value",
+        "a_b_c_d_e_f_g_h_i_j_k_token=fake-value",
+        '"spring.kafka.properties.sasl.jaas.config.ssl.key.store.password":"fake-value"',
+        '"a-b-c-d-e-f-g-h-i-token": "fake-value"',
+        "--password=fake-value",
+        ".password=fake-value",
+        "a..password=fake-value",
+    ],
+)
+def test_secret_behind_many_prefixes_is_still_masked(text):
+    assert "fake-value" not in Redactor().text(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "postgres://admin:fake-value@db:5432",
+        "a" * 70 + "://user:fake-value@localhost/x",
+        "reqid=" + "ab12" * 20 + "postgres://admin:fake-value@10.0.0.1:5432",
+    ],
+)
+def test_url_passwords_are_masked_whatever_comes_before(text):
+    masked = Redactor().text(text)
+    assert "fake-value" not in masked and "[REDACTED]@" in masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{\\"password\\":\\"fake-value\\"}',
+        ':password=>"fake-value"',
+        "password => fake-value",
+        'password="fake-value',
+        "password=<fake-value>",
+        "password=[fake-value]",
+        "password=[fakevalue]",
+        'password := "fake-value"',
+        'password == "fake-value"',
+        "password=<my fake-value>",
+        "password=[my fake-value]",
+        "userPassword=fake-value",
+        "dbpassword=fake-value",
+        "PGPASSWORD=fake-value",
+        "secretKey=fake-value",
+        "JSESSIONID=fake-value",
+    ],
+)
+def test_secret_shapes_in_log_text(text):
+    masked = Redactor().text(text)
+    assert "fake-value" not in masked and "fakevalue" not in masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["bypass=1", "compass=north", "secretary=bob", "max_tokens=100", "password=[REDACTED]", "authority=root"],
+)
+def test_look_alikes_in_log_text_stay(text):
+    assert Redactor().text(text) == text
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "accesstoken",
+        "refreshtoken",
+        "userpassword",
+        "dbpassword",
+        "db_password1",
+        "dbPassword1",
+        "accessTokenValue",
+        "api_keys",
+        "id_tokens",
+        "req_cookies",
+        "xapikey",
+        "otpCode",
+        "mysecret",
+    ],
+)
+def test_core_field_names_match_common_spellings(name):
+    assert Redactor().is_sensitive_field(name)
+
+
+@pytest.mark.parametrize("name", ["total_tokens", "undersecretary", "logger_name", "hostname", "monkey"])
+def test_core_field_names_leave_look_alikes(name):
+    assert not Redactor().is_sensitive_field(name)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "qty 1 4111 1111 1111 1111",
+        "4111 1111 1111 1111 12/29",
+        "5 4111111111111111",
+        "4111.1111.1111.1111",
+        "order 1234 4111 1111 1111 1111",
+        "id=12345 4111 1111 1111 1111 end",
+    ],
+)
+def test_a_card_next_to_another_number_is_masked(text):
+    assert "[CARD]" in Redactor().text(text) and "1111 1111" not in Redactor().text(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("411 111 111 111 1111 1234", "[CARD] 1234"),
+        ("41 11 11 11 11 11 11 11 1234", "[CARD] 1234"),
+        ("card 37 8282 2463 10005 12345", "card [CARD] 12345"),
+    ],
+)
+def test_a_card_in_any_grouping_is_masked_as_before(text, expected):
+    assert Redactor().text(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["AT81 4982 9656 8389 9957", "1234 PT73 8600 3655 2491 6441 2096 6 5678", "DE89 3704 0044 0532 0130 00"]
+)
+def test_the_card_rules_leave_a_spaced_iban_to_its_own_rule(text):
+    masked = _from_toml(packs=["eu"]).text(text)
+    assert "[IBAN]" in masked and "[CARD]" not in masked
+
+
+def test_every_card_in_a_list_is_masked():
+    masked = Redactor().text("4111 1111 1111 1111 5500 0000 0000 0004")
+    assert masked == "[CARD] [CARD]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["3.141592653589793", "12345678901234567", "1234.5678", "4111.1111", "4 5 6 7 8 9 1 2 3 4 5 6 7 8 9 1 2 3 4 5 6"],
+)
+def test_numbers_that_are_not_cards_stay(text):
+    assert Redactor().text(text) == text
+
+
+def test_a_token_inside_a_dashed_run_is_still_masked():
+    token = "eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl"
+    assert Redactor().text(f"x-{token}") == "x-[JWT]" and Redactor().text(f"eyJ-{token}") == "[JWT]"
+    assert Redactor().text("eyJhbGciOiJ-eyJh.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4fw") == "[JWT]"
+    assert Redactor().text(f"a.{token}") == "a.[JWT]"
+
+
+def test_an_allow_pattern_sees_the_whole_name_or_url():
+    # the regexes start at the secret word and at "://", but an allow pattern is written for what a person reads
+    assert "fake-value" not in _from_toml(allow=["password=.*"]).text("db_password=fake-value")
+    assert _from_toml(allow=["password=.*"]).text("password=public") == "password=public"
+    assert _from_toml(allow=["db_password=.*"]).text("db_password=public") == "db_password=public"
+    allowed = "https://ci:public@"
+    assert _from_toml(allow=[allowed]).text(f"{allowed}localhost/x") == f"{allowed}localhost/x"
+    assert "fake-value" not in _from_toml(allow=[allowed]).text("https://ci:fake-value@example.test")
+
+
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("--token=.*", "--token=fake-value"),
+        ("-x://.*@", "-x://u:fake-value@10.0.0.1"),
+        ("x-eyJ.*", "x-eyJabcde.eyJabcde.fake-value"),
+    ],
+)
+def test_an_allow_pattern_does_not_see_more_than_the_secret_and_its_name(allow, text):
+    assert "fake-value" not in _from_toml(allow=[allow]).text(text)
+
+
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("id_token=.*", "valid_token=fake-value"),
+        ("auth_token=.*", "oauth_token=fake-value"),
+        ("'token=.*", "'token=fake-value"),
+    ],
+)
+def test_an_allow_pattern_does_not_open_a_longer_name(allow, text):
+    assert "fake-value" not in _from_toml(allow=[allow]).text(text)
+
+
+@pytest.mark.parametrize(
+    ("allow", "text"),
+    [
+        ("userPassword=public", "userPassword=public"),
+        ("oauth_token=.*", "oauth_token=public"),
+        ('"token"=.*', '"token"=public'),
+    ],
+)
+def test_an_allow_pattern_for_the_whole_name_still_works(allow, text):
+    assert _from_toml(allow=[allow]).text(text) == text
+
+
+def test_digits_another_rule_recognises_are_not_taken_for_a_card():
+    assert _from_toml(packs=["vn"]).text("6122 3741 4114 0912 345 678") == "6122 3741 4114 [PHONE]"
+    account = CustomPattern("account", re.compile(r"\d{4}( \d{4}){4}"), "[ACCT]")
+    assert Redactor(RedactionConfig(patterns=(account,))).text("5602 6509 4912 1050 2575") == "[ACCT]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ids 9458 7839 4018 6520 9182 4003 7191 7800 ok",
+        "6551.1552 3371.4882",
+        "4 5 6 7 8 9 1 2 3 4 5 6 7 8 9 1 2 3 4 5 6",
+    ],
+)
+def test_a_list_of_numbers_is_not_taken_for_a_card(text):
+    assert Redactor().text(text) == text
+
+
+def test_exclude_fields_names_a_field_in_any_spelling_but_not_a_part_of_one():
+    red = _from_toml(profile="pii", sensitive_fields=["order_note"], exclude_fields=["order_note", "phone", "id"])
+    assert not red.is_sensitive_field("orderNote") and not red.is_sensitive_field("order-note")
+    assert red.is_sensitive_field("phone_number") and red.is_sensitive_field("session_id")
+
+
+def test_field_names_ignore_any_separator():
+    red = _from_toml(profile="pii")
+    assert all(red.is_sensitive_field(n) for n in ("first@name", "first:name", "first/name", "first name"))
+
+
+def test_profile_is_a_base_the_file_extends_and_exclude_wins():
+    red = _from_toml(profile="pii", sensitive_fields=["order_note"], exclude_fields=["phone"])
+    assert red.is_sensitive_field("order_note") and red.is_sensitive_field("first_name")
+    assert not red.is_sensitive_field("phone")
+
+
+def test_profile_unknown_name_lists_the_choices():
+    from graylog_mcp.config import ConfigError
+
+    with pytest.raises(ConfigError, match=r"unknown profile 'nope'.*basic"):
+        _from_toml(profile="nope")
+    with pytest.raises(ConfigError, match="unknown profile"):
+        _from_toml(profile=["pii"])

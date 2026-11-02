@@ -31,6 +31,10 @@ class MissingSecret(ConfigError):
     """An environment variable holding a secret is not set (the instance is unusable, the config is valid)."""
 
 
+class UntrustedConfig(ConfigError):
+    """A project config holds settings this user has not accepted (see ``trust.py``)."""
+
+
 DEFAULT_TRACE_FIELDS = [
     "trace_id",
     "traceId",
@@ -93,6 +97,10 @@ class Limits:
     max_value_chars: int = 2000
     max_message_chars: int = 20000
     max_output_chars: int = 24000
+    # lower caps for the tools that return the most text; max_output_chars still applies when it is lower
+    search_output_chars: int = 12000
+    message_output_chars: int = 4000  # get_message without 'fields'
+    context_output_chars: int = 8000
     max_groups: int = 100
     sample_concurrency: int = 4
     scan_concurrency: int = 8
@@ -399,7 +407,7 @@ _INSTANCE_KEYS = {
     "aggregation_api",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
-_REDACTION_KEYS = {"packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
+_REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
@@ -666,18 +674,24 @@ def _parse_limits(data: Any) -> Limits:
     limits = Limits(**values)
     if limits.default_limit > limits.max_limit:
         raise ConfigError("limits: default_limit must not exceed max_limit")
-    if limits.max_output_chars < 2000:
-        raise ConfigError("limits.max_output_chars: must be at least 2000")
+    for name in ("max_output_chars", "search_output_chars", "message_output_chars", "context_output_chars"):
+        if getattr(limits, name) < 2000:
+            raise ConfigError(f"limits.{name}: must be at least 2000")
     return limits
 
 
 def _parse_redaction(data: Any) -> RedactionConfig:
-    from graylog_mcp.redact import PACKS  # local import: avoid a cycle
+    from graylog_mcp.redact import PACKS, PROFILES  # local import: avoid a cycle
 
     if not isinstance(data, dict):
         raise ConfigError("redaction: expected a table")
     _check_keys("redaction", data, _REDACTION_KEYS)
-    packs = _str_list("redaction.packs", data.get("packs", []))
+    profile_name = data.get("profile", "basic")
+    if not isinstance(profile_name, str) or profile_name not in PROFILES:
+        raise ConfigError(f"redaction.profile: unknown profile {profile_name!r}; available: {', '.join(PROFILES)}")
+    profile = PROFILES[profile_name]
+    # the profile is the base; what the file lists is added on top
+    packs = tuple(dict.fromkeys((*profile.packs, *_str_list("redaction.packs", data.get("packs", [])))))
     for pack in packs:
         if pack not in PACKS:
             raise ConfigError(f"redaction.packs: unknown pack {pack!r}; available: {', '.join(sorted(PACKS))}")
@@ -705,13 +719,15 @@ def _parse_redaction(data: Any) -> RedactionConfig:
                 replacement=str(item.get("replacement", f"[{str(name).upper()}]")),
             )
         )
+    from_profile = [CustomPattern(n, re.compile(rx), repl) for n, rx, repl in profile.patterns]
+    sensitive = (*profile.sensitive_fields, *_str_list("redaction.sensitive_fields", data.get("sensitive_fields", [])))
     return RedactionConfig(
         packs=packs,
         vn_cmnd=vn_cmnd,
-        extra_sensitive_fields=_str_list("redaction.sensitive_fields", data.get("sensitive_fields", [])),
+        extra_sensitive_fields=tuple(dict.fromkeys(sensitive)),
         exclude_fields=_str_list("redaction.exclude_fields", data.get("exclude_fields", [])),
         allow=allow,
-        patterns=tuple(patterns),
+        patterns=(*from_profile, *patterns),
     )
 
 
@@ -1102,25 +1118,38 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
-def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
-    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
-    data = dict(data)
-    includes = data.pop("include", [])
+def include_paths(data: dict[str, Any], base_dir: Path) -> list[tuple[Path, Path]]:
+    """The files ``include`` names, each as written and with its symlinks resolved."""
+    includes = data.get("include", [])
     if isinstance(includes, str):
         includes = [includes]
     if not isinstance(includes, list) or not all(isinstance(i, str) for i in includes):
         raise ConfigError("include: expected a path or a list of paths")
-    merged: dict[str, Any] = {}
+    found = []
     for item in includes:
-        path = (base_dir / Path(item).expanduser()).resolve()
-        if path in seen:
-            raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
+        try:
+            literal = base_dir / Path(item).expanduser()
+            path = literal.resolve()
+        except (RuntimeError, ValueError):  # ~name of a user this machine does not have; a NUL byte in the path
+            raise ConfigError(f"include: cannot read the path {item!r}") from None
         if not path.is_file():
             raise ConfigError(f"include: file not found: {path}")
+        found.append((literal, path))
+    return found
+
+
+def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    paths = include_paths(data, base_dir)
+    data = {k: v for k, v in data.items() if k != "include"}
+    merged: dict[str, Any] = {}
+    for _, path in paths:
+        if path in seen:
+            raise ConfigError(f"include cycle: {' -> '.join(str(p) for p in (*seen, path))}")
         try:
             with path.open("rb") as fh:
                 inner = tomllib.load(fh)
-        except tomllib.TOMLDecodeError as exc:
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             raise ConfigError(f"{path}: invalid TOML: {exc}") from None
         merged = _deep_merge(merged, resolve_includes(inner, path.parent, (*seen, path)))
     return _deep_merge(merged, data)
@@ -1131,7 +1160,7 @@ def read_config_file(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ConfigError(f"{path}: invalid TOML: {exc}") from None
     return resolve_includes(data, path.parent, (path.resolve(),))
 
@@ -1148,6 +1177,8 @@ def _env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         red = dict(data.get("redaction", {}))
         red["packs"] = [p.strip() for p in os.environ["GRAYLOG_REDACTION_PACKS"].split(",") if p.strip()]
         data["redaction"] = red
+    if os.environ.get("GRAYLOG_REDACTION_PROFILE"):
+        data["redaction"] = {**data.get("redaction", {}), "profile": os.environ["GRAYLOG_REDACTION_PROFILE"].strip()}
     if os.environ.get("GRAYLOG_APP_PACKAGES"):
         st = dict(data.get("stacktrace", {}))
         st["app_packages"] = [p.strip() for p in os.environ["GRAYLOG_APP_PACKAGES"].split(",") if p.strip()]
@@ -1225,6 +1256,9 @@ def load_config(
     if file_path is not None:
         if not file_path.is_file():
             raise ConfigError(f"config file not found: {file_path}")
+        from graylog_mcp import trust  # local import: trust reads this module
+
+        trust.guard(file_path)
         data = read_config_file(file_path)
         source = str(file_path)
     if repo is not None:

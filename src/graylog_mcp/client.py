@@ -12,10 +12,12 @@ errors, 429 and 502/503/504 are retried ``retries`` times with exponential backo
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
 import re
 import ssl
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -35,6 +37,8 @@ READ_ONLY_POSTS = frozenset({"views/search/sync", "search/messages", "search/agg
 RETRY_STATUSES = frozenset({429, 502, 503, 504})
 RETRY_BASE_SECONDS = 0.5
 RETRY_MAX_SECONDS = 10.0
+# HTTP requests of the current tool call, retries included; a list so the tasks it gathers add to the same count
+requests_sent: ContextVar[list[int] | None] = ContextVar("requests_sent", default=None)
 
 
 class GraylogError(Exception):
@@ -134,6 +138,8 @@ class GraylogClient:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._slots = asyncio.Semaphore(cfg.max_concurrency)
+        self._active = 0  # requests running or waiting for a slot
+        self._retired = False
 
     def _build(self) -> httpx.AsyncClient:
         cfg = self.cfg
@@ -174,9 +180,20 @@ class GraylogClient:
         return self._client
 
     async def aclose(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        # cleared before the await: a request starting meanwhile must build a new client, not get the closing one
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    async def retire(self) -> None:
+        """Close once no request is running. A call still holding this client gets a new one per request."""
+        self._retired = True
+        await self._close_if_retired()
+
+    async def _close_if_retired(self) -> None:
+        if self._retired and not self._active:
+            with contextlib.suppress(Exception):  # closing is best effort
+                await self.aclose()
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return await self.request("GET", path, params=params)
@@ -198,10 +215,20 @@ class GraylogClient:
         elif method != "GET":
             raise GraylogError(f"refusing {method} {path}: this server only reads from Graylog")
         clean = {k: v for k, v in (params or {}).items() if v is not None}
+        self._active += 1
+        try:
+            return await self._with_retries(method, path, clean, json)
+        finally:
+            self._active -= 1
+            await self._close_if_retired()
+
+    async def _with_retries(self, method: str, path: str, clean: dict[str, Any], json: dict[str, Any] | None) -> Any:
         attempt = 0
         while True:
             try:
                 async with self._slots:
+                    if (sent := requests_sent.get()) is not None:
+                        sent[0] += 1
                     resp = await self._send(method, path, clean, json)
             except _Retryable as exc:
                 if attempt >= self.cfg.retries:

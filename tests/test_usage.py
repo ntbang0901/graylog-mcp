@@ -16,6 +16,20 @@ def _lines() -> list[dict]:
     return [json.loads(line) for line in usage.path().read_text(encoding="utf-8").splitlines()]
 
 
+def test_a_call_without_an_app_is_still_redacted():
+    # a repository whose config was refused: the query and the error still go through the core rules
+    usage.track(
+        "search_logs",
+        None,
+        {"query": "password=fake-value", "fields": ["token=fake-value"]},
+        None,
+        "failed on password=fake-value",
+        time.monotonic(),
+        0,
+    )
+    assert "fake-value" not in usage.path().read_text(encoding="utf-8")
+
+
 async def test_tool_calls_are_recorded_with_redacted_queries(make_app):
     from graylog_mcp.server import build_server
 
@@ -38,7 +52,7 @@ async def test_tool_calls_are_recorded_with_redacted_queries(make_app):
 
 
 def test_summary_buckets_tools_misses_and_previous_period():
-    now = time.time()
+    now = time.time() // 3600 * 3600 + 1800  # mid-hour: 'two minutes ago' must stay in the current bucket
     base = {"ok": True, "ms": 100, "chars": 10, "instance": "main"}
     for e in [
         {"tool": "search_logs", "results": 0, "args": {"query": "OrderNotFound"}, "ts": now - 60},
