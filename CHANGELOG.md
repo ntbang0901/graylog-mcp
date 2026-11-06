@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Security
 - `graylog-mcp trust`, briefly on `main`, is removed: a `.graylog-mcp.toml` in a repository applies as it is again, so
   use this only with repositories you trust (see "One repository, several environments" in the README). A leftover
