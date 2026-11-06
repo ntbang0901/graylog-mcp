@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from graylog_mcp import recover
+from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
@@ -97,10 +98,15 @@ class App:
     instances: dict[str, Graylog]
     redactor: Redactor
     focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
+    jev: JevClient | None = None  # only with a TypeSafe key: the ask tool
 
     @classmethod
     def create(
-        cls, config: Config, transport: Any = None, graylog: Callable[[InstanceConfig], Graylog] | None = None
+        cls,
+        config: Config,
+        transport: Any = None,
+        graylog: Callable[[InstanceConfig], Graylog] | None = None,
+        jev_transport: Any = None,
     ) -> App:
         """``graylog`` supplies the client of each instance (the shared server reuses them across repositories)."""
         make = graylog or (lambda cfg: Graylog(cfg, transport))
@@ -108,6 +114,7 @@ class App:
             config=config,
             instances={name: make(cfg) for name, cfg in config.instances.items()},
             redactor=Redactor(config.redaction),
+            jev=JevClient(config.ask, jev_transport) if config.ask.enabled else None,
         )
 
     def gl(self, name: str | None) -> Graylog:
@@ -143,7 +150,8 @@ class App:
         return self.redactor.value(value)
 
     async def close(self) -> None:
-        await asyncio.gather(*(gl.aclose() for gl in self.instances.values()), return_exceptions=True)
+        closing = [gl.aclose() for gl in self.instances.values()]
+        await asyncio.gather(*closing, *([self.jev.aclose()] if self.jev else []), return_exceptions=True)
 
 
 # --------------------------------------------------------------------------- focus

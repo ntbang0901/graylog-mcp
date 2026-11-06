@@ -16,7 +16,8 @@ from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, scan, tools, usage
+from graylog_mcp import __version__, rca, scan, secrets, tools, usage
+from graylog_mcp.ask.pipeline import ask as ask_question
 from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
@@ -575,6 +576,24 @@ def build_server(app: App | AppPool) -> MCPServer:
         "Start here for 'what is causing this incident?'.",
         "Root cause",
     )
+
+    async def ask(
+        question: Annotated[str, Field(description="The question in the user's own words, in any language")],
+        instance: Instance = None,
+    ) -> str:
+        return await call(ask_question, question=question, instance=instance)
+
+    # registered only with a TypeSafe key: without one nothing is ever sent to TypeSafe
+    if startup.jev if startup is not None else secrets.get("TYPESAFE_API_KEY"):
+        register(
+            ask,
+            "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the "
+            "error the question describes, follows its trace across services, and states what it understood "
+            "(environment, period) so it can be corrected. Asks back when the question is too vague. "
+            "Sends TypeSafe the question and redacted, size-capped error text (250 characters each); "
+            "never raw logs.",
+            "Ask",
+        )
 
     async def detect_changes(
         range: Range = "6h",

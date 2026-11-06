@@ -33,6 +33,10 @@ All notable changes to this project are documented here. The format follows
   Same pages, API and shortcuts. Its dark theme is charcoal rather than near black.
 
 ### Added
+- `ask`, off unless a `TYPESAFE_API_KEY` is set: a plain-language question ("why did checkout fail on prod this
+  morning?") finds the error it describes and follows its trace across services. TypeSafe's Jev model only chooses
+  (intent, environment, period, which error group matches); it receives the question and redacted, size-capped error
+  text, never raw logs. Configured in `[ask]`; also callable through the admin page's `/api/run`.
 - `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
   and `truncated`.
 - A shared server on a VM for the team: clients name their repository by identity (git remote such as

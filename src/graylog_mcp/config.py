@@ -234,6 +234,26 @@ class HttpConfig:
 
 
 @dataclass(frozen=True)
+class AskConfig:
+    """The ``ask`` tool: a plain-language question answered with TypeSafe's Jev model choosing what to look at."""
+
+    api_key: str | None = field(default=None, repr=False)  # None: ask is off
+    api_key_env: str = "TYPESAFE_API_KEY"
+    model: str = "jev-latest"
+    base_url: str = "https://api.typesafe.ai"
+    min_confidence: float = 0.6  # below this, ask returns a clarifying question instead of guessing
+    relevance: float = 0.5  # an error group scoring lower than this is not what the user described
+    max_candidates: int = 30  # error groups scored in one Jev request
+    send_chars: int = 250  # characters of each group's sample sent to Jev
+    language: str = "en"  # "en" or "vi": the language of the summary text
+    code_patterns: tuple[str, ...] = ()  # regexes finding order or transaction codes in a question
+
+    @property
+    def enabled(self) -> bool:
+        return self.api_key is not None
+
+
+@dataclass(frozen=True)
 class Focus:
     """What tools search by default (see graylog_mcp.focus)."""
 
@@ -276,6 +296,7 @@ class Config:
     scope_reason: str | None = None  # 'repository' (run inside a group's repository) or 'only_groups'
     out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
     focus: Focus = Focus()
+    ask: AskConfig = AskConfig()
     scan: ScanConfig = field(default_factory=lambda: _parse_scan({}))
 
     def instance(self, name: str | None) -> InstanceConfig:
@@ -367,6 +388,7 @@ _TOP_KEYS = {
     "presets",
     "scan",
     "http",
+    "ask",
     "repos",
 }
 # what [repos."<repository>"] may set for one repository (a central config naming repositories it cannot read)
@@ -408,6 +430,10 @@ _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
+_ASK_KEYS = {
+    "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
+    "code_patterns",
+}  # fmt: skip
 MAX_BASELINE_PERIODS = 10
 _SCAN_RULE_KEYS = {f for f in ScanRule.__dataclass_fields__ if f not in ("name", "builtin")}
 
@@ -869,6 +895,56 @@ def _parse_scan(data: Any) -> ScanConfig:
     for name in disabled:
         rules.pop(name, None)
     return ScanConfig(rules=rules, exclude=exclude, disabled=disabled)
+
+
+def _unit_float(where: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ConfigError(f"{where}: expected a number from 0 to 1, got {value!r}")
+    return float(value)
+
+
+def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
+    """``from_repo``: the table comes from a repository's own file, which must not choose where the key and the
+    error text are sent, nor which environment variable is sent as the key."""
+    if not isinstance(data, dict):
+        raise ConfigError("ask: expected a table")
+    _check_keys("ask", data, _ASK_KEYS)
+    for name in ("base_url", "api_key_env") if from_repo else ():
+        if name in data:
+            raise ConfigError(
+                f"ask.{name}: not allowed in a repository's own config file (it would decide where the API key "
+                "goes); set it in your user config or a central config instead"
+            )
+    from graylog_mcp import secrets  # local import: secrets uses check_env_name
+
+    env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
+    base_url = data.get("base_url", AskConfig.base_url)
+    if not isinstance(base_url, str) or not base_url.startswith("https://"):
+        raise ConfigError("ask.base_url: must start with https://")
+    language = data.get("language", "en")
+    if language not in ("en", "vi"):
+        raise ConfigError("ask.language: expected 'en' or 'vi'")
+    patterns = _str_list("ask.code_patterns", data.get("code_patterns", []))
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(f"ask.code_patterns: {pattern!r} is not a regular expression ({exc})") from None
+    model = data.get("model", AskConfig.model)
+    if not isinstance(model, str) or not model:
+        raise ConfigError("ask.model: expected a model name")
+    return AskConfig(
+        api_key=secrets.get(env),
+        api_key_env=env,
+        model=model,
+        base_url=base_url.rstrip("/"),
+        min_confidence=_unit_float("ask.min_confidence", data.get("min_confidence", AskConfig.min_confidence)),
+        relevance=_unit_float("ask.relevance", data.get("relevance", AskConfig.relevance)),
+        max_candidates=_positive_int("ask.max_candidates", data.get("max_candidates", AskConfig.max_candidates)),
+        send_chars=_positive_int("ask.send_chars", data.get("send_chars", AskConfig.send_chars)),
+        language=language,
+        code_patterns=patterns,
+    )
 
 
 def _parse_http(data: Any) -> HttpConfig:
@@ -1443,5 +1519,9 @@ def parse_config(
         presets=_parse_presets(data.get("presets", {})),
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
+        # a project config by name too: outside any git repository (an unpacked archive) own_file is false
+        ask=_parse_ask(
+            data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
+        ),
         source=source,
     )
