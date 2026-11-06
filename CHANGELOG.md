@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `graylog-mcp version` prints the version with the git commit of a copy installed from git
+  (`graylog-mcp 0.2.0 (7a696fc)`); `--version` prints the same line, and the command is in the help text.
+
 ## [0.2.0] - 2026-11-06
 
 ### Security
