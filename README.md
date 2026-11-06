@@ -266,6 +266,47 @@ Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the ad
 graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
 request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
+## Ask in plain language
+
+For people who do not write Lucene or know field names. `ask` takes a question, works out what it means, finds the
+error it describes and follows that error's trace across services:
+
+```
+ask("Why did checkout fail with a bank connection error on prod this morning?")
+ask("Thanh toán bị lỗi timeout trên prod trong 1 giờ qua, đi qua những service nào?")
+ask("How many errors were there yesterday?")
+```
+
+It is **off by default**. It turns on when `TYPESAFE_API_KEY` is set in the environment or in the `[secrets]` table
+of `~/.config/graylog-mcp/secrets.toml`; without a key the tool is not even listed and nothing leaves the machine.
+The model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
+from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
+only" so the asker can correct it.
+
+**What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
+`max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
+Never raw logs, field values the redactor masks, or anything from the Graylog token. Graylog itself is still only
+read (GET and the read-only searches).
+
+When the question is too vague ("Is the system ok?") `ask` returns a `clarify` text instead of guessing; when
+nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
+An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
+
+```toml
+[ask]
+# api_key_env = "TYPESAFE_API_KEY"   # name of the variable, never the key
+# language = "en"                    # "en" or "vi": the language of the summary text
+# min_confidence = 0.6               # below this, ask asks back
+# relevance = 0.5                    # an error group scoring lower is "not what you described"
+# code_patterns = ['ORD-\d+']        # lets "what happened to order ORD-123?" find the code
+# model, base_url, max_candidates, send_chars
+```
+
+Limits: the error groups come from the newest 500 error messages of the period, and the traces of one error are
+looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
+(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` can set `[ask]` like
+anything else it contains, `base_url` included, so use `ask` only with repositories you trust.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
@@ -799,6 +840,7 @@ src/graylog_mcp/
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
   rca.py        root cause analysis: onsets, change detection, service map, ranking
+  ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
   server.py     MCP tool declarations and model instructions
 ```
 

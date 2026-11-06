@@ -29,6 +29,7 @@ from starlette.routing import Route
 
 from graylog_mcp import __version__, rca, recover, scan, tools, usage
 from graylog_mcp import secrets as secret_store
+from graylog_mcp.ask.pipeline import ask as ask_question
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
     ENV_NAME,
@@ -62,6 +63,7 @@ TOOLS: dict[str, Any] = {
     "get_message": tools.get_message,
     "list_streams": tools.list_streams,
     "list_fields": tools.list_fields,
+    "ask": ask_question,
 }
 NO_INSTANCE = {"list_instances", "list_presets"}
 
