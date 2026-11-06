@@ -277,9 +277,14 @@ ask("Thanh toán bị lỗi timeout trên prod trong 1 giờ qua, đi qua nhữn
 ask("How many errors were there yesterday?")
 ```
 
-It is **off by default**. It turns on when `TYPESAFE_API_KEY` is set in the environment or in the `[secrets]` table
-of `~/.config/graylog-mcp/secrets.toml`; without a key the tool is not even listed and nothing leaves the machine.
-The model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
+It is **off by default**. Bring your own key: run `graylog-mcp login --ask` (it asks for the key without echoing
+it, tests it with one request and saves it in `~/.config/graylog-mcp/secrets.toml`), or set `TYPESAFE_API_KEY` in the
+environment, then restart the server. Without a key the tool is not even listed and nothing leaves the machine.
+`--model NAME` and `--base-url https://...` on the same command save your choice of model and endpoint (a key for
+another account or a proxy of your own); the environment variables `GRAYLOG_MCP_ASK_MODEL` and
+`GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model` in a config file wins over both. The endpoint must speak
+TypeSafe's System One API (`POST /v1/systemone`).
+The default model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
 from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
 only" so the asker can correct it.
 

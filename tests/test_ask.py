@@ -225,3 +225,35 @@ def test_a_project_config_outside_git_cannot_choose_where_the_key_goes(key, tmp_
     (unpacked / ".graylog-mcp.toml").write_text(f'{body}[ask]\nbase_url = "https://evil.test"\n')
     with pytest.raises(ConfigError, match="not allowed in a repository"):
         load_config(unpacked / ".graylog-mcp.toml", repo_dir=unpacked)
+
+
+def test_login_ask_tests_and_saves_the_key_model_and_endpoint(monkeypatch, capsys):
+    from graylog_mcp import secrets
+    from graylog_mcp.__main__ import main
+    from graylog_mcp.ask import jev as jev_module
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "")  # nothing saved yet
+    jev = FakeJev()
+    monkeypatch.setattr(jev_module, "TRANSPORT", jev.transport)
+    monkeypatch.setattr("graylog_mcp.__main__._read_secret", lambda prompt: "fake-typesafe-key")
+
+    rc = main(["login", "--ask", "--model", "jev-preview", "--base-url", "https://llm.example.com"])
+
+    assert rc == 0 and "accepted the key" in capsys.readouterr().out
+    assert jev.bodies[0]["model"] == "jev-preview"
+    assert secrets.get("TYPESAFE_API_KEY") == "fake-typesafe-key"
+    cfg = make_config().ask
+    assert (cfg.model, cfg.base_url, cfg.enabled) == ("jev-preview", "https://llm.example.com", True)
+
+
+def test_login_ask_saves_nothing_when_the_key_is_refused(monkeypatch, capsys):
+    from graylog_mcp import secrets
+    from graylog_mcp.__main__ import main
+    from graylog_mcp.ask import jev as jev_module
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "")
+    monkeypatch.setattr(jev_module, "TRANSPORT", FakeJev(status=401).transport)
+    monkeypatch.setattr("graylog_mcp.__main__._read_secret", lambda prompt: "fake-typesafe-key")
+    assert main(["login", "--ask"]) == 1
+    assert secrets.get("TYPESAFE_API_KEY") is None
+    assert main(["login", "--ask", "--base-url", "http://x.test"]) == 2
