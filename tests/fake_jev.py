@@ -46,6 +46,8 @@ class FakeJev:
                 answers[name] = self.choice(self.instance or next(iter(body["questions"][name]["criteria"])))
             elif name == "errors_only":
                 answers[name] = {"type": "noul", "noul": 0.95 if self.errors_only else 0.05}
+            elif name == "ok":  # the key test of login --ask
+                answers[name] = {"type": "noul", "noul": 0.9}
             else:  # c<i>: is candidates[i] related to the request
                 text = body["state"]["candidates"][int(name[1:])]
                 hit = any(word in text for word in self.relevant)

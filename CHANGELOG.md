@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `graylog-mcp login --ask [--model NAME] [--base-url URL]` saves your own API key for `ask` (tested with one request
+  first), and optionally the model and endpoint, in the per-user secret store. `GRAYLOG_MCP_ASK_MODEL` and
+  `GRAYLOG_MCP_ASK_BASE_URL` set them from the environment; `[ask] model` in a config file wins.
+
 ## [0.2.0] - 2026-11-06
 
 ### Security

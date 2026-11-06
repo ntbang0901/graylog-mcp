@@ -16,6 +16,7 @@ from graylog_mcp.client import GraylogError
 from graylog_mcp.config import AskConfig
 
 TIMEOUT_SECONDS = 30.0
+TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests of the CLI emulate TypeSafe here
 
 
 class JevError(GraylogError):
@@ -31,7 +32,7 @@ class JevClient:
             base_url=cfg.base_url,
             headers={"Authorization": f"Bearer {cfg.api_key}", "User-Agent": f"graylog-mcp/{__version__}"},
             timeout=TIMEOUT_SECONDS,
-            transport=transport,
+            transport=transport or TRANSPORT,
         )
 
     async def answers(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
