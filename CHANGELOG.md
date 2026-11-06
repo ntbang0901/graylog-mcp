@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows
 - `graylog-mcp version` prints the version with the git commit of a copy installed from git
   (`graylog-mcp 1.2.3 (7a696fc)`); `--version` prints the same line, and the command is in the help text and the
   README.
+- `graylog-mcp login --ask [--model NAME] [--base-url URL]` saves your own API key for `ask` (tested with one request
+  first), and optionally the model and endpoint, in the per-user secret store; `graylog-mcp logout --ask` forgets
+  them. `GRAYLOG_MCP_ASK_MODEL` and `GRAYLOG_MCP_ASK_BASE_URL` set them from the environment; `[ask] model` in a
+  config file wins.
 
 ### Changed
 - The Docker image is also published for `linux/arm64`.

@@ -278,6 +278,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp [serve] [options]          run the MCP server in the foreground (stdio by default)
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
+       graylog-mcp login --ask                save your API key for the ask tool (--model, --base-url)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
@@ -411,6 +412,56 @@ def _read_secret(prompt: str) -> str:
     return sys.stdin.readline().strip()  # piped: echo "$TOKEN" | graylog-mcp login payment/prod
 
 
+def _login_ask(args: argparse.Namespace) -> int:
+    """Save the API key (and optionally the model and endpoint) of the ask tool, after one test request."""
+    import dataclasses
+
+    from graylog_mcp import secrets
+    from graylog_mcp.ask.jev import JevClient
+    from graylog_mcp.client import GraylogError
+    from graylog_mcp.config import ASK_BASE_URL_VAR, ASK_MODEL_VAR, AskConfig
+
+    if args.base_url and not args.base_url.startswith("https://"):
+        print("graylog-mcp login: --base-url must start with https://", file=sys.stderr)
+        return 2
+    try:
+        current = _load_for_tools(args.config).ask
+    except ConfigError:  # the key may be saved before any instance is configured
+        current = AskConfig()
+    cfg = dataclasses.replace(
+        current,
+        model=args.model or current.model,
+        base_url=(args.base_url or current.base_url).rstrip("/"),
+    )
+    value = _read_secret(f"API key for {cfg.base_url} (model {cfg.model}), Enter to skip: ")
+    if value and not args.no_test:
+
+        async def probe() -> None:
+            jev = JevClient(dataclasses.replace(cfg, api_key=value))
+            try:
+                await jev.answers("test", {"ok": {"type": "noul", "instructions": "Is this a test?"}})
+            finally:
+                await jev.aclose()
+
+        try:
+            asyncio.run(probe())
+            print(f"  ✓ {cfg.base_url} accepted the key")
+        except GraylogError as exc:
+            print(f"  ✗ {exc}")
+            if not sys.stdin.isatty() or input("  save anyway? [y/N]: ").strip().lower() not in ("y", "yes"):
+                return 1
+    if args.model:
+        secrets.save(ASK_MODEL_VAR, args.model)
+    if args.base_url:
+        secrets.save(ASK_BASE_URL_VAR, args.base_url)
+    if value:
+        where = secrets.save(cfg.api_key_env, value)
+        print(f"  ✓ saved as {cfg.api_key_env} in {where}; restart the server to turn ask on")
+    elif not (args.model or args.base_url):
+        print("nothing to save")
+    return 0
+
+
 def _login(argv: list[str]) -> int:
     import dataclasses
 
@@ -424,8 +475,16 @@ def _login(argv: list[str]) -> int:
     parser.add_argument("instances", nargs="*", help="e.g. payment/prod (default: every instance without a secret)")
     parser.add_argument("--config", "-c")
     parser.add_argument("--no-test", action="store_true", help="save without testing the connection")
+    parser.add_argument("--ask", action="store_true", help="save the API key of the model behind the ask tool")
+    parser.add_argument("--model", help="with --ask: the model to use (default jev-latest)")
+    parser.add_argument("--base-url", help="with --ask: the API endpoint, https only (default api.typesafe.ai)")
     args = parser.parse_args(argv)
     _setup_logging("ERROR")
+    if args.ask:
+        return _login_ask(args)
+    if args.model or args.base_url:
+        print("graylog-mcp login: --model and --base-url need --ask", file=sys.stderr)
+        return 2
     try:
         config = _load_for_tools(args.config)
         targets = [config.instance(n) for n in args.instances] or list(config.instances.values())

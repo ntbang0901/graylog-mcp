@@ -887,6 +887,10 @@ def _parse_scan(data: Any) -> ScanConfig:
     return ScanConfig(rules=rules, exclude=exclude, disabled=disabled)
 
 
+ASK_MODEL_VAR = "GRAYLOG_MCP_ASK_MODEL"
+ASK_BASE_URL_VAR = "GRAYLOG_MCP_ASK_BASE_URL"
+
+
 def _unit_float(where: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
         raise ConfigError(f"{where}: expected a number from 0 to 1, got {value!r}")
@@ -908,7 +912,8 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
-    base_url = data.get("base_url", AskConfig.base_url)
+    # the user's own choice (graylog-mcp login --ask, or the environment) when the config says nothing
+    base_url = data.get("base_url") or secrets.get(ASK_BASE_URL_VAR) or AskConfig.base_url
     if not isinstance(base_url, str) or not base_url.startswith("https://"):
         raise ConfigError("ask.base_url: must start with https://")
     language = data.get("language", "en")
@@ -920,7 +925,7 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
             re.compile(pattern)
         except re.error as exc:
             raise ConfigError(f"ask.code_patterns: {pattern!r} is not a regular expression ({exc})") from None
-    model = data.get("model", AskConfig.model)
+    model = data.get("model") or secrets.get(ASK_MODEL_VAR) or AskConfig.model
     if not isinstance(model, str) or not model:
         raise ConfigError("ask.model: expected a model name")
     return AskConfig(
