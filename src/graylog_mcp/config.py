@@ -1519,6 +1519,9 @@ def parse_config(
         presets=_parse_presets(data.get("presets", {})),
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
-        ask=_parse_ask(data.get("ask", {}), from_repo=own_file),
+        # a project config by name too: outside any git repository (an unpacked archive) own_file is false
+        ask=_parse_ask(
+            data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
+        ),
         source=source,
     )
