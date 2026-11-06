@@ -903,10 +903,18 @@ def _unit_float(where: str, value: Any) -> float:
     return float(value)
 
 
-def _parse_ask(data: Any) -> AskConfig:
+def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
+    """``from_repo``: the table comes from a repository's own file, which must not choose where the key and the
+    error text are sent, nor which environment variable is sent as the key."""
     if not isinstance(data, dict):
         raise ConfigError("ask: expected a table")
     _check_keys("ask", data, _ASK_KEYS)
+    for name in ("base_url", "api_key_env") if from_repo else ():
+        if name in data:
+            raise ConfigError(
+                f"ask.{name}: not allowed in a repository's own config file (it would decide where the API key "
+                "goes); set it in your user config or a central config instead"
+            )
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
@@ -1511,6 +1519,6 @@ def parse_config(
         presets=_parse_presets(data.get("presets", {})),
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
-        ask=_parse_ask(data.get("ask", {})),
+        ask=_parse_ask(data.get("ask", {}), from_repo=own_file),
         source=source,
     )

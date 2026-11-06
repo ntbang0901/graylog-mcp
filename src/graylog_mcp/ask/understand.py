@@ -86,5 +86,5 @@ async def understand(jev: JevClient, config: Config, question: str, fixed_instan
         time=time if time in TIMES else "unspecified",
         instance=instance,
         errors_only=p >= 0.5,
-        confidence=min([*used, max(p, 1 - p)]),
+        confidence=min(used),  # errors_only is a refinement: a neutral question must not be sent back as unclear
     )

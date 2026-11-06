@@ -304,8 +304,8 @@ An error without a trace id gets a hint instead of a flow. `cost` in the result 
 
 Limits: the error groups come from the newest 500 error messages of the period, and the traces of one error are
 looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
-(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` can set `[ask]` like
-anything else it contains, `base_url` included, so use `ask` only with repositories you trust.
+(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
+`api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
 
 ## Root cause analysis
 
