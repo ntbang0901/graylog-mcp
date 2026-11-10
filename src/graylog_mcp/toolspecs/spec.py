@@ -61,6 +61,11 @@ def single(op: str) -> Mapping[str, Mode]:
     return {"": Mode(label=op, op=op)}
 
 
+def switched(switch: str, ops: Mapping[str, str], **extra: Mapping[str, Any]) -> Mapping[str, Mode]:
+    """One mode per value of the ``switch`` parameter; ``extra`` holds Mode fields for the values that need them."""
+    return {key: Mode(f"{switch}={key!r}", op, tag=key, **extra.get(key, {})) for key, op in ops.items()}
+
+
 def flat_signature(args: type[BaseModel]) -> inspect.Signature:
     """One keyword parameter per field, so the tool's schema is a flat object rather than one nested argument."""
     hints = get_type_hints(args, include_extras=True)

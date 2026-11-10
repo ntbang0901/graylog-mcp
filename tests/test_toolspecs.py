@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
 from graylog_mcp.operations import OPERATIONS
-from graylog_mcp.toolspecs.spec import Instance, Mode, ToolSpec, flat_signature, resolve, single
+from graylog_mcp.server import build_server
+from graylog_mcp.shared import AppPool
+from graylog_mcp.toolspecs import TOOLS
+from graylog_mcp.toolspecs.spec import Instance, Mode, ToolSpec, accepts, flat_signature, resolve, single
 
 
 class _Args(BaseModel):
@@ -76,3 +80,69 @@ def test_a_tool_with_one_mode_passes_every_argument_as_given():
     spec = ToolSpec("t", "T", "One.", _Args, single("trace_request"))
     given = {"trace_id": "req-7f3a9c", "limit": None}
     assert resolve(spec, given) == (OPERATIONS["trace_request"], None, given)
+
+
+# ----------------------------------------------------------------------------- the declared tools
+
+
+def _modes():
+    return [(spec, mode, OPERATIONS[mode.op]) for spec in TOOLS for mode in spec.modes.values()]
+
+
+def test_every_parameter_reaches_an_operation():
+    for spec in TOOLS:
+        for name in spec.args.model_fields:
+            if name != spec.switch:
+                assert any(name in accepts(m) for m in spec.modes.values()), f"{spec.name}.{name}"
+
+
+def test_every_operation_parameter_is_offered_or_marked_hidden():
+    for spec, mode, op in _modes():
+        offered = {mode.rename.get(name, name) for name in spec.args.model_fields}
+        taken = set(inspect.signature(op.fn).parameters) - {"app"}
+        assert taken - offered == mode.hidden, f"{spec.name} -> {op.name}"
+
+
+def test_a_parameter_some_mode_refuses_names_the_modes_that_take_it():
+    for spec in TOOLS:
+        for name, field in spec.args.model_fields.items():
+            if name == spec.switch or name in spec.selects or name in spec.dropped:
+                continue
+            taking = [m for m in spec.modes.values() if name in accepts(m)]
+            if len(taking) == len(spec.modes):
+                continue
+            for mode in taking:
+                named = re.search(rf"(?<!\w){re.escape(mode.tag)}(?!\w)", field.description or "")
+                assert named, f"{spec.name}.{name} does not name {mode.tag!r}"
+
+
+def test_a_declared_default_is_the_operations_default():
+    for spec, mode, op in _modes():
+        params = inspect.signature(op.fn).parameters
+        for name, field in spec.args.model_fields.items():
+            target = params.get(mode.rename.get(name, name))
+            if target is not None and not field.is_required() and field.default is not None:
+                assert target.default == field.default, f"{spec.name}.{name}"
+
+
+def test_tools_are_declared_in_the_order_they_are_listed():
+    assert [s.name for s in TOOLS] == [
+        "search_logs", "aggregate", "get_message", "trace_request", "compare_periods", "scan", "root_cause",
+        "ask", "describe", "run_preset",
+    ]  # fmt: skip
+
+
+def test_a_single_operation_tool_passes_an_explicit_null_through():
+    spec = next(s for s in TOOLS if s.name == "trace_request")
+    _, refused, args = resolve(spec, {"trace_id": "req-7f3a9c", "limit": None})
+    assert refused is None and args == {"trace_id": "req-7f3a9c", "limit": None}
+
+
+async def test_ask_follows_the_key_when_the_shared_server_has_no_default_app(monkeypatch):
+    async def names() -> set[str]:
+        return {t.name for t in await build_server(AppPool()).list_tools()}
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)  # a developer's own key must not decide this test
+    assert "ask" not in await names()
+    monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")
+    assert "ask" in await names()
