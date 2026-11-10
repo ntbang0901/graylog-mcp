@@ -95,49 +95,51 @@ search endpoints that execute or check a query without saving it (`/views/search
 
 ## Tools
 
-All tools are annotated `readOnlyHint` and accept an optional `instance`.
+All tools are annotated `readOnlyHint` and accept an optional `instance`. Tools that do several related things
+take a `kind`, `view` or `what`; an argument that does not apply to the one chosen is refused, not ignored.
 
 **Scan**
 - `scan` — "is anything wrong?" in one call. Runs every scan rule concurrently (crashes, resource exhaustion,
   error spikes, new error types, HTTP 5xx, connectivity, database, auth failures, plus your own) with exact counts
   against a baseline, and returns only what fired, most severe first, with its query, top groups and a sample.
   Ad hoc rules (`checks`) cover a specific request in the same call. See [Scan rules](#scan-rules).
-- `list_scan_rules` — the rules with their query, condition, severity and tags.
 
 **Root cause analysis**
 - `root_cause` — "what broke first, and why?" in one call. Compares every service's errors, traffic and
   latency with a baseline window, pins each service's first error to the millisecond, detects deploys in
   the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence.
-- `detect_changes` — deploys and restarts found in the logs themselves: a new value of a version field
-  (`app_version`, `build`, `commit`, ...), a host rollout (new sources replacing old ones), start/stop lines.
-  No CI/CD integration needed.
-- `service_map` — which service calls which, inferred from sampled traces with no configuration: edges with
-  traffic, error rate and p50/p95 latency.
+  - `view="changes"` — only the deploys and restarts found in the logs themselves: a new value of a version
+    field (`app_version`, `build`, `commit`, ...), a host rollout (new sources replacing old ones), start/stop
+    lines. No CI/CD integration needed.
+  - `view="service_map"` — only which service calls which, inferred from sampled traces with no configuration:
+    edges with traffic, error rate and p50/p95 latency.
 
 **Search**
 - `search_logs` — Lucene query, relative (`15m`, `2h`) or absolute time (instance timezone or ISO 8601),
   streams by name or id, field selection, sort, paging; repeated lines grouped by default.
-- `count_logs` — exact number of matching messages.
 - `get_message` — one message with all fields, by `index/id` ref. Long values are cut and listed in `cut_fields`;
-  name them in `fields` to read them in full.
+  name them in `fields` to read them in full. With `context_seconds`: the messages within ±N seconds of it
+  instead, limited to the same source, the same streams or everything (`scope`).
 
 **Investigate**
+- `aggregate` — exact counts computed by Graylog:
+  - `kind="count"` — number of matching messages.
+  - `kind="histogram"` — counts over time with automatic interval, peak bucket and the onset of a spike.
+  - `kind="top"` — top N values of the `group_by` field with exact counts.
+  - `kind="errors"` — groups errors by exception, logger, source or any field: exact count, first and
+    last seen, one sample message per group.
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
   streams (falls back to full text); returns a cross-service timeline, per-service steps with durations
   and the first error.
-- `context_around` — messages within ±N seconds of a message, limited to the same source, the same
-  streams or everything.
-- `error_summary` — groups errors by exception, logger, source or any field: exact count, first and
-  last seen, one sample message per group.
-- `log_histogram` — counts over time with automatic interval, peak bucket and the onset of a spike.
-- `top_values` — top N values of a field with exact counts.
 - `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
   disappeared or shrank, normalised per hour.
 
 **Discover**
-- `list_streams`, `list_fields` — so the model writes queries with real names.
-- `list_presets`, `run_preset` — named queries you define in the config.
-- `list_instances` — instances with detected version and the API in use.
+- `describe` — `what="instances"` (default: detected version and the API in use), `"streams"`, `"fields"` (so
+  the model writes queries with real names), `"presets"` or `"scan_rules"` (query, condition, severity, tags).
+- `run_preset` — runs a named query you define in the config. A preset's `tool` keeps the names of the
+  underlying operations: `scan`, `root_cause`, `detect_changes`, `service_map`, `search_logs`, `count_logs`,
+  `error_summary`, `log_histogram`, `top_values`, `trace_request` or `compare_periods`.
 
 The server also sends the model instructions about Lucene syntax and a suggested investigation flow.
 
@@ -237,7 +239,7 @@ Writing rules that are fast and accurate:
 
 ## Searches that find nothing
 
-`search_logs` and `count_logs` do not stop at "no matches". Four decisions, each explained in the result:
+`search_logs` and `aggregate` with `kind="count"` do not stop at "no matches". Four decisions, each explained in the result:
 
 1. **Safe rewrite, before the search runs**, only for a query that cannot match as written: a field this Graylog
    does not have but with one clear counterpart (`Service:payment` -> `service:payment`; the instance's configured
@@ -266,6 +268,47 @@ Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the ad
 graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
 request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
+## Ask in plain language
+
+For people who do not write Lucene or know field names. `ask` takes a question, works out what it means, finds the
+error it describes and follows that error's trace across services:
+
+```
+ask("Why did checkout fail with a bank connection error on prod this morning?")
+ask("Thanh toán bị lỗi timeout trên prod trong 1 giờ qua, đi qua những service nào?")
+ask("How many errors were there yesterday?")
+```
+
+It is **off by default**. It turns on when `TYPESAFE_API_KEY` is set in the environment or in the `[secrets]` table
+of `~/.config/graylog-mcp/secrets.toml`; without a key the tool is not even listed and nothing leaves the machine.
+The model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
+from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
+only" so the asker can correct it.
+
+**What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
+`max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
+Never raw logs, field values the redactor masks, or anything from the Graylog token. Graylog itself is still only
+read (GET and the read-only searches).
+
+When the question is too vague ("Is the system ok?") `ask` returns a `clarify` text instead of guessing; when
+nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
+An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
+
+```toml
+[ask]
+# api_key_env = "TYPESAFE_API_KEY"   # name of the variable, never the key
+# language = "en"                    # "en" or "vi": the language of the summary text
+# min_confidence = 0.6               # below this, ask asks back
+# relevance = 0.5                    # an error group scoring lower is "not what you described"
+# code_patterns = ['ORD-\d+']        # lets "what happened to order ORD-123?" find the code
+# model, base_url, max_candidates, send_chars
+```
+
+Limits: the error groups come from the newest 500 error messages of the period, and the traces of one error are
+looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
+(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` can set `[ask]` like
+anything else it contains, `base_url` included, so use `ask` only with repositories you trust.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
@@ -282,7 +325,7 @@ How it gets there:
 2. **Onsets.** For each service, the first interval that is clearly abnormal against its own baseline
    (median and MAD, so one noisy minute in the baseline does not hide anything) and stays abnormal: error
    rise, traffic drop or spike, latency rise. Error onsets are then refined to the exact first error message.
-3. **Changes.** Version fields, host rollouts and start/stop lines (see `detect_changes`) in the window and
+3. **Changes.** Version fields, host rollouts and start/stop lines (see `view="changes"`) in the window and
    the 24 hours before it. A service that merely went silent is reported as a traffic drop, not a change.
 4. **Call graph.** Traces sampled per service (and from failing requests) give caller -> callee edges.
 5. **Ranking.** Earliest onset (exact timestamps break ties inside the first interval), a change shortly
@@ -296,7 +339,7 @@ It is a ranked hypothesis with its evidence, not a certainty. Field names come f
 ## Version detection
 
 At startup the server reads `GET /api/system` (falling back to `GET /api/` when the token may not read
-system info), picks the APIs below and caches the result; `list_instances` shows the choice. An API that
+system info), picks the APIs below and caches the result; `describe` shows the choice. An API that
 answers 404/405/501 is dropped and the next one is used.
 
 | Version   | Messages                                    | Aggregations                                   |
@@ -353,7 +396,7 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
   exclude_fields = ["phone"]        # always wins over the profile
   ```
 
-  Grouping keys (`top_values`, `error_summary`) are masked too.
+  Grouping keys (`aggregate` with `kind="top"` or `"errors"`) are masked too.
 - **Stack traces** (Java/Kotlin, Python, .NET, Go, Node): exception lines, `Caused by` blocks and frames
   from `app_packages` are kept; the rest becomes `… N frames`. Without `app_packages`, the first N frames
   are kept (the last N for Python).
@@ -455,7 +498,7 @@ Register the server once for the project (Claude Code reads `.mcp.json` at the r
 ```
 
 Then ask in plain words: *"why is checkout failing on staging?"*, *"compare errors on prod before and
-after 14:00"*. Every tool takes `instance`, `list_instances` shows each environment with its description
+after 14:00"*. Every tool takes `instance`, `describe` shows each environment with its description
 and detected Graylog version (environments may run different versions), and results always name the
 instance they come from. A developer who has no token for an environment simply gets a clear error for that
 one; the others keep working.
@@ -503,8 +546,7 @@ server's environment turns it off.
 
 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
 save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Light or dark follows
-the OS until you pick one (the **Follow OS theme** checkbox goes back to it), with a phone layout; ruled lists in plain ink, teal only for what is healthy, red only for
-failures.
+the OS until you pick one (the **Follow OS theme** checkbox goes back to it), with a phone layout; slate greys, teal for actions and data, amber for warnings, coral for failures.
 
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
 link printed at startup. It writes the config file and client configs when you ask. A token or password
@@ -575,7 +617,7 @@ How the model (and you) pick an instance, in every tool's `instance` argument:
 | `prod` | `prod` of the `default_group`; an error listing the options if several groups have it |
 | nothing | `default_instance`, else `default_group` + `default_environment` |
 
-`list_instances` returns the groups with their environments and descriptions, `graylog-mcp init` asks for
+`describe` returns the groups with their environments and descriptions, `graylog-mcp init` asks for
 groups first, and the admin UI shows environments by group (instances from an included file are marked and
 edited in that file).
 
@@ -592,7 +634,7 @@ repos = ["~/code/payment-api", "../payment-worker", "acme/payment-gateway"]
 When the server runs inside one of them (a folder or any subfolder, or a clone whose `origin` matches), it
 loads **only that group**: "errors on prod" means that system's production, and the other groups' Graylog
 servers are not reachable from that repository. Asking for one returns an error that says why and how to
-enable it. `list_instances` shows the repository and the `scope`; `graylog-mcp doctor` shows which repository
+enable it. `describe` shows the repository and the `scope`; `graylog-mcp doctor` shows which repository
 was recognised.
 
 To reach more groups from a repository, set `only_groups = ["payment", "erp"]` (or `"*"` for all) in its
@@ -612,11 +654,11 @@ graylog-mcp repo remove payment ~/code/payment-api
 
 ### Focus: search this repository's service by default
 
-Inside a repository, "errors in the last hour" means that service's errors. `search_logs`, `count_logs`,
-`error_summary`, `log_histogram`, `top_values`, `compare_periods` and `detect_changes` add a filter on the
+Inside a repository, "errors in the last hour" means that service's errors. `search_logs`, `aggregate`,
+`compare_periods` and `root_cause` with `view="changes"` add a filter on the
 service field and say so in their result (`focus`). Other services and streams are searched only when asked for:
 `streams=["*"]` (everything), explicit `streams`, or a query that names a service field
-(`application:"other-service"`). `trace_request`, `service_map` and `root_cause` always span every service.
+(`application:"other-service"`). `trace_request` and the other `root_cause` views always span every service.
 
 Each repository sets its focus in its own `.graylog-mcp.toml`:
 
@@ -629,7 +671,7 @@ streams = ["MDM"]               # optional: streams searched by default
 
 Without `[focus]`, the service is guessed from the repository name (folder or git remote) by matching it against
 the values of the service fields (`service`, `application`, ...) over the last 24 hours: `catalog-mdm` finds
-`catalog-mdm-service`. No clear match, no filter; `list_instances` shows what was picked. Set it from the admin UI
+`catalog-mdm-service`. No clear match, no filter; `describe` shows what was picked. Set it from the admin UI
 (Environments > the repository's Focus), with `graylog-mcp repo focus catalog-mdm-service --streams MDM` inside the
 repository, or for one MCP client with `GRAYLOG_MCP_SERVICE=<name>` (`off` disables it).
 
@@ -799,6 +841,7 @@ src/graylog_mcp/
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
   rca.py        root cause analysis: onsets, change detection, service map, ranking
+  ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
   server.py     MCP tool declarations and model instructions
 ```
 

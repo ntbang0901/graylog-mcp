@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,12 +17,13 @@ from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, scan, tools, usage
+from graylog_mcp import __version__, rca, scan, secrets, tools, usage
+from graylog_mcp.ask.pipeline import ask as ask_question
 from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.shared import AppPool
-from graylog_mcp.tools import App
+from graylog_mcp.tools import App, ToolInputError
 
 log = logging.getLogger(__name__)
 
@@ -34,23 +36,23 @@ Query syntax (Lucene, as in the Graylog search bar):
 - Wildcards: message:time*  (no leading wildcard). Existence: _exists_:trace_id.
 - Ranges: http_status:[500 TO 599], took_ms:>1000, level:<=3.
 - Escape special characters in values with quotes: path:"/api/v1/orders".
-- Field names are case-sensitive; call list_fields when unsure. Streams accept names or ids.
+- Field names are case-sensitive; call describe(what='fields') when unsure. Streams accept names or ids.
 - level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.
-  The configured error query (see list_fields) is what error_summary and compare_periods use.
+  The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.
 
 Environments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one
-system group (ERP, CXP, PAYMENT...). Call list_instances to see them. Pass instance='<group>/<environment>'
+system group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'
 (e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only
 one group has it. When the user names a system or an environment, pick that instance; when it is
 ambiguous, ask. Never mix results from different instances without saying which is which.
-Focus: inside a repository, search/count/summary/histogram/top/compare/detect_changes only look at that
-repository's service (results carry 'focus' with the filter added). Search other services or streams only when
-the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service
-field (e.g. application:"other-service"). trace_request, service_map and root_cause always span every service.
-Inside a group's repository only that group is loaded (list_instances shows 'scope'); if the user
+Focus: inside a repository, search_logs, aggregate, compare_periods and root_cause view='changes' only look at
+that repository's service (results carry 'focus' with the filter added). Search other services or streams only
+when the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service
+field (e.g. application:"other-service"). trace_request and the other root_cause views always span every service.
+Inside a group's repository only that group is loaded (describe shows 'scope'); if the user
 asks about another group, say it is not loaded here and how to enable it, as the error explains.
 
-Searches that find nothing: search_logs and count_logs try the likely fixes and return 'suggestions', each
+Searches that find nothing: search_logs and aggregate kind='count' try the likely fixes and return 'suggestions', each
 with its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,
 outside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'
 says which AND clause matches nothing and the values its field really has ('did_you_mean'). When a
@@ -67,8 +69,8 @@ Scanning (for "is anything wrong?", "scan for errors", "check X", a health check
 - A specific need becomes ad hoc rules in that same call: checks=[{'name': ..., 'query': ...} + a condition]:
   threshold (fires when count > N; 0 = any occurrence is bad), growth (the rate grew N times; for things that
   normally happen, with min_count against noise), or group_by + new_groups (a value the baseline never saw).
-  Put several checks in one call; rules=[names or tags] runs configured rules (list_scan_rules).
-- Accurate queries: quoted phrases ("Connection refused") and field:value with real field names (list_fields);
+  Put several checks in one call; rules=[names or tags] runs configured rules (describe(what='scan_rules')).
+- Accurate queries: quoted phrases ("Connection refused") and field:value with real field names (describe);
   no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.
 - Growth checks on things that follow traffic (errors, 5xx, timeouts) take per_traffic=true: a busy hour
   is not an incident. A growth fires only when significant ('confidence' in the result); a 'note' on a quiet
@@ -78,20 +80,20 @@ Scanning (for "is anything wrong?", "scan for errors", "check X", a health check
 - Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call
   it healthy); 'baseline_note' means the comparison is weaker (missing baseline data). Report severity,
   count vs baseline, trend, confidence, first seen and the sample's ref.
-- Then drill into a finding with its 'query': log_histogram (when), error_summary (what), search_logs (lines);
-  several findings at once: root_cause.
+- Then drill into a finding with its 'query': aggregate kind='histogram' (when), kind='errors' (what),
+  search_logs (lines); several findings at once: root_cause.
 
 Suggested investigation flow:
 0. For "what is causing this?": root_cause first. It ranks the service that broke first, with nearby
-   deploys (detect_changes) and the call graph (service_map) as evidence; then verify with the tools below.
-1. Size the problem: count_logs / log_histogram (the 'onset' field marks when a spike started).
-2. Group it: error_summary (exact counts per exception/logger/source, first/last seen, one sample).
+   deploys (view='changes') and the call graph (view='service_map') as evidence; then verify with the tools below.
+1. Size the problem: aggregate kind='count' / 'histogram' (the 'onset' field marks when a spike started).
+2. Group it: aggregate kind='errors' (exact counts per exception/logger/source, first/last seen, one sample).
 3. Before/after a deploy or incident start: compare_periods with split_at.
 4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.
 5. Follow one request across services: trace_request with a trace/correlation/request id.
-6. See what happened around one message: context_around with its 'ref'.
-Counts from count_logs, error_summary, top_values and log_histogram are exact (computed by Graylog);
-'count' inside search_logs groups only covers the returned page.
+6. See what happened around one message: get_message with its 'ref' and context_seconds.
+Counts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the
+returned page.
 Results are size-capped: when 'truncated' is true, narrow the query or page with next_offset.
 """
 
@@ -101,7 +103,7 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempot
 
 Instance = Annotated[
     str | None,
-    Field(description="Instance from list_instances, e.g. 'payment/prod'; the default when omitted"),
+    Field(description="Instance from describe, e.g. 'payment/prod'; the default when omitted"),
 ]
 Query = Annotated[str, Field(description="Lucene query, '*' for everything")]
 Range = Annotated[str | None, Field(description="Relative range ending now or at to_time: '15m', '2h', '1d'")]
@@ -163,12 +165,15 @@ def build_server(app: App | AppPool) -> MCPServer:
             structured_output=False,
         )
 
-    async def call(fn: Callable[..., Any], **kwargs: Any) -> str:
+    async def call(fn: Callable[..., Any], refused: str | None = None, /, **kwargs: Any) -> str:
+        """Run ``fn`` and record the call; with ``refused``, record the refusal instead of running it."""
         started, app, result, text, error = time.monotonic(), None, None, "", None
         sent = [0]
         requests_sent.set(sent)
         try:
             app = current()
+            if refused:
+                raise ToolInputError(refused)
             result = fn(app, **kwargs)
             if hasattr(result, "__await__"):
                 result = await result
@@ -182,6 +187,12 @@ def build_server(app: App | AppPool) -> MCPServer:
             raise
         finally:
             usage.track(fn.__name__, app, kwargs, result, error, started, len(text), sent[0])
+
+    async def dispatch(fn: Callable[..., Any], mode: str, **kwargs: Any) -> str:
+        """Call ``fn`` with the arguments that were set; one it does not take fails instead of being ignored."""
+        given = {k: v for k, v in kwargs.items() if v is not None}
+        unknown = sorted(set(given) - set(inspect.signature(fn).parameters))
+        return await call(fn, f"{mode} does not take {', '.join(unknown)}" if unknown else None, **given)
 
     # ------------------------------------------------------------------ search
 
@@ -223,49 +234,144 @@ def build_server(app: App | AppPool) -> MCPServer:
     register(
         search_logs,
         "Search log messages with a Lucene query. Returns compact, redacted lines with a 'ref' "
-        "(index/id) usable by get_message and context_around. Default range: last 15 minutes.",
+        "(index/id) usable by get_message. Default range: last 15 minutes.",
         "Search logs",
     )
 
-    async def count_logs(
-        query: Query = "*",
-        range: Range = None,
+    aggregates: dict[str, Callable[..., Any]] = {
+        "count": tools.count_logs,
+        "histogram": tools.log_histogram,
+        "top": tools.top_values,
+        "errors": tools.error_summary,
+    }
+
+    async def aggregate(
+        kind: Annotated[Literal["count", "histogram", "top", "errors"], Field(description="What to compute")],
+        query: Annotated[
+            str | None, Field(description="Lucene query, '*' by default; for 'errors' ANDed with the error query")
+        ] = None,
+        range: Annotated[str | None, Field(description="Relative range: '15m', '2h', '1d'; 15m for count, else 1h")] = (
+            None
+        ),
         from_time: FromTime = None,
         to_time: ToTime = None,
         streams: Streams = None,
+        group_by: Annotated[
+            str | None,
+            Field(
+                description="top: the field (required); errors: 'exception' (default), 'logger', 'source' or a field"
+            ),
+        ] = None,
+        interval: Annotated[str | None, Field(description="histogram: bucket size such as '5m'; automatic")] = None,
+        limit: Annotated[int | None, Field(description="top/errors: number of groups (default 10)", ge=1, le=100)] = (
+            None
+        ),
+        samples: Annotated[bool | None, Field(description="errors: one sample message per group (default true)")] = (
+            None
+        ),
         instance: Instance = None,
     ) -> str:
-        return await call(
-            tools.count_logs,
+        fn = aggregates[kind]
+        if kind == "top":
+            if not group_by:
+                return await call(fn, "kind='top' needs group_by, the field to count values of")
+            return await dispatch(
+                fn,
+                f"kind={kind!r}",
+                field=group_by,
+                query=query,
+                range=range,
+                from_time=from_time,
+                to_time=to_time,
+                streams=streams,
+                interval=interval,
+                limit=limit,
+                samples=samples,
+                instance=instance,
+            )
+        return await dispatch(
+            fn,
+            f"kind={kind!r}",
             query=query,
             range=range,
             from_time=from_time,
             to_time=to_time,
             streams=streams,
+            group_by=group_by,
+            interval=interval,
+            limit=limit,
+            samples=samples,
             instance=instance,
         )
 
-    register(count_logs, "Exact number of messages matching a query. Cheap; use it to size a problem.", "Count logs")
+    register(
+        aggregate,
+        "Exact counts computed by Graylog. kind='count': number of matching messages, cheap, to size a problem. "
+        "'histogram': counts over time with the peak, first/last non-empty bucket and the 'onset' of a spike, to "
+        "find when a problem started. 'top': top values of the group_by field with counts and percentages. "
+        "'errors': errors (configured error query) grouped by exception, logger, source or any field, with first/"
+        "last seen and a sample message per group.",
+        "Aggregate",
+    )
 
     async def get_message(
         ref: Annotated[str, Field(description="'index/message_id' from a previous result's 'ref', or a message id")],
         fields: Annotated[
             list[str] | None,
-            Field(description="Only these fields, each up to its full size; ['*'] for all of them in full"),
+            Field(
+                description="Without context_seconds: only these fields, each up to its full size; ['*'] for all "
+                "of them in full"
+            ),
         ] = None,
         compact_stacktrace: Annotated[
-            bool, Field(description="Fold framework stack frames (default true); false for the raw trace")
-        ] = True,
+            bool | None,
+            Field(
+                description="Without context_seconds: fold framework stack frames (default true); false for the "
+                "raw trace"
+            ),
+        ] = None,
+        context_seconds: Annotated[
+            int | None,
+            Field(description="Return the messages logged within ±this many seconds instead", ge=1, le=86400),
+        ] = None,
+        scope: Annotated[
+            Literal["source", "stream", "all"] | None,
+            Field(description="Context from the same host/app ('source', default), same streams, or 'all'"),
+        ] = None,
+        query: Annotated[str | None, Field(description="Context: extra Lucene filter inside the window")] = None,
+        limit: Annotated[int | None, Field(description="Context: max messages, split before/after (60)", ge=2)] = None,
         instance: Instance = None,
     ) -> str:
-        return await call(
-            tools.get_message, ref=ref, fields=fields, compact_stacktrace=compact_stacktrace, instance=instance
+        if context_seconds is None:
+            return await dispatch(
+                tools.get_message,
+                "get_message without context_seconds",
+                ref=ref,
+                fields=fields,
+                compact_stacktrace=compact_stacktrace,
+                scope=scope,
+                query=query,
+                limit=limit,
+                instance=instance,
+            )
+        return await dispatch(
+            tools.context_around,
+            "get_message with context_seconds",
+            ref=ref,
+            fields=fields,
+            compact_stacktrace=compact_stacktrace,
+            seconds=context_seconds,
+            scope=scope,
+            query=query,
+            limit=limit,
+            instance=instance,
         )
 
     register(
         get_message,
         "One message with all its fields (redacted), by ref. Long values are cut to keep the answer small: "
-        "'cut_fields' names them with their size; pass those names in 'fields' to read them.",
+        "'cut_fields' names them with their size; pass those names in 'fields' to read them. With "
+        "context_seconds: the messages logged around it instead.",
         "Get message",
     )
 
@@ -298,115 +404,6 @@ def build_server(app: App | AppPool) -> MCPServer:
         "and the first error.",
         "Trace request",
     )
-
-    async def context_around(
-        ref: Annotated[str, Field(description="'index/message_id' of the anchor message")],
-        seconds: Annotated[int, Field(description="Window before and after the message", ge=1, le=86400)] = 30,
-        scope: Annotated[
-            str, Field(description="'source' (same host/app, default), 'stream' (same streams) or 'all'")
-        ] = "source",
-        query: Annotated[str | None, Field(description="Extra Lucene filter inside the window")] = None,
-        limit: Annotated[int | None, Field(description="Max messages (split before/after)", ge=2)] = 60,
-        instance: Instance = None,
-    ) -> str:
-        return await call(
-            tools.context_around,
-            ref=ref,
-            seconds=seconds,
-            scope=scope,
-            query=query,
-            limit=limit,
-            instance=instance,
-        )
-
-    register(context_around, "Messages logged within ±N seconds of a given message.", "Context around")
-
-    async def error_summary(
-        range: Range = "1h",
-        from_time: FromTime = None,
-        to_time: ToTime = None,
-        streams: Streams = None,
-        group_by: Annotated[
-            str,
-            Field(description="'exception', 'logger', 'source' (mapped via config) or any field name"),
-        ] = "exception",
-        query: Annotated[str | None, Field(description="Extra Lucene filter, ANDed with the error query")] = None,
-        limit: Annotated[int, Field(description="Number of groups", ge=1, le=100)] = 10,
-        samples: Annotated[bool, Field(description="Attach one sample message per group")] = True,
-        instance: Instance = None,
-    ) -> str:
-        return await call(
-            tools.error_summary,
-            range=range,
-            from_time=from_time,
-            to_time=to_time,
-            streams=streams,
-            group_by=group_by,
-            query=query,
-            limit=limit,
-            samples=samples,
-            instance=instance,
-        )
-
-    register(
-        error_summary,
-        "Group errors (configured error query) by exception, logger, source or any field, with exact "
-        "counts, first/last seen and a sample message per group.",
-        "Error summary",
-    )
-
-    async def log_histogram(
-        query: Query = "*",
-        range: Range = "1h",
-        from_time: FromTime = None,
-        to_time: ToTime = None,
-        streams: Streams = None,
-        interval: Annotated[
-            str | None, Field(description="Bucket size such as '1m', '5m', '1h'; chosen automatically when omitted")
-        ] = None,
-        instance: Instance = None,
-    ) -> str:
-        return await call(
-            tools.log_histogram,
-            query=query,
-            range=range,
-            from_time=from_time,
-            to_time=to_time,
-            streams=streams,
-            interval=interval,
-            instance=instance,
-        )
-
-    register(
-        log_histogram,
-        "Message counts over time (exact). Reports the peak bucket, first/last non-empty bucket and the "
-        "'onset' of a spike, to find when a problem started.",
-        "Log histogram",
-    )
-
-    async def top_values(
-        field: Annotated[str, Field(description="Field to group by, e.g. source, http_status, user_agent")],
-        query: Query = "*",
-        range: Range = "1h",
-        from_time: FromTime = None,
-        to_time: ToTime = None,
-        streams: Streams = None,
-        limit: Annotated[int, Field(description="Number of values", ge=1, le=100)] = 10,
-        instance: Instance = None,
-    ) -> str:
-        return await call(
-            tools.top_values,
-            field=field,
-            query=query,
-            range=range,
-            from_time=from_time,
-            to_time=to_time,
-            streams=streams,
-            limit=limit,
-            instance=instance,
-        )
-
-    register(top_values, "Top N values of a field with exact counts and percentages.", "Top values")
 
     async def compare_periods(
         split_at: Annotated[
@@ -479,7 +476,7 @@ def build_server(app: App | AppPool) -> MCPServer:
         rules: Annotated[
             list[str] | None,
             Field(
-                description="Rule names or tags from list_scan_rules (e.g. ['errors'], ['connectivity', 'database']); "
+                description="Rule names or tags from describe(what='scan_rules') (e.g. ['errors'], ['database']); "
                 "all rules when omitted, unless checks is given (then add 'all' to run them too)"
             ),
         ] = None,
@@ -533,37 +530,44 @@ def build_server(app: App | AppPool) -> MCPServer:
         "Scan",
     )
 
-    async def list_scan_rules(instance: Instance = None) -> str:
-        return await call(scan.list_scan_rules, instance=instance)
-
-    register(
-        list_scan_rules,
-        "Scan rules (built-in and configured) with their query, condition, severity and tags.",
-        "List scan rules",
-    )
-
     # ------------------------------------------------------------------ root cause analysis
 
+    views: dict[str, Callable[..., Any]] = {
+        "verdict": rca.root_cause,
+        "changes": rca.detect_changes,
+        "service_map": rca.service_map,
+    }
+
     async def root_cause(
-        range: Annotated[str | None, Field(description="Window to analyse (the incident), e.g. '1h', '30m'")] = "1h",
+        view: Annotated[
+            Literal["verdict", "changes", "service_map"], Field(description="What to return; 'verdict' by default")
+        ] = "verdict",
+        range: Annotated[
+            str | None, Field(description="Window to analyse (the incident): '30m', '1h'; 6h for changes, else 1h")
+        ] = None,
         from_time: FromTime = None,
         to_time: ToTime = None,
         baseline: Annotated[
             str | None,
-            Field(description="Length of the normal period right before the window; same as the window by default"),
+            Field(description="verdict: length of the normal period right before the window; same as the window"),
         ] = None,
         query: Annotated[str | None, Field(description="Optional Lucene filter for scope, e.g. 'env:prod'")] = None,
         streams: Streams = None,
+        sample: Annotated[
+            int | None, Field(description="service_map: number of traces to sample (200)", ge=10, le=1000)
+        ] = None,
         instance: Instance = None,
     ) -> str:
-        return await call(
-            rca.root_cause,
+        return await dispatch(
+            views[view],
+            f"view={view!r}",
             range=range,
             from_time=from_time,
             to_time=to_time,
             baseline=baseline,
             query=query,
             streams=streams,
+            sample=sample,
             instance=instance,
         )
 
@@ -572,94 +576,74 @@ def build_server(app: App | AppPool) -> MCPServer:
         "Find which service broke first and why. Compares every service's errors, traffic and latency with a "
         "baseline, pins the first error of each to the millisecond, detects deploys/restarts/host rollouts from "
         "the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence. "
-        "Start here for 'what is causing this incident?'.",
+        "Start here for 'what is causing this incident?'. view='changes': only the deploys and restarts found in "
+        "the logs (new version-field values, host rollouts, start/stop lines). view='service_map': only which "
+        "service calls which, from sampled traces, with traffic, error rate and p50/p95 latency per edge.",
         "Root cause",
     )
 
-    async def detect_changes(
-        range: Range = "6h",
-        from_time: FromTime = None,
-        to_time: ToTime = None,
-        streams: Streams = None,
-        query: Annotated[str | None, Field(description="Optional Lucene filter for scope")] = None,
+    async def ask(
+        question: Annotated[str, Field(description="The question in the user's own words, in any language")],
         instance: Instance = None,
     ) -> str:
-        return await call(
-            rca.detect_changes,
-            range=range,
-            from_time=from_time,
-            to_time=to_time,
-            streams=streams,
-            query=query,
-            instance=instance,
+        return await call(ask_question, question=question, instance=instance)
+
+    # registered only with a TypeSafe key: without one nothing is ever sent to TypeSafe
+    if startup.jev if startup is not None else secrets.get("TYPESAFE_API_KEY"):
+        register(
+            ask,
+            "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the "
+            "error the question describes, follows its trace across services, and states what it understood "
+            "(environment, period) so it can be corrected. Asks back when the question is too vague. "
+            "Sends TypeSafe the question and redacted, size-capped error text (250 characters each); "
+            "never raw logs.",
+            "Ask",
         )
-
-    register(
-        detect_changes,
-        "Deploys and restarts found in the logs themselves: new values of version fields (app_version, build, "
-        "commit...), host rollouts (new sources replacing old ones), and start/stop lines. No CI/CD integration "
-        "needed.",
-        "Detect changes",
-    )
-
-    async def service_map(
-        range: Range = "1h",
-        from_time: FromTime = None,
-        to_time: ToTime = None,
-        streams: Streams = None,
-        query: Annotated[str | None, Field(description="Optional Lucene filter for scope")] = None,
-        sample: Annotated[int, Field(description="Number of traces to sample", ge=10, le=1000)] = 200,
-        instance: Instance = None,
-    ) -> str:
-        return await call(
-            rca.service_map,
-            range=range,
-            from_time=from_time,
-            to_time=to_time,
-            streams=streams,
-            query=query,
-            sample=sample,
-            instance=instance,
-        )
-
-    register(
-        service_map,
-        "Which service calls which, inferred from sampled traces (no configuration): edges with traffic, error "
-        "rate and p50/p95 latency, plus entry points.",
-        "Service map",
-    )
 
     # ------------------------------------------------------------------ discovery & utilities
 
-    async def list_streams(
-        include_disabled: Annotated[bool, Field(description="Also list paused streams")] = False,
+    listings: dict[str, Callable[..., Any]] = {
+        "instances": tools.list_instances,
+        "streams": tools.list_streams,
+        "fields": tools.list_fields,
+        "presets": tools.list_presets,
+        "scan_rules": scan.list_scan_rules,
+    }
+
+    async def describe(
+        what: Annotated[
+            Literal["instances", "streams", "fields", "presets", "scan_rules"],
+            Field(description="What to list; 'instances' by default"),
+        ] = "instances",
+        contains: Annotated[str | None, Field(description="fields: only names containing this text")] = None,
+        include_internal: Annotated[bool | None, Field(description="fields: include Graylog's gl2_* fields")] = None,
+        include_disabled: Annotated[bool | None, Field(description="streams: also list paused streams")] = None,
         instance: Instance = None,
     ) -> str:
-        return await call(tools.list_streams, include_disabled=include_disabled, instance=instance)
-
-    register(list_streams, "Streams (id, title, description) the token can read.", "List streams")
-
-    async def list_fields(
-        contains: Annotated[str | None, Field(description="Only fields whose name contains this text")] = None,
-        include_internal: Annotated[bool, Field(description="Include Graylog internal gl2_* fields")] = False,
-        instance: Instance = None,
-    ) -> str:
-        return await call(tools.list_fields, contains=contains, include_internal=include_internal, instance=instance)
+        fn = listings[what]
+        # a model passes instance to every tool out of habit; the listings that span all instances ignore it
+        takes_instance = "instance" in inspect.signature(fn).parameters
+        return await dispatch(
+            fn,
+            f"what={what!r}",
+            contains=contains,
+            include_internal=include_internal,
+            include_disabled=include_disabled,
+            instance=instance if takes_instance else None,
+        )
 
     register(
-        list_fields,
-        "Field names (and types where available) present in the indices, plus the configured trace "
-        "fields and error query. Use before writing queries on unfamiliar logs.",
-        "List fields",
+        describe,
+        "What is there to query. 'instances': configured Graylog instances with detected version, the API in use "
+        "and active redaction rules. 'streams': streams (id, title, description) the token can read. 'fields': "
+        "field names (and types where available), plus the configured trace fields and error query; use before "
+        "writing queries on unfamiliar logs. 'presets': named queries from the configuration. 'scan_rules': scan "
+        "rules with their query, condition, severity and tags.",
+        "Describe",
     )
 
-    async def list_presets() -> str:
-        return await call(tools.list_presets)
-
-    register(list_presets, "Named queries defined in the server configuration.", "List presets")
-
     async def run_preset(
-        name: Annotated[str, Field(description="Preset name from list_presets")],
+        name: Annotated[str, Field(description="Preset name from describe(what='presets')")],
         overrides: Annotated[
             dict[str, Any] | None, Field(description='Arguments overriding the preset, e.g. {"range": "6h"}')
         ] = None,
@@ -668,16 +652,6 @@ def build_server(app: App | AppPool) -> MCPServer:
         return await call(tools.run_preset, name=name, overrides=overrides, instance=instance)
 
     register(run_preset, "Run a named preset query, optionally overriding its arguments.", "Run preset")
-
-    async def list_instances() -> str:
-        return await call(tools.list_instances)
-
-    register(
-        list_instances,
-        "Configured Graylog instances with detected version, the API used for messages and aggregations, "
-        "and active redaction rules.",
-        "List instances",
-    )
 
     # ------------------------------------------------------------------ prompts
 
@@ -690,10 +664,10 @@ def build_server(app: App | AppPool) -> MCPServer:
         focus = f" Focus on: {target}." if target.strip() else ""
         return (
             f"Scan the logs of the last {range} for problems.{focus}\n"
-            "1. Call scan once (instance from list_instances if the request names an environment). If the request "
+            "1. Call scan once (instance from describe if the request names an environment). If the request "
             "is about something specific, add ad hoc checks for it in the same call.\n"
-            "2. For each finding, most severe first: one log_histogram or error_summary with the finding's query "
-            "to confirm when it started and what it is.\n"
+            "2. For each finding, most severe first: one aggregate (kind='histogram' or 'errors') with the "
+            "finding's query to confirm when it started and what it is.\n"
             "3. Answer with a table: severity, rule, count vs baseline, trend, first seen, sample ref; then the "
             "rules checked and quiet, and any skipped rule (not checked, not healthy). No speculation beyond the "
             "evidence."

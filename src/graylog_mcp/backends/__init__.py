@@ -470,7 +470,7 @@ class Graylog:
             else:
                 titles = [str(s.get("title", "")) for s in streams]
                 close = difflib.get_close_matches(key, titles, n=3, cutoff=0.5)
-                hint = f" Did you mean: {', '.join(close)}?" if close else " Use list_streams to see stream names."
+                hint = f" Did you mean: {', '.join(close)}?" if close else " describe(what='streams') lists them."
                 raise GraylogError(f"unknown stream {name!r} on instance '{self.cfg.name}'.{hint}")
         return tuple(dict.fromkeys(out))
 

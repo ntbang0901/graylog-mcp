@@ -21,6 +21,13 @@ All notable changes to this project are documented here. The format follows
   exclude `order_note_id`.
 
 ### Changed
+- 9 tools instead of 20, so every session spends fewer tokens on the tool list. `count_logs`, `log_histogram`,
+  `top_values` and `error_summary` become `aggregate` with `kind` `count`, `histogram`, `top` (field in `group_by`)
+  or `errors`; `context_around` becomes `get_message` with `context_seconds`; `detect_changes` and `service_map`
+  become `root_cause` with `view` `changes` or `service_map`; `list_instances`, `list_streams`, `list_fields`,
+  `list_presets` and `list_scan_rules` become `describe` with `what`. An argument that does not apply to the
+  chosen `kind`, `view` or `what` is refused, except `instance` on a `describe` listing that covers every instance.
+  Presets keep the old names in `tool`.
 - Smaller answers for the tools that return the most text: `search_logs` is capped at 12000 characters
   (`limits.search_output_chars`), `context_around` at 8000 (`limits.context_output_chars`) and `get_message` without
   `fields` at 4000 (`limits.message_output_chars`), all under `limits.max_output_chars`. `get_message` names what it
@@ -30,9 +37,13 @@ All notable changes to this project are documented here. The format follows
 - Shorter tool parameter descriptions, to spend fewer tokens on every session.
 - The admin page is redesigned: the Dashboard leads with a ruled list of environments and their state in words,
   health is no longer a coloured dot, and the theme follows the OS until you pick one, with a checkbox to go back to it (it was dark by default).
-  Same pages, API and shortcuts. Its dark theme is charcoal rather than near black.
+  Same pages, API and shortcuts. Greys are tinted slate, actions and data are teal, warnings amber, failures coral.
 
 ### Added
+- `ask`, off unless a `TYPESAFE_API_KEY` is set: a plain-language question ("why did checkout fail on prod this
+  morning?") finds the error it describes and follows its trace across services. TypeSafe's Jev model only chooses
+  (intent, environment, period, which error group matches); it receives the question and redacted, size-capped error
+  text, never raw logs. Configured in `[ask]`; also callable through the admin page's `/api/run`.
 - `usage.jsonl` records each call's `params` (range, fields, limit, offset), `requests` to Graylog, `returned` lines
   and `truncated`.
 - A shared server on a VM for the team: clients name their repository by identity (git remote such as

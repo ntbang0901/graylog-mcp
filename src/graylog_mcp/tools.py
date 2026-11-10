@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from graylog_mcp import recover
+from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
@@ -97,10 +98,15 @@ class App:
     instances: dict[str, Graylog]
     redactor: Redactor
     focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
+    jev: JevClient | None = None  # only with a TypeSafe key: the ask tool
 
     @classmethod
     def create(
-        cls, config: Config, transport: Any = None, graylog: Callable[[InstanceConfig], Graylog] | None = None
+        cls,
+        config: Config,
+        transport: Any = None,
+        graylog: Callable[[InstanceConfig], Graylog] | None = None,
+        jev_transport: Any = None,
     ) -> App:
         """``graylog`` supplies the client of each instance (the shared server reuses them across repositories)."""
         make = graylog or (lambda cfg: Graylog(cfg, transport))
@@ -108,6 +114,7 @@ class App:
             config=config,
             instances={name: make(cfg) for name, cfg in config.instances.items()},
             redactor=Redactor(config.redaction),
+            jev=JevClient(config.ask, jev_transport) if config.ask.enabled else None,
         )
 
     def gl(self, name: str | None) -> Graylog:
@@ -143,7 +150,8 @@ class App:
         return self.redactor.value(value)
 
     async def close(self) -> None:
-        await asyncio.gather(*(gl.aclose() for gl in self.instances.values()), return_exceptions=True)
+        closing = [gl.aclose() for gl in self.instances.values()]
+        await asyncio.gather(*closing, *([self.jev.aclose()] if self.jev else []), return_exceptions=True)
 
 
 # --------------------------------------------------------------------------- focus
@@ -406,7 +414,7 @@ async def _empty_hint(
     if found:
         hint = f"no matches: {found}. See diagnosis"
         return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
-    hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
+    hint = "no matches: widen the range, check field names with describe(what='fields'), or simplify the query"
     if focus:
         hint += ". Only this repository's service was searched (focus); pass streams=['*'] to search every stream"
     return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
@@ -846,7 +854,7 @@ async def error_summary(
     if not groups and total:
         out["hint"] = (
             f"{total} errors but no values for field '{field}'; it may not exist in these logs. "
-            "Try group_by='source' or check names with list_fields"
+            "Try group_by='source' or check names with describe(what='fields')"
         )
     elif not total:
         out["hint"] = f"no messages match error_query {gl.cfg.error_query!r} in this range"
@@ -967,7 +975,9 @@ async def top_values(
     if missing:
         out["without_field"] = missing
     if not values and total:
-        out["hint"] = f"no values for field '{field}' among {total} messages; check the name with list_fields"
+        out["hint"] = (
+            f"no values for field '{field}' among {total} messages; check the name with describe(what='fields')"
+        )
     budget = app.budget()
     budget.take(out)
     out["values"] = budget.fit(values)

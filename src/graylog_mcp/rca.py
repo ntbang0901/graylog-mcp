@@ -790,7 +790,7 @@ async def root_cause(
 
     if not ranked:
         out["verdict"] = "no service deviates clearly from the baseline in this range"
-        out["hint"] = "widen the range, choose a quieter baseline, or check error_query with list_fields"
+        out["hint"] = "widen the range, choose a quieter baseline, or check error_query with describe(what='fields')"
         if changes:
             out["changes"] = [_change_out(app, sf, c, fmt) for c in changes][:15]
         return out
@@ -851,11 +851,13 @@ async def root_cause(
         out["service_map"] = _graph_lines(app, sf, graph, only=involved, limit=12)
     next_steps = []
     if sample and sample.get("ref"):
-        next_steps.append(f"context_around ref={sample['ref']} to see what {disp(top.service)} logged just before")
+        next_steps.append(
+            f"get_message ref={sample['ref']} context_seconds=30 to see what {disp(top.service)} logged just before"
+        )
     if trigger:
         next_steps.append(f"compare_periods split_at='{fmt(trigger.at)}' to list error groups introduced by the change")
     next_steps.append(
-        f"error_summary query='{escape_field(sf)}:{phrase(disp(top.service))}' for the exception breakdown"
+        f"aggregate kind='errors' query='{escape_field(sf)}:{phrase(disp(top.service))}' for the exception breakdown"
     )
     out["next_steps"] = next_steps
     out["note"] = "ranked hypothesis from onset order, service map and nearby changes; verify with the evidence above"

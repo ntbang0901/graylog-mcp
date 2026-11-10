@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError
+
 from graylog_mcp import rca
 from graylog_mcp.backends.base import AggResult, AggRow
 from graylog_mcp.shaping import dumps
@@ -226,9 +229,13 @@ async def test_root_cause_via_mcp_and_preset(make_app):
     )
     server = build_server(app)
     names = {t.name for t in await server.list_tools()}
-    assert {"root_cause", "detect_changes", "service_map"} <= names
+    assert "root_cause" in names and not {"detect_changes", "service_map"} & names
     result = await server.call_tool("root_cause", {"range": "1h"})
     assert "Most likely origin: payment" in result.content[0].text
+    edges = await server.call_tool("root_cause", {"view": "service_map", "range": "1h", "sample": 50})
+    assert "service_field" in edges.content[0].text
+    with pytest.raises(ToolError, match="view='changes' does not take sample"):
+        await server.call_tool("root_cause", {"view": "changes", "sample": 50})
     preset = await tools.run_preset(app, "triage")
     assert preset["candidates"][0]["service"] == "payment"
     assert len(dumps(preset)) < 30_000

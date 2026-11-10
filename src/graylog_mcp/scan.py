@@ -159,7 +159,7 @@ def select_rules(
             else:
                 raise ToolInputError(
                     f"unknown rule or tag {token!r}; rules: {', '.join(sorted(configured))}; "
-                    f"tags: {', '.join(sorted(tags))} (list_scan_rules shows them)"
+                    f"tags: {', '.join(sorted(tags))} (describe(what='scan_rules') shows them)"
                 )
     elif not checks:
         chosen.update(configured)
@@ -444,7 +444,7 @@ async def scan(
     selected, left_out = select_rules(app, gl, rules, checks, min_severity)
     if not selected:
         raise ToolInputError(
-            "no rule to run here: check rules/min_severity, or the rules' 'instances' (list_scan_rules)"
+            "no rule to run here: check rules/min_severity, or the rules' 'instances' (describe(what='scan_rules'))"
         )
     names: set[str] | None = None  # None: unknown, every rule runs
     if any(r.requires or r.new_groups for r in selected):
@@ -505,8 +505,8 @@ async def scan(
         out["left_out"] = f"{left_out} rule(s) below min_severity or not for this instance"
     if findings:
         out["next"] = (
-            "for each finding: log_histogram(query) for when it started, error_summary(query) to group it, "
-            "search_logs(query) to read it; several findings at once: root_cause"
+            "for each finding, with its query: aggregate kind='histogram' for when it started, kind='errors' to "
+            "group it, search_logs to read it; several findings at once: root_cause"
         )
     budget = app.budget()
     budget.take(out)

@@ -271,12 +271,112 @@ async def test_mcp_server_roundtrip(make_app):
     app, _ = make_app()
     server = build_server(app)
     tools_list = await server.list_tools()
-    assert {t.name for t in tools_list} >= {"search_logs", "trace_request", "compare_periods", "list_instances"}
+    assert {t.name for t in tools_list} - {"ask"} == {
+        "search_logs",
+        "aggregate",
+        "get_message",
+        "trace_request",
+        "compare_periods",
+        "scan",
+        "root_cause",
+        "describe",
+        "run_preset",
+    }
     assert all(t.annotations.read_only_hint for t in tools_list)
-    result = await server.call_tool("count_logs", {"query": "level:3", "range": "2h"})
+    result = await server.call_tool("aggregate", {"kind": "count", "query": "level:3", "range": "2h"})
     payload = json.loads(result.content[0].text)
     assert payload["count"] == 32
     from mcp.server.mcpserver.exceptions import ToolError
 
     with pytest.raises(ToolError, match="Cannot parse"):
         await server.call_tool("search_logs", {"query": "level:(3"})
+
+
+async def test_merged_tools_dispatch_and_reject_arguments_of_another_mode(make_app):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app()
+    server = build_server(app)
+
+    async def call(tool: str, args: dict) -> dict:
+        return json.loads((await server.call_tool(tool, args)).content[0].text)
+
+    top = await call("aggregate", {"kind": "top", "group_by": "source", "range": "2h"})
+    direct = await tools.top_values(app, "source", range="2h")
+    assert {**top, "range": None} == {**direct, "range": None}  # 'now' moved a millisecond between the calls
+    assert "groups" in await call("aggregate", {"kind": "errors", "range": "2h", "samples": False})
+    assert "buckets" in await call("aggregate", {"kind": "histogram", "range": "2h", "interval": "5m"})
+    with pytest.raises(ToolError, match="kind='top' needs group_by"):
+        await call("aggregate", {"kind": "top"})
+    with pytest.raises(ToolError, match="kind='count' does not take interval, limit"):
+        await call("aggregate", {"kind": "count", "interval": "5m", "limit": 3})
+
+    ref = (await tools.search_logs(app, query="level:3", range="2h", limit=1))["messages"][0]["ref"]
+    assert "message" in await call("get_message", {"ref": ref})
+    around = await call("get_message", {"ref": ref, "context_seconds": 60, "scope": "all"})
+    assert around == await tools.context_around(app, ref, seconds=60, scope="all")
+    with pytest.raises(ToolError, match="get_message without context_seconds does not take scope"):
+        await call("get_message", {"ref": ref, "scope": "all"})
+
+    assert (await call("describe", {}))["instances"]
+    assert "fields" in await call("describe", {"what": "fields", "contains": "level"})
+    with pytest.raises(ToolError, match="what='instances' does not take contains"):
+        await call("describe", {"contains": "level"})
+
+
+# tools merged into aggregate, get_message, root_cause and describe: the model can no longer call these names
+REMOVED_TOOLS = (
+    "count_logs",
+    "log_histogram",
+    "top_values",
+    "error_summary",
+    "context_around",
+    "detect_changes",
+    "list_instances",
+    "list_streams",
+    "list_fields",
+    "list_presets",
+    "list_scan_rules",
+)
+
+
+async def test_nothing_points_the_model_at_a_removed_tool(make_app):
+    import re
+
+    from graylog_mcp.server import INSTRUCTIONS, build_server
+
+    app, _ = make_app()
+    server = build_server(app)
+    texts = {"instructions": INSTRUCTIONS}
+    for tool in await server.list_tools():
+        texts[f"{tool.name} declaration"] = json.dumps(tool.model_dump(exclude_none=True))
+    for name in ("scan", "root_cause"):
+        texts[f"{name} result"] = (await server.call_tool(name, {"range": "2h"})).content[0].text
+    assert "next" in json.loads(texts["scan result"]) and "next_steps" in json.loads(texts["root_cause result"])
+    stale = {
+        where: found
+        for where, text in texts.items()
+        if (found := [old for old in REMOVED_TOOLS if re.search(rf"\b{old}\b", text)])
+    }
+    assert not stale
+
+
+async def test_describe_takes_an_instance_for_every_listing(make_app):
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app()
+    server = build_server(app)
+    for what in ("instances", "streams", "fields", "presets", "scan_rules"):
+        result = await server.call_tool("describe", {"what": what, "instance": "main"})
+        assert json.loads(result.content[0].text)
+
+
+async def test_get_message_arguments_refused_with_context_say_so(make_app):
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app()
+    declared = {t.name: t for t in await build_server(app).list_tools()}["get_message"].input_schema["properties"]
+    for name in ("fields", "compact_stacktrace"):
+        assert "context_seconds" in declared[name]["description"], name

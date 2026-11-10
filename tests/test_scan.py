@@ -168,7 +168,9 @@ async def test_scan_via_mcp_and_preset(make_app):
     app, _ = make_app(presets={"health": {"tool": "scan", "args": {"min_severity": "high"}}})
     server = build_server(app)
     names = {t.name for t in await server.list_tools()}
-    assert {"scan", "list_scan_rules"} <= names
+    assert {"scan", "describe"} <= names
+    rules = await server.call_tool("describe", {"what": "scan_rules"})
+    assert "error_spike" in rules.content[0].text
     seasonal = await server.call_tool("scan", {"range": "1h", "baseline_shift": "1d", "rules": ["error_spike"]})
     assert "median of 3 periods" in json.loads(seasonal.content[0].text)["baseline"]
     result = await server.call_tool("scan", {"range": "1h", "rules": ["error_spike", "crash"]})

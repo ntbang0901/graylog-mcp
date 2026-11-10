@@ -129,7 +129,7 @@ def main() -> None:
         assert Path(folder) == repo, f"the header must carry the folder itself on Windows: {folder!r}"
 
     # 2. the server answers the repository that header names, in its group
-    listed = asyncio.run(call(folder, "list_instances"))
+    listed = asyncio.run(call(folder, "describe"))
     print(json.dumps(listed, indent=2)[:1500], flush=True)
     assert "erp/dev" in json.dumps(listed), "the repository's group is not served"
     assert "scope" in listed, "no scope for a repository"
@@ -163,7 +163,7 @@ def main() -> None:
         timeout=300,
     )
     print(f"update: pid {before} -> {after}", flush=True)
-    assert "erp/dev" in json.dumps(asyncio.run(call(header_in(repo), "list_instances"))), "not serving after update"
+    assert "erp/dev" in json.dumps(asyncio.run(call(header_in(repo), "describe"))), "not serving after update"
 
     run(str(exe), "stop", "--port", str(PORT))
     wait("the server to stop", lambda: service.probe(PORT) is None, timeout=30)

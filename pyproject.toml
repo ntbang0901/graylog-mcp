@@ -61,6 +61,8 @@ addopts = "-m 'not integration'"
 line-length = 120
 target-version = "py311"
 src = ["src", "tests"]
+# agent tooling a contributor may have installed locally: not this project's code
+extend-exclude = [".claude", ".agentkit"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

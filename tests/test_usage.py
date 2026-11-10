@@ -40,7 +40,7 @@ async def test_tool_calls_are_recorded_with_redacted_queries(make_app):
         "search_logs", {"query": 'message:"nothing-like-this" AND user:bob@example.com', "range": "1h"}
     )
     with pytest.raises(Exception, match=r"unknown|instance"):
-        await server.call_tool("count_logs", {"instance": "nope"})
+        await server.call_tool("aggregate", {"kind": "count", "instance": "nope"})
     found, empty, failed = _lines()
     assert found["tool"] == "search_logs" and found["ok"] and found["results"] > 0 and found["instance"] == "main"
     assert found["chars"] > 0 and found["ms"] >= 0
@@ -152,3 +152,18 @@ async def test_server_starts_without_waiting_for_graylog(make_app, monkeypatch):
     async with asyncio.timeout(2):
         async with lifespan(server):
             await asyncio.wait_for(started.wait(), 1)  # detection began, and the server is already up
+
+
+async def test_a_call_a_merged_tool_refuses_is_recorded(make_app):
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app("6.1.2")
+    server = build_server(app)
+    with pytest.raises(Exception, match="does not take interval"):
+        await server.call_tool("aggregate", {"kind": "count", "query": "level:3", "interval": "5m"})
+    with pytest.raises(Exception, match="needs group_by"):
+        await server.call_tool("aggregate", {"kind": "top"})
+    refused, incomplete = _lines()
+    assert refused["tool"] == "count_logs" and not refused["ok"] and "does not take interval" in refused["error"]
+    assert refused["args"] == {"query": "level:3"} and refused["instance"] == "main"
+    assert incomplete["tool"] == "top_values" and not incomplete["ok"] and "needs group_by" in incomplete["error"]
