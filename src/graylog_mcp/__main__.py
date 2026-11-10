@@ -245,9 +245,22 @@ async def _check(config: Config) -> int:
     return 0 if all(i["status"] == "ok" for i in status["instances"]) else 1
 
 
+def _version_line() -> str:
+    """'graylog-mcp 1.2.3 (7a696fc)': the commit is known for a copy installed from git."""
+    from graylog_mcp.setup import service
+
+    return f"graylog-mcp {service.installed().label}"
+
+
+def _version(argv: list[str]) -> int:
+    argparse.ArgumentParser(prog="graylog-mcp version", description="Print the version and commit").parse_args(argv)
+    print(_version_line())
+    return 0
+
+
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers",
+    "ui", "connect", "headers", "version",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
 )  # fmt: skip
 HELP = """\
@@ -261,6 +274,7 @@ A server for the team on another machine (a VM)? On each developer's machine:
 
 usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp ui                         open the admin page
+       graylog-mcp version                    print the version and, for a git install, its commit
        graylog-mcp [serve] [options]          run the MCP server in the foreground (stdio by default)
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
@@ -299,7 +313,7 @@ def _serve(argv: list[str]) -> int:
     )
     parser.add_argument("--check", action="store_true", help="validate config, connect, print detected versions, exit")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    parser.add_argument("--version", action="version", version=f"graylog-mcp {__version__}")
+    parser.add_argument("--version", action="version", version=_version_line())
     args = parser.parse_args(argv)
 
     _setup_logging(args.log_level)
@@ -1237,6 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
         "ui": _ui,
         "connect": _connect,
         "headers": _headers,
+        "version": _version,
         "keepalive": _keepalive,
     }
     return handlers[command](argv)

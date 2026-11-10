@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `graylog-mcp version` prints the version with the git commit of a copy installed from git
+  (`graylog-mcp 1.2.3 (7a696fc)`); `--version` prints the same line, and the command is in the help text and the
+  README.
+
 ### Changed
 - The Docker image is also published for `linux/arm64`.
 - Releases start from a merged version bump on `main` instead of a pushed tag, and publish only what the full

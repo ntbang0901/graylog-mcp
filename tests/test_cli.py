@@ -108,3 +108,31 @@ def test_ui_refuses_remote_bind(tmp_path):
     with pytest.raises(ConfigError, match="only listens on"):
         serve(tmp_path, None, "0.0.0.0", 8765, open_browser=False)
     assert main(["ui", "--host", "0.0.0.0", "--project-dir", str(tmp_path), "--no-browser"]) == 2
+
+
+def test_version_command_and_flag_print_the_same_line_with_the_commit(monkeypatch, capsys):
+    from graylog_mcp import __version__
+    from graylog_mcp.setup import service
+
+    assert main(["version"]) == 0
+    assert capsys.readouterr().out.strip().startswith(f"graylog-mcp {__version__}")
+
+    install = service.Install(__version__, "7a696fc1234567890", None, "other")
+    monkeypatch.setattr(service, "installed", lambda: install)
+    assert main(["version"]) == 0
+    assert capsys.readouterr().out.strip() == f"graylog-mcp {__version__} (7a696fc)"
+    with pytest.raises(SystemExit) as stop:
+        main(["--version"])
+    assert stop.value.code == 0
+    assert capsys.readouterr().out.strip() == f"graylog-mcp {__version__} (7a696fc)"
+
+
+def test_version_is_in_the_help(capsys):
+    assert main(["--help"]) == 0
+    assert "graylog-mcp version" in capsys.readouterr().out
+
+
+def test_version_refuses_an_unknown_argument():
+    with pytest.raises(SystemExit) as stop:
+        main(["version", "--bogus"])
+    assert stop.value.code == 2
