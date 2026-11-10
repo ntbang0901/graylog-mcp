@@ -11,6 +11,7 @@ from graylog_mcp import operations, tools
 from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import ToolInputError
+from graylog_mcp.toolspecs import TOOLS
 
 # Sensitive values planted in the fake dataset; none may appear in any output.
 LEAKS = [
@@ -326,20 +327,11 @@ async def test_merged_tools_dispatch_and_reject_arguments_of_another_mode(make_a
         await call("describe", {"contains": "level"})
 
 
-# tools merged into aggregate, get_message, root_cause and describe: the model can no longer call these names
-REMOVED_TOOLS = (
-    "count_logs",
-    "log_histogram",
-    "top_values",
-    "error_summary",
-    "context_around",
-    "detect_changes",
-    "list_instances",
-    "list_streams",
-    "list_fields",
-    "list_presets",
-    "list_scan_rules",
-)
+def uncallable_names() -> set[str]:
+    """Operation names a model cannot call: not a tool, and not a value that picks a tool's mode."""
+    tool_names = {spec.name for spec in TOOLS}
+    mode_values = {key for spec in TOOLS if spec.switch for key in spec.modes}
+    return set(operations.OPERATIONS) - tool_names - mode_values
 
 
 async def test_nothing_points_the_model_at_a_removed_tool(make_app):
@@ -347,6 +339,7 @@ async def test_nothing_points_the_model_at_a_removed_tool(make_app):
 
     from graylog_mcp.server import INSTRUCTIONS, build_server
 
+    assert "count_logs" in uncallable_names() and "service_map" not in uncallable_names()
     app, _ = make_app()
     server = build_server(app)
     texts = {"instructions": INSTRUCTIONS}
@@ -358,7 +351,7 @@ async def test_nothing_points_the_model_at_a_removed_tool(make_app):
     stale = {
         where: found
         for where, text in texts.items()
-        if (found := [old for old in REMOVED_TOOLS if re.search(rf"\b{old}\b", text)])
+        if (found := [old for old in sorted(uncallable_names()) if re.search(rf"\b{old}\b", text)])
     }
     assert not stale
 

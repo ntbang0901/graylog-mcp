@@ -6,6 +6,7 @@ import inspect
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -56,3 +57,9 @@ def test_a_preset_cannot_name_what_the_table_does_not_offer_to_presets(tool):
 )
 def test_modules_import_from_a_cold_start(statement):
     subprocess.run([sys.executable, "-c", statement], check=True, capture_output=True)
+
+
+def test_the_readme_lists_every_operation_a_preset_may_name():
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    missing = sorted(name for name in preset_names() if f"`{name}`" not in readme)
+    assert not missing
