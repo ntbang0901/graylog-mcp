@@ -8,7 +8,7 @@ name: Claude
 on:
   issues:
     types: [labeled]
-  issue_comment:
+  issue_comment: # zizmor: ignore[dangerous-triggers] the action runs only for commenters with write access
     types: [created]
   pull_request_review_comment:
     types: [created]
@@ -35,11 +35,12 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      # Claude pushes its claude/ branch with the checked-out credentials; no artifact is uploaded here
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
-      - uses: astral-sh/setup-uv@v7
-      - uses: anthropics/claude-code-action@v1
+          fetch-depth: 1 # zizmor: ignore[artipacked]
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: anthropics/claude-code-action@8041f1d17e0e7d2f2cfe35002962e9f26237c0bb # v1.0.263
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           label_trigger: claude

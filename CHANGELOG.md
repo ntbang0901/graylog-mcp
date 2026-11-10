@@ -10,11 +10,18 @@ All notable changes to this project are documented here. The format follows
 - `graylog-mcp start` uses the same config wherever it runs: the one given to `start --config` last time, else
   `~/.config/graylog-mcp/config.toml`. It no longer takes the `.graylog-mcp.toml` of the folder it runs in; a
   repository's own config still applies to the sessions in that repository.
+- The Docker image is also published for `linux/arm64`.
+- Releases start from a merged version bump on `main` instead of a pushed tag, and publish only what the full
+  CI built and smoke-tested on that commit.
 
 ### Fixed
 - The admin page opened with `graylog-mcp ui` in a folder without a config no longer starts the server with a
   config file of that folder that does not exist (every setting looked gone): it edits and starts the server's
   config.
+
+### Security
+- certifi 2026.10.23 (PYSEC-2026-4320) and opentelemetry-api 1.45.2 (CVE-2026-114603).
+- The Docker image installs the pending Debian security updates (zlib1g CVE-2026-76844, CVE-2026-85091).
 
 ## [0.3.0] - 2026-11-10
 
