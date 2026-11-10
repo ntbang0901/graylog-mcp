@@ -337,8 +337,14 @@ class Autostart:
     def enable(self, cmd: list[str], start_now: bool) -> Path:
         path = self.write(cmd)
         if self.kind == "launchd":
-            self.run(["launchctl", "bootout", f"{self._domain()}/{LABEL}"])
+            target = f"{self._domain()}/{LABEL}"
+            self.run(["launchctl", "bootout", target])
             if start_now:
+                # bootout returns while the old server is still shutting down, and a bootstrap before it is gone
+                # fails ("Input/output error") and leaves nothing loaded
+                deadline = time.monotonic() + 30
+                while self.run(["launchctl", "print", target]).returncode == 0 and time.monotonic() < deadline:
+                    time.sleep(0.2)
                 self.run(["launchctl", "bootstrap", self._domain(), str(path)])
         elif self.kind == "systemd":
             self.run(["systemctl", "--user", "daemon-reload"])
