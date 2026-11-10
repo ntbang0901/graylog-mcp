@@ -721,8 +721,7 @@ def _start_config(arg: str | None) -> Path:
 
     if arg:
         return Path(arg).expanduser().resolve()
-    found = default_config_path()
-    return found.resolve() if found is not None else service.user_config_path()
+    return service.server_config_path().resolve()
 
 
 def _group_folders(config_file: Path) -> list[Path]:
@@ -801,7 +800,9 @@ def _start(argv: list[str]) -> int:
         type=int,
         help=f"default: the port used last time, else {service.DEFAULT_PORT}; one in use is an error, not replaced",
     )
-    parser.add_argument("--config", "-c", help="config file (default: the one found from here, else the user config)")
+    parser.add_argument(
+        "--config", "-c", help="config file (default: the one used last time, else ~/.config/graylog-mcp/config.toml)"
+    )
     parser.add_argument("--no-autostart", action="store_true", help="run now, but do not start at login")
     parser.add_argument("--no-claude", action="store_true", help="do not register Claude Code")
     parser.add_argument(
@@ -1128,8 +1129,7 @@ def _update(argv: list[str]) -> int:
     if not was_running:
         print("  the background server is not running: 'graylog-mcp start' starts it")
         return 0
-    saved = service.saved_settings()
-    cmd = service.server_command(exe, args.port, Path(saved["config"]) if saved.get("config") else None)
+    cmd = service.server_command(exe, args.port, service.server_config_path())
     print("  restarting the server (waits up to a minute for it to answer)…", flush=True)
     service.restart(cmd, args.port, service.Autostart())
     service.wait_down(args.port, timeout=3)
@@ -1168,7 +1168,9 @@ def _ui(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="graylog-mcp ui", description="Local admin web UI")
     parser.add_argument("--project-dir", default=".")
-    parser.add_argument("--config", "-c", help="config file (default: discovered or <project-dir>/.graylog-mcp.toml)")
+    parser.add_argument(
+        "--config", "-c", help="config file (default: one in <project-dir>, else the background server's)"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")

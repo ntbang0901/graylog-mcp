@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- `graylog-mcp start` uses the same config wherever it runs: the one given to `start --config` last time, else
+  `~/.config/graylog-mcp/config.toml`. It no longer takes the `.graylog-mcp.toml` of the folder it runs in; a
+  repository's own config still applies to the sessions in that repository.
+
+### Fixed
+- The admin page opened with `graylog-mcp ui` in a folder without a config no longer starts the server with a
+  config file of that folder that does not exist (every setting looked gone): it edits and starts the server's
+  config.
+
 ## [0.3.0] - 2026-11-10
 
 ### Changed

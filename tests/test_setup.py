@@ -248,7 +248,8 @@ def admin(tmp_path, monkeypatch, fake_transport):
 
     monkeypatch.setenv("GRAYLOG_STAGING_TOKEN", "s")
     (tmp_path / ".git").mkdir()
-    state = AdminState(tmp_path, None, "tok", transport=fake_transport.transport, allowed_hosts=("testserver",))
+    state = AdminState(tmp_path, tmp_path / ".graylog-mcp.toml", "tok", transport=fake_transport.transport,
+                       allowed_hosts=("testserver",))  # fmt: skip
     app = build_app(state)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver",
                                headers={"X-Admin-Token": "tok"})  # fmt: skip

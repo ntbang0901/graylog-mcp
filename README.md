@@ -726,8 +726,9 @@ What `start` does, so you know what is on your machine:
 
 How the server picks the configuration of a session:
 
-- The repository's own `.graylog-mcp.toml`; without one, the `--config` file (`start` uses the one found
-  where you ran it, else `~/.config/graylog-mcp/config.toml`), with the group matched from its `repos`.
+- The repository's own `.graylog-mcp.toml`; without one, the `--config` file, with the group matched from its
+  `repos`. `start` keeps one such file wherever you run it: the one given to `start --config` last time, else
+  `~/.config/graylog-mcp/config.toml`. `graylog-mcp ui` opened in a folder without a config edits that file too.
 - Edits (admin page, `login`, `repo focus`) apply within seconds, without a restart.
 - One Graylog client per instance, shared by every repository using it: one connection pool, one version
   detection, one stream and field cache.

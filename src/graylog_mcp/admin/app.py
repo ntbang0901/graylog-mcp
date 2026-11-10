@@ -32,7 +32,6 @@ from graylog_mcp import secrets as secret_store
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
     ENV_NAME,
-    PROJECT_CONFIG_NAMES,
     Config,
     ConfigError,
     detect_repo,
@@ -56,11 +55,13 @@ class AdminState:
         transport: httpx.AsyncBaseTransport | None = None,
         allowed_hosts: tuple[str, ...] = (),
     ):
+        from graylog_mcp.setup import service
+
         self.project_dir = project_dir.resolve()
         self.path = (
             config_path.resolve()
             if config_path
-            else (find_project_config(self.project_dir) or self.project_dir / PROJECT_CONFIG_NAMES[0])
+            else (find_project_config(self.project_dir) or service.server_config_path())
         )
         self.token = token
         self.transport = transport
@@ -768,7 +769,7 @@ def build_app(state: AdminState) -> Starlette:
             return _err("starting at login is not supported on this system")
         port = state.server_port or service.current_port()
         if body.get("on"):
-            cmd = service.server_command(service.current_command(), port, state.path)
+            cmd = service.server_command(service.current_command(), port, service.server_config_path())
             try:
                 await asyncio.to_thread(autostart.install_only, cmd)
             except RuntimeError as exc:
@@ -783,7 +784,7 @@ def build_app(state: AdminState) -> Starlette:
 
         if await _shared_running(state):
             return JSONResponse({"ok": True, "already": True})
-        service.spawn_detached([*service.current_command(), "start", "--no-browser", "--config", str(state.path)])
+        service.spawn_detached([*service.current_command(), "start", "--no-browser"])
         return JSONResponse({"ok": True})
 
     async def setup_update(_request: Request) -> Response:

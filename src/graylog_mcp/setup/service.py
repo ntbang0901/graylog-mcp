@@ -61,6 +61,13 @@ def user_config_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "graylog-mcp" / "config.toml"
 
 
+def server_config_path() -> Path:
+    """The background server's config, whatever folder a command runs in: the file 'start' saved, while it
+    exists, else the user config."""
+    saved = saved_settings().get("config")
+    return Path(saved) if saved and Path(saved).is_file() else user_config_path()
+
+
 def log_path() -> Path:
     if platform.system() == "Darwin":
         return Path.home() / "Library" / "Logs" / "graylog-mcp.log"
