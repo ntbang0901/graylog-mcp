@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from graylog_mcp import scan, tools
+from graylog_mcp import operations, scan
 from graylog_mcp.config import ConfigError, parse_scan_rule
 from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
 from graylog_mcp.tools import ToolInputError
@@ -176,7 +176,7 @@ async def test_scan_via_mcp_and_preset(make_app):
     result = await server.call_tool("scan", {"range": "1h", "rules": ["error_spike", "crash"]})
     payload = json.loads(result.content[0].text)
     assert set(by_rule(payload)) == {"error_spike"} and payload["checked"] == 2
-    preset = await tools.run_preset(app, "health")
+    preset = await operations.run_preset(app, "health")
     assert preset["tool"] == "scan" and "auth_failures" not in {q["rule"] for q in preset["quiet"]}
     prompts = await server.list_prompts()
     assert [p.name for p in prompts] == ["scan"]

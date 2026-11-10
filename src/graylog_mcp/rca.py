@@ -30,7 +30,6 @@ from graylog_mcp.backends.base import COUNT, AggResult, MessageQuery, Metric
 from graylog_mcp.client import GraylogError
 from graylog_mcp.timerange import TimeRange, choose_interval, format_ts, parse_duration, parse_graylog_ts
 from graylog_mcp.tools import (
-    PRESET_DISPATCH,
     App,
     ToolInputError,
     _is_error,
@@ -869,6 +868,3 @@ async def root_cause(
             if len(fitted) < len(out[key]):
                 out[key], out["truncated"] = fitted, True
     return out
-
-
-PRESET_DISPATCH.update({"root_cause": root_cause, "detect_changes": detect_changes, "service_map": service_map})

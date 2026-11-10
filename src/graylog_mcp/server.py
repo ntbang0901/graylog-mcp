@@ -17,7 +17,7 @@ from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, rca, scan, secrets, tools, usage
+from graylog_mcp import __version__, operations, rca, scan, secrets, tools, usage
 from graylog_mcp.ask.pipeline import ask as ask_question
 from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, ConfigError
@@ -649,7 +649,7 @@ def build_server(app: App | AppPool) -> MCPServer:
         ] = None,
         instance: Instance = None,
     ) -> str:
-        return await call(tools.run_preset, name=name, overrides=overrides, instance=instance)
+        return await call(operations.run_preset, name=name, overrides=overrides, instance=instance)
 
     register(run_preset, "Run a named preset query, optionally overriding its arguments.", "Run preset")
 

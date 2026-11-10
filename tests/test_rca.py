@@ -219,7 +219,7 @@ async def test_service_map_without_trace_fields(make_app):
 
 
 async def test_root_cause_via_mcp_and_preset(make_app):
-    from graylog_mcp import tools
+    from graylog_mcp import operations
     from graylog_mcp.server import build_server
 
     app, _ = make_app(
@@ -236,6 +236,6 @@ async def test_root_cause_via_mcp_and_preset(make_app):
     assert "service_field" in edges.content[0].text
     with pytest.raises(ToolError, match="view='changes' does not take sample"):
         await server.call_tool("root_cause", {"view": "changes", "sample": 50})
-    preset = await tools.run_preset(app, "triage")
+    preset = await operations.run_preset(app, "triage")
     assert preset["candidates"][0]["service"] == "payment"
     assert len(dumps(preset)) < 30_000

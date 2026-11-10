@@ -37,7 +37,6 @@ from graylog_mcp.client import GraylogError
 from graylog_mcp.config import MAX_BASELINE_PERIODS, SEVERITIES, ConfigError, ScanRule, parse_scan_rule
 from graylog_mcp.timerange import TimeRange, format_ts, parse_duration
 from graylog_mcp.tools import (
-    PRESET_DISPATCH,
     App,
     ToolInputError,
     _group_field,
@@ -555,6 +554,3 @@ def list_scan_rules(app: App, instance: str | None = None) -> dict[str, Any]:
         out["exclude"] = cfg.exclude
     out["how_to_select"] = "scan(rules=[names or tags]); ad hoc: scan(checks=[{'query': ..., 'threshold': 0}])"
     return out
-
-
-PRESET_DISPATCH.update({"scan": scan})

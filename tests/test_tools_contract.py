@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from graylog_mcp import tools
+from graylog_mcp import operations, tools
 from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import ToolInputError
@@ -257,12 +257,12 @@ async def test_presets(make_app):
     )
     listed = tools.list_presets(app)
     assert listed["presets"][0]["name"] == "pay_errors"
-    res = await tools.run_preset(app, "pay_errors", overrides={"group_by": "source"})
+    res = await operations.run_preset(app, "pay_errors", overrides={"group_by": "source"})
     assert res["tool"] == "error_summary" and res["total_errors"] == 26
     with pytest.raises(ToolInputError):
-        await tools.run_preset(app, "pay_errors", overrides={"bogus": 1})
+        await operations.run_preset(app, "pay_errors", overrides={"bogus": 1})
     with pytest.raises(ToolInputError):
-        await tools.run_preset(app, "nope")
+        await operations.run_preset(app, "nope")
 
 
 async def test_mcp_server_roundtrip(make_app):

@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from graylog_mcp.operations import search_names
 from graylog_mcp.redact import Redactor
 
 MAX_BYTES = 4_000_000
@@ -25,10 +26,6 @@ KEEP_LINES = 20_000
 ARG_KEYS = ("query", "trace_id", "field", "ref", "group_by", "contains")
 # what shaped the result, kept apart from "args": the admin page replays those as a tool call
 PARAM_KEYS = ("range", "from_time", "to_time", "fields", "limit", "offset")
-# tools whose empty result means "searched and found nothing"
-SEARCH_TOOLS = frozenset(
-    {"search_logs", "count_logs", "log_histogram", "trace_request", "top_values", "context_around"}
-)
 
 _lock = threading.Lock()
 
@@ -156,7 +153,7 @@ def read(since: float) -> list[dict[str, Any]]:
 
 
 def is_miss(entry: dict[str, Any]) -> bool:
-    return entry.get("ok", False) and entry.get("tool") in SEARCH_TOOLS and entry.get("results") == 0
+    return entry.get("ok", False) and entry.get("tool") in search_names() and entry.get("results") == 0
 
 
 def _pct(values: list[int], q: float) -> int:
@@ -200,7 +197,7 @@ def summarize(hours: int = 24, bucket_hours: int = 1, now: float | None = None) 
     tools.sort(key=lambda t: (-t["calls"], t["tool"]))
 
     def totals(items: list[dict[str, Any]]) -> dict[str, Any]:
-        searches = [e for e in items if e.get("tool") in SEARCH_TOOLS and e.get("ok")]
+        searches = [e for e in items if e.get("tool") in search_names() and e.get("ok")]
         misses = sum(1 for e in searches if is_miss(e))
         return {
             "calls": len(items),

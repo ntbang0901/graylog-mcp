@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import logging
 import re
 import statistics
@@ -22,7 +21,7 @@ from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError, InstanceConfig
+from graylog_mcp.config import Config, InstanceConfig
 from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
 from graylog_mcp.shaping import Budget, Shaper, dedup, dumps, group_key, is_error_level, is_internal, truncate
@@ -1197,36 +1196,3 @@ def list_presets(app: App) -> dict[str, Any]:
             for p in app.config.presets.values()
         ]
     }
-
-
-PRESET_DISPATCH: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
-    "search_logs": search_logs,
-    "count_logs": count_logs,
-    "error_summary": error_summary,
-    "log_histogram": log_histogram,
-    "top_values": top_values,
-    "trace_request": trace_request,
-    "compare_periods": compare_periods,
-}
-
-
-async def run_preset(
-    app: App, name: str, overrides: dict[str, Any] | None = None, instance: str | None = None
-) -> dict[str, Any]:
-    preset = app.config.presets.get(name)
-    if preset is None:
-        known = ", ".join(sorted(app.config.presets)) or "none configured"
-        raise ToolInputError(f"unknown preset {name!r}; available: {known}")
-    fn = PRESET_DISPATCH[preset.tool]
-    args = {**preset.args, **(overrides or {})}
-    if instance:
-        args["instance"] = instance
-    allowed = set(inspect.signature(fn).parameters) - {"app"}
-    unknown = sorted(set(args) - allowed)
-    if unknown:
-        raise ToolInputError(f"preset {name!r}: {preset.tool} does not take {', '.join(unknown)}")
-    try:
-        result = await fn(app, **args)
-    except TypeError as exc:
-        raise ConfigError(f"preset {name!r}: {exc}") from None
-    return {"preset": name, "tool": preset.tool, **result}
