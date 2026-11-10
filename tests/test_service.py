@@ -73,10 +73,24 @@ def test_install_tool(monkeypatch, tmp_path):
         service.install_tool("x", rec)
 
 
+class Launchctl(Recorder):
+    """launchctl whose job stays loaded for ``exiting`` 'print' calls after a bootout, like a server shutting down."""
+
+    def __init__(self, exiting: int = 0):
+        super().__init__()
+        self.exiting = exiting
+
+    def __call__(self, cmd, **_kw):
+        self.calls.append(list(cmd))
+        loaded = cmd[1] == "print" and self.exiting > 0
+        self.exiting -= cmd[1] == "print"
+        return subprocess.CompletedProcess(cmd, 0 if cmd[1] != "print" or loaded else 113, "", "")
+
+
 def test_launchd_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(service.os, "getuid", lambda: 501, raising=False)
-    rec = Recorder()
+    rec = Launchctl()
     auto = service.Autostart(rec, system="Darwin")
     config = Path("/c/org.toml")
     cmd = service.server_command(["/u/bin/graylog-mcp"], 8000, config)
@@ -87,10 +101,21 @@ def test_launchd_agent(monkeypatch, tmp_path):
                                          "--config", str(config)]  # fmt: skip
     assert plist["RunAtLoad"] and "PATH" in plist["EnvironmentVariables"]
     assert rec.calls == [["launchctl", "bootout", f"gui/501/{service.LABEL}"],
+                         ["launchctl", "print", f"gui/501/{service.LABEL}"],
                          ["launchctl", "bootstrap", "gui/501", str(path)]]  # fmt: skip
     assert auto.restart() and rec.calls[-1] == ["launchctl", "kickstart", "-k", f"gui/501/{service.LABEL}"]
     auto.disable(stop_now=False)  # turn off from the admin page: keeps running until logout
     assert not auto.enabled and rec.calls[-1][1] == "kickstart"
+
+
+def test_launchd_waits_for_the_old_server_before_loading_the_agent_again(monkeypatch, tmp_path):
+    """bootout returns while the job is still exiting, and a bootstrap then fails with 'Input/output error'."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(service.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    rec = Launchctl(exiting=3)
+    service.Autostart(rec, system="Darwin").enable(["/u/bin/graylog-mcp"], start_now=True)
+    assert [c[1] for c in rec.calls] == ["bootout", "print", "print", "print", "print", "bootstrap"]
 
 
 def test_systemd_unit(monkeypatch, tmp_path):

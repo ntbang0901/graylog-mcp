@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
   Presets keep the old names in `tool`.
 - The admin page's colours: greys are tinted slate, actions and data are teal, warnings amber, failures coral.
 
+### Fixed
+- `graylog-mcp update` on macOS no longer leaves the server stopped ("did not restart"): it waits for launchd to
+  finish stopping the old server before loading the login agent again.
+
 ## [0.2.0] - 2026-11-06
 
 ### Security
