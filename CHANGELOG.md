@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The Docker image is also published for `linux/arm64`.
+- Releases start from a merged version bump on `main` instead of a pushed tag, and publish only what the full
+  CI built and smoke-tested on that commit.
+
+### Security
+- certifi 2026.10.23 (PYSEC-2026-4320) and opentelemetry-api 1.45.2 (CVE-2026-114603).
+- The Docker image installs the pending Debian security updates (zlib1g CVE-2026-76844, CVE-2026-85091).
+
 ## [0.3.0] - 2026-11-10
 
 ### Changed

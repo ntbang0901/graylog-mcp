@@ -4,7 +4,7 @@
 
 ```bash
 uv sync                     # Python 3.11+, installs dev tools from uv.lock
-uv run pre-commit install   # optional: ruff and mypy on every commit (pip install pre-commit first)
+uv run --only-group lint pre-commit install   # optional: ruff and mypy on every commit
 ```
 
 ## Checks
@@ -22,9 +22,20 @@ against real Graylog containers (needs Docker, about 3 GB of RAM per version):
 tests/integration/run.sh v52        # v43 v50 v52 v61 v70
 ```
 
-CI runs lint, mypy and tests (Linux on 3.11-3.13, plus Windows and macOS), builds and smoke-tests the
-wheel and the Docker image on every push. The integration matrix runs weekly and on pull requests that
-touch the backends.
+CI runs on every pull request and every push to `main`: lint, mypy and tests (Linux on 3.11-3.13, plus
+Windows and macOS), a build and smoke test of the wheel and of the Docker image (amd64 and arm64), a scan
+of the image for fixable high-severity vulnerabilities, `pip-audit` on the runtime dependencies, and
+actionlint, zizmor and the pre-commit hygiene hooks on the repository. The same tools run locally:
+
+```bash
+uv run --only-group lint actionlint
+uv run --only-group lint zizmor .github/workflows
+```
+
+`main` only accepts pull requests whose "CI passed" check is green. Actions are pinned by commit SHA with the
+version in a comment; Dependabot keeps them, the Python dependencies and the base images current, and its
+minor and patch updates merge on their own once CI passes. The integration matrix runs weekly and on pull
+requests that touch the backends.
 
 ## Rules of the project
 
@@ -39,8 +50,10 @@ touch the backends.
 
 ## Releasing
 
-1. Move the "Unreleased" entries to a new version section in `CHANGELOG.md` and bump `__version__` in
+1. In a pull request, move the "Unreleased" entries to a new version section in `CHANGELOG.md` and bump `__version__` in
    `src/graylog_mcp/__init__.py` and `version` in `pyproject.toml`.
-2. Tag `vX.Y.Z` and push the tag. The release workflow publishes to PyPI (trusted publishing with
-   attestations), signs the artifacts with Sigstore, creates the GitHub release and pushes the Docker image
-   to GHCR.
+   CI fails a pull request where the three disagree or the version has no `CHANGELOG.md` section.
+2. Merge the pull request. The release workflow sees a version without a `vX.Y.Z` tag, runs the full CI on
+   the merge commit, publishes the wheel and sdist CI smoke-tested to PyPI (trusted publishing with
+   attestations), then signs them with Sigstore, creates the GitHub release with the `vX.Y.Z` tag and pushes
+   the Docker image (amd64 and arm64) to GHCR. Do not push tags yourself; `v*` tags cannot be moved or deleted.
