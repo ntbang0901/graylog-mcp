@@ -17,9 +17,8 @@
 <style>
 /* Hallmark · shape: app screen · genre: editorial · theme: Ink (deal 3/3, seed local-admin-console-read-only-e529·25758512·2026-11-02·r0) · redesign: full
  * nav: kept, a left sidebar of eight destinations · signature: the environment ledger, every Graylog a ruled row with its state in words · states: loading, empty, error, full
- * axes: light/grotesk-sans/chromatic-teal · posture: restrained · contrast: pass · modes: light+dark · ink: paper · v2.0.0 */
+ * axes: light/grotesk-sans/chromatic-teal · posture: tinted slate, teal for actions and data, amber and coral for state · contrast: pass · modes: light+dark · ink: paper · v2.0.0 */
 /* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V4 · weakest: P, the CSP blocks Epilogue so the face is the system one; the argument is carried by ink rules and state in words instead of grey cards */
-/* Hallmark · waive 22 · ink and greys at zero chroma · a ledger of Graylog environments is printed in plain black, teal only where one is healthy */
 /* Hallmark · answered F4 · the drawer and the confirm dialog are their own screens; a pressed segment and a confirmed delete are states, not rival primaries */
 /* Hallmark · answered F7 · every control takes the theme's one 10px radius, so a button, a field and a well read as one printed set */
 /* Hallmark · answered F25 · By tool has no action column and pins the tool name while its numbers scroll on a phone */
@@ -29,29 +28,37 @@
 /* Inline because the admin app serves this one file: no route for a stylesheet, and its CSP blocks foreign fonts. */
 :root, [data-theme="light"] {
   color-scheme: light;
-  --color-paper: oklch(99.5% 0.003 100); --color-paper-2: oklch(97% 0.004 100); --color-paper-3: oklch(94% 0.006 100);
-  --color-ink: oklch(16% 0 0); --color-ink-2: oklch(28% 0 0); --color-muted: oklch(44% 0 0);
-  --color-rule: oklch(89% 0.004 100); --color-rule-2: oklch(93.5% 0.003 100);
-  --color-accent-soft: oklch(93% 0.05 190); --color-accent-soft-ink: oklch(27% 0.045 190);
-  --color-focus: oklch(50% 0.095 188); --color-link-hover: oklch(50% 0.095 188);
-  --color-error: oklch(52% 0.19 27); --color-error-ink: oklch(99.5% 0.003 100);
-  --color-field-edge: oklch(62% 0 0);
-  --color-scrim: oklch(16% 0 0 / 0.32);
-  --chart-ink: oklch(16% 0 0); --chart-mid: oklch(64% 0 0);
-  --shadow-card: 0 20px 40px oklch(20% 0 0 / 0.16);
+  --color-paper: oklch(99% 0.006 235); --color-paper-2: oklch(96.5% 0.012 235); --color-paper-3: oklch(93% 0.02 235);
+  --color-ink: oklch(23% 0.035 255); --color-ink-2: oklch(33% 0.035 255); --color-muted: oklch(46% 0.03 255);
+  --color-rule: oklch(88% 0.02 235); --color-rule-2: oklch(93% 0.014 235);
+  --color-accent: oklch(50% 0.115 190); --color-accent-hover: oklch(44% 0.105 190); --color-accent-ink: oklch(99% 0.006 190);
+  --color-accent-soft: oklch(92% 0.06 185); --color-accent-soft-ink: oklch(32% 0.08 195);
+  --color-warn: oklch(52% 0.12 65); --color-warn-soft: oklch(93% 0.07 85); --color-warn-soft-ink: oklch(38% 0.09 65);
+  --color-focus: oklch(50% 0.115 190); --color-link-hover: oklch(50% 0.115 190);
+  --color-error: oklch(54% 0.2 27); --color-error-ink: oklch(99% 0.006 27);
+  --color-error-soft: oklch(94% 0.04 25); --color-error-soft-ink: oklch(44% 0.17 27);
+  --color-field-edge: oklch(60% 0.03 245);
+  --color-scrim: oklch(23% 0.035 255 / 0.32);
+  --chart-ink: oklch(55% 0.12 190); --chart-mid: oklch(62% 0.07 245);
+  --chart-warn: oklch(76% 0.14 75); --chart-error-soft: oklch(76% 0.11 25);
+  --shadow-card: 0 20px 40px oklch(25% 0.04 255 / 0.16);
 }
 [data-theme="dark"] {
   color-scheme: dark;
-  --color-paper: oklch(25% 0.004 100); --color-paper-2: oklch(28.5% 0.004 100); --color-paper-3: oklch(33% 0.005 100);
-  --color-ink: oklch(96% 0 0); --color-ink-2: oklch(87% 0 0); --color-muted: oklch(77% 0 0);
-  --color-rule: oklch(39% 0.005 100); --color-rule-2: oklch(33% 0.004 100);
-  --color-accent-soft: oklch(39% 0.05 190); --color-accent-soft-ink: oklch(92% 0.05 190);
-  --color-focus: oklch(79% 0.08 188); --color-link-hover: oklch(79% 0.08 188);
-  --color-error: oklch(76% 0.14 27); --color-error-ink: oklch(16% 0 0);
-  --color-field-edge: oklch(62% 0 0);
-  --color-scrim: oklch(12% 0 0 / 0.55);
-  --chart-ink: oklch(96% 0 0); --chart-mid: oklch(60% 0 0);
-  --shadow-card: 0 0 0 1px oklch(43% 0 0);
+  --color-paper: oklch(26% 0.028 250); --color-paper-2: oklch(30% 0.032 250); --color-paper-3: oklch(35% 0.038 250);
+  --color-ink: oklch(97% 0.006 235); --color-ink-2: oklch(89% 0.016 235); --color-muted: oklch(79% 0.028 240);
+  --color-rule: oklch(42% 0.04 250); --color-rule-2: oklch(35% 0.036 250);
+  --color-accent: oklch(80% 0.135 185); --color-accent-hover: oklch(86% 0.12 185); --color-accent-ink: oklch(22% 0.04 220);
+  --color-accent-soft: oklch(42% 0.085 195); --color-accent-soft-ink: oklch(94% 0.06 185);
+  --color-warn: oklch(84% 0.14 80); --color-warn-soft: oklch(43% 0.08 75); --color-warn-soft-ink: oklch(94% 0.07 85);
+  --color-focus: oklch(82% 0.13 185); --color-link-hover: oklch(82% 0.13 185);
+  --color-error: oklch(77% 0.15 25); --color-error-ink: oklch(22% 0.04 25);
+  --color-error-soft: oklch(42% 0.1 25); --color-error-soft-ink: oklch(92% 0.05 25);
+  --color-field-edge: oklch(64% 0.04 245);
+  --color-scrim: oklch(14% 0.03 250 / 0.55);
+  --chart-ink: oklch(80% 0.135 185); --chart-mid: oklch(66% 0.07 245);
+  --chart-warn: oklch(84% 0.14 80); --chart-error-soft: oklch(62% 0.12 25);
+  --shadow-card: 0 0 0 1px oklch(46% 0.04 250);
 }
 :root {
   --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-sm: 12px; --space-md: 16px; --space-lg: 24px; --space-xl: 40px; --space-2xl: 64px; --space-3xl: 96px;
@@ -82,10 +89,10 @@ pre { background: var(--color-paper-2); border: var(--rule-hair) solid var(--col
 /* ---------- shell: the sidebar is fixed so the top bar is the only sticky element */
 .sidebar { position: fixed; inset: 0 auto 0 0; z-index: var(--z-sticky-nav); width: var(--sidebar-w); display: flex; flex-direction: column; gap: var(--space-3xs); padding: var(--space-md) var(--space-sm); overflow-y: auto; background: var(--color-paper-2); border-right: var(--rule-hair) solid var(--color-rule); }
 .brand { display: flex; align-items: center; gap: var(--space-xs); padding: 0 var(--space-xs) var(--space-md); font-weight: 700; font-size: var(--text-md); letter-spacing: var(--tracking-display); }
-.brand .logo { width: 24px; height: 24px; border-radius: 6px; background: var(--color-ink); display: grid; place-items: center; color: var(--color-paper); }
+.brand .logo { width: 24px; height: 24px; border-radius: 6px; background: var(--color-accent); display: grid; place-items: center; color: var(--color-accent-ink); }
 .nav { display: flex; align-items: center; gap: var(--space-xs); width: 100%; min-height: var(--control-sm); padding: var(--space-2xs) var(--space-xs); border: 0; border-radius: var(--radius-control); background: none; color: var(--color-ink-2); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out); }
 .nav:active { background: var(--color-paper-3); }
-.nav[aria-current="page"] { background: var(--color-paper-3); color: var(--color-ink); font-weight: 600; }
+.nav[aria-current="page"] { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); font-weight: 600; }
 .nav .count { margin-left: auto; }
 .nav-sep { height: 1px; background: var(--color-rule); margin: var(--space-xs) var(--space-xs); }
 .sidebar .foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-2xs); padding: var(--space-xs) var(--space-2xs) 0; font-size: var(--text-xs); color: var(--color-muted); }
@@ -145,10 +152,10 @@ input.invalid { border-color: var(--color-error); }
 textarea { resize: vertical; padding-block: var(--space-xs); font-size: var(--text-xs); line-height: 1.6; }
 .check { display: inline-flex; align-items: center; gap: var(--space-xs); min-height: var(--control-sm); cursor: pointer; }
 .check.small { font-size: var(--text-sm); }
-.check input, table input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; flex: none; outline-offset: 2px; accent-color: var(--color-ink); }
+.check input, table input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; flex: none; outline-offset: 2px; accent-color: var(--color-accent); }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs); min-height: var(--control); padding: 0 var(--space-md); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-2); color: var(--color-ink); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-out); }
 .btn:active { transform: translateY(1px); }
-.btn.primary { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper); }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
 .btn.ghost { background: none; border-color: transparent; color: var(--color-ink-2); }
 /* red only once a destructive control is reached: at rest the failing tags stay the only red on the page */
 .btn.danger { color: var(--color-ink-2); }
@@ -162,14 +169,14 @@ textarea { resize: vertical; padding-block: var(--space-xs); font-size: var(--te
 @keyframes spin { to { transform: rotate(360deg); } }
 .actions { display: flex; gap: var(--space-xs); flex-wrap: wrap; align-items: center; }
 .kbd { font-size: var(--text-xs); line-height: 1.4; padding: 0 var(--space-2xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-small); background: var(--color-paper-2); color: var(--color-muted); }
-.btn.primary .kbd { background: transparent; border-color: var(--color-muted); color: var(--color-paper); }
+.btn.primary .kbd { background: transparent; border-color: var(--color-accent-ink); color: var(--color-accent-ink); }
 
 /* tags carry state: healthy is pale teal, a warning is outlined, failing is outlined in red with a word */
 .badge { display: inline-flex; align-items: center; gap: var(--space-2xs); min-height: 22px; padding: 0 var(--space-xs); border: 0; border-radius: var(--radius-pill); background: var(--color-paper-3); color: var(--color-ink-2); font: inherit; font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
 .badge.mono { font-family: var(--font-outlier); font-weight: 400; }
 .badge.ok { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); }
-.badge.warn { background: transparent; box-shadow: inset 0 0 0 1px var(--color-muted); color: var(--color-ink); }
-.badge.fail { background: transparent; box-shadow: inset 0 0 0 1px var(--color-error); color: var(--color-error); }
+.badge.warn { background: var(--color-warn-soft); color: var(--color-warn-soft-ink); }
+.badge.fail { background: var(--color-error-soft); color: var(--color-error-soft-ink); }
 .badge.info { background: var(--color-paper-3); color: var(--color-ink); }
 
 /* ---------- tables: horizontal rules only */
@@ -194,17 +201,17 @@ details[open] summary { margin-bottom: var(--space-xs); }
 .seg { display: inline-flex; flex-wrap: wrap; gap: var(--space-3xs); padding: var(--space-3xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-2); }
 .seg button { min-height: 30px; padding: 0 var(--space-sm); border: 0; border-radius: 8px; background: none; color: var(--color-ink-2); font: inherit; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out); }
 .seg button:active { background: var(--color-paper-3); }
-.seg button[aria-pressed="true"] { background: var(--color-ink); color: var(--color-paper); }
+.seg button[aria-pressed="true"] { background: var(--color-accent); color: var(--color-accent-ink); }
 .chips { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
 .chips.mb { margin-bottom: var(--space-sm); }
 .chip { display: inline-flex; align-items: center; gap: var(--space-xs); min-height: var(--control-sm); padding: 0 var(--space-sm); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-2); color: var(--color-ink-2); font: inherit; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out); }
 .chip:active { background: var(--color-paper-3); }
-.chip[aria-pressed="true"], .chip:has(input:checked) { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper); }
+.chip[aria-pressed="true"], .chip:has(input:checked) { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
 .chip input { width: 14px; height: 14px; min-height: 0; margin: 0; outline-offset: 2px; accent-color: var(--color-paper-3); }
 
 /* ---------- dashboard: setup as a notice of numbered stages */
 .progress { height: 4px; flex: 1 1 120px; max-width: 220px; border-radius: var(--radius-pill); background: var(--color-paper-3); overflow: hidden; }
-.progress > div { height: 100%; background: var(--color-ink); }
+.progress > div { height: 100%; background: var(--color-accent); }
 .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: var(--space-lg); }
 .step { display: flex; flex-direction: column; gap: var(--space-2xs); min-width: 0; }
 .step .state { display: flex; align-items: center; min-height: 32px; font-size: var(--text-2xl); font-weight: 700; letter-spacing: var(--tracking-display); line-height: 1; font-variant-numeric: tabular-nums; }
@@ -243,7 +250,7 @@ details[open] summary { margin-bottom: var(--space-xs); }
 .kpi .kl { grid-area: label; color: var(--color-ink-2); }
 .kpi .kv { grid-area: figure; font-size: var(--text-3xl); font-weight: 700; letter-spacing: var(--tracking-display); line-height: 1; font-variant-numeric: tabular-nums; }
 .kpi .kd { grid-area: note; font-size: var(--text-xs); color: var(--color-muted); }
-.kpi .kd.bad { color: var(--color-error); } .kpi .kd.warn { color: var(--color-ink); font-weight: 600; }
+.kpi .kd.bad { color: var(--color-error); } .kpi .kd.warn { color: var(--color-warn); font-weight: 600; }
 
 /* ---------- charts */
 .dgrid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-xl); align-items: start; margin-bottom: var(--space-xl); }
@@ -268,7 +275,7 @@ details[open] summary { margin-bottom: var(--space-xs); }
 .hb .track > span { display: block; height: 100%; background: var(--chart-ink); }
 .hb .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--color-muted); }
 .spark { display: block; }
-.spark path { fill: none; stroke: var(--color-muted); stroke-width: 1.5; stroke-linejoin: round; }
+.spark path { fill: none; stroke: var(--chart-ink); stroke-width: 1.5; stroke-linejoin: round; }
 .miss { color: var(--color-ink); font-weight: 600; }
 .err { color: var(--color-error); font-weight: 600; }
 .err.note { font-family: var(--font-body); }
@@ -326,7 +333,7 @@ details[open] summary { margin-bottom: var(--space-xs); }
   .nav:hover { background: var(--color-paper-3); }
   .kbar:hover, input:hover, select:hover, textarea:hover { background: var(--color-paper-2); }
   .btn:hover { background: var(--color-paper-3); }
-  .btn.primary:hover { background: var(--color-ink-2); }
+  .btn.primary:hover { background: var(--color-accent-hover); }
   .btn.ghost:hover { background: var(--color-paper-3); }
   .btn.danger:hover { color: var(--color-error); }
   .btn.danger-solid:hover { background: var(--color-error); opacity: 0.9; }
@@ -1109,7 +1116,7 @@ function renderDashboard() {
   else if (!vol.values.length) { for (const id of ["volChart", "errChart"]) $(id).innerHTML = `<div class="inline-msg">No environment answered${envs.length ? `: ${esc(envs[0].error || "")}` : ""}.</div>`; }
   else {
     lineChart($("volChart"), vol.labels, vol.values, "Messages");
-    barChart($("errChart"), errSeries.labels, [{name: "Errors", values: errSeries.values, color: "var(--chart-mid)"}], {name: "Errors", spike: true, height: 210});
+    barChart($("errChart"), errSeries.labels, [{name: "Errors", values: errSeries.values, color: "var(--chart-error-soft)"}], {name: "Errors", spike: true, height: 210});
   }
   const emptyCalls = !u ? "Loading…" : !u.enabled ? "Recording is off (GRAYLOG_MCP_USAGE=off)." : "No tool calls yet. They show up here as soon as Claude uses graylog.";
   hbars($("toolBars"), u ? u.tools.slice(0, 7).map((t) => ({label: t.tool, value: t.calls, title: `${t.calls} calls, ${t.misses} found nothing, ${t.errors} errors, p95 ${t.p95_ms} ms`})) : [], emptyCalls);
@@ -1125,7 +1132,7 @@ const callWhat = (e) => { const a = e.args || {}; return a.query || a.trace_id |
 async function rerun(e) {
   await showPage("playground");
   setTool(e.tool);
-  const args = {...(TEMPLATES[e.tool] || {}), ...(e.args || {})};
+  const args = {...toolTemplate(e.tool), ...(e.args || {})};
   if (e.instance && STATE.instances.some((x) => x.name === e.instance)) $("p_env").value = e.instance;
   $("p_args").value = JSON.stringify(args, null, 2); $("p_args").focus();
 }
@@ -1145,7 +1152,7 @@ function renderActivity() {
   if (!u.totals.calls) $("callsChart").innerHTML = '<div class="inline-msg">No tool calls in this range yet. They show up here as soon as Claude uses graylog.</div>';
   else barChart($("callsChart"), labels, [
     {name: "Found something", values: u.buckets.map((b) => b.calls - b.misses - b.errors), color: "var(--chart-ink)"},
-    {name: "Found nothing", values: u.buckets.map((b) => b.misses), color: "var(--chart-mid)"},
+    {name: "Found nothing", values: u.buckets.map((b) => b.misses), color: "var(--chart-warn)"},
     {name: "Error", values: u.buckets.map((b) => b.errors), color: "var(--color-error)"},
   ], {name: "Tool calls", height: 280});
   const keep = $("a_tool").value;
@@ -1612,22 +1619,18 @@ document.querySelector("#redaction .card").addEventListener("input", redactionCh
 $("addPattern").addEventListener("click", () => addPatternRow().querySelector(".pn").focus());
 
 // ------------------------------------------------------------------ playground
-const TEMPLATES = {
-  root_cause: {range: "1h"}, scan: {range: "1h"}, detect_changes: {range: "6h"}, service_map: {range: "1h"}, search_logs: {query: "level:<=3", range: "15m", limit: 20},
-  count_logs: {query: "*", range: "1h"}, error_summary: {range: "1h", group_by: "exception"}, log_histogram: {query: "level:<=3", range: "6h"},
-  top_values: {field: "source", range: "1h"}, compare_periods: {window: "1h"}, trace_request: {trace_id: "", range: "24h"},
-  context_around: {ref: "index/id", seconds: 30}, get_message: {ref: "index/id"}, list_streams: {}, list_fields: {contains: ""},
-};
-const QUICK = ["root_cause", "scan", "error_summary", "search_logs", "log_histogram", "trace_request"];
+// starting arguments and quick-run chips come from the server's table of operations (/api/state)
+const toolTemplate = (t) => (STATE && STATE.tool_templates && STATE.tool_templates[t]) || {};
+const quickTools = () => (STATE && STATE.quick_tools) || [];
 function setTool(t) {
-  $("p_tool").value = t; $("p_args").value = JSON.stringify(TEMPLATES[t] || {}, null, 2);
+  $("p_tool").value = t; $("p_args").value = JSON.stringify(toolTemplate(t), null, 2);
   document.querySelectorAll("#p_quick .chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.tool === t)));
 }
 function renderPlayground() {
   const sel = $("p_tool"), keep = sel.value || "root_cause";
   sel.innerHTML = STATE.tools.map((t) => `<option${t === keep ? " selected" : ""}>${esc(t)}</option>`).join("");
-  $("p_quick").innerHTML = QUICK.filter((t) => STATE.tools.includes(t)).map((t) => `<button class="chip" data-tool="${esc(t)}" aria-pressed="${t === keep}">${esc(t)}</button>`).join("");
-  if (!$("p_args").value) $("p_args").value = JSON.stringify(TEMPLATES[sel.value] || {}, null, 2);
+  $("p_quick").innerHTML = quickTools().filter((t) => STATE.tools.includes(t)).map((t) => `<button class="chip" data-tool="${esc(t)}" aria-pressed="${t === keep}">${esc(t)}</button>`).join("");
+  if (!$("p_args").value) $("p_args").value = JSON.stringify(toolTemplate(sel.value), null, 2);
 }
 $("p_quick").addEventListener("click", (ev) => { const c = ev.target.closest("[data-tool]"); if (c) setTool(c.dataset.tool); });
 $("p_tool").addEventListener("change", () => setTool($("p_tool").value));

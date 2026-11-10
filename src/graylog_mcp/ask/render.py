@@ -19,7 +19,7 @@ TEXT: dict[str, dict[str, str]] = {
         "ambiguous": "Several errors match your description about equally; say which one you mean:",
         "match": "{n}x, {first} to {last}: {sample}",
         "no_trace": "This error has no trace id ({fields}), so its path across services cannot be followed. "
-        "Search around its time with search_logs or context_around.",
+        "Search around its time with search_logs, or get_message with context_seconds.",
         "no_flow": "None of its trace ids was found in the logs of this period.",
         "flow": 'The error "{sample}" ({n}x) went through {services}.',
         "first_error": "The first error came from {service}.",
@@ -40,7 +40,7 @@ TEXT: dict[str, dict[str, str]] = {
         "ambiguous": "Có nhiều lỗi khớp gần như ngang nhau; hãy cho biết bạn muốn nói lỗi nào:",
         "match": "{n} lần, {first} đến {last}: {sample}",
         "no_trace": "Lỗi này không có trace id ({fields}) nên không lần theo được đường đi qua các dịch vụ. "
-        "Hãy xem quanh thời điểm lỗi bằng search_logs hoặc context_around.",
+        "Hãy xem quanh thời điểm lỗi bằng search_logs, hoặc get_message với context_seconds.",
         "no_flow": "Không tìm thấy trace id nào của lỗi này trong log của khoảng thời gian này.",
         "flow": 'Lỗi "{sample}" ({n} lần) đi qua {services}.',
         "first_error": "Lỗi đầu tiên xuất hiện ở {service}.",

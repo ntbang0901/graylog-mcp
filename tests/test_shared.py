@@ -127,8 +127,8 @@ def test_one_http_server_serves_two_repositories(tmp_path):
 
         async def both() -> tuple[dict, dict]:
             return await asyncio.gather(
-                _call(url, {REPO_HEADER: str(pay)}, "list_instances", {}),
-                _call(url + f"?repo={erp}", {}, "list_instances", {}),
+                _call(url, {REPO_HEADER: str(pay)}, "describe", {}),
+                _call(url + f"?repo={erp}", {}, "describe", {}),
             )
 
         a, b = asyncio.run(both())

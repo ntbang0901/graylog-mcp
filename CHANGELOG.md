@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- 9 tools instead of 20, so every session spends fewer tokens on the tool list. `count_logs`, `log_histogram`,
+  `top_values` and `error_summary` become `aggregate` with `kind` `count`, `histogram`, `top` (field in `group_by`)
+  or `errors`; `context_around` becomes `get_message` with `context_seconds`; `detect_changes` and `service_map`
+  become `root_cause` with `view` `changes` or `service_map`; `list_instances`, `list_streams`, `list_fields`,
+  `list_presets` and `list_scan_rules` become `describe` with `what`. An argument that does not apply to the
+  chosen `kind`, `view` or `what` is refused, except `instance` on a `describe` listing that covers every instance.
+  Presets keep the old names in `tool`.
+- The admin page's colours: greys are tinted slate, actions and data are teal, warnings amber, failures coral.
+
 ## [0.2.0] - 2026-11-06
 
 ### Security

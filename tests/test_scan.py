@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from graylog_mcp import scan, tools
+from graylog_mcp import operations, scan
 from graylog_mcp.config import ConfigError, parse_scan_rule
 from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
 from graylog_mcp.tools import ToolInputError
@@ -168,13 +168,15 @@ async def test_scan_via_mcp_and_preset(make_app):
     app, _ = make_app(presets={"health": {"tool": "scan", "args": {"min_severity": "high"}}})
     server = build_server(app)
     names = {t.name for t in await server.list_tools()}
-    assert {"scan", "list_scan_rules"} <= names
+    assert {"scan", "describe"} <= names
+    rules = await server.call_tool("describe", {"what": "scan_rules"})
+    assert "error_spike" in rules.content[0].text
     seasonal = await server.call_tool("scan", {"range": "1h", "baseline_shift": "1d", "rules": ["error_spike"]})
     assert "median of 3 periods" in json.loads(seasonal.content[0].text)["baseline"]
     result = await server.call_tool("scan", {"range": "1h", "rules": ["error_spike", "crash"]})
     payload = json.loads(result.content[0].text)
     assert set(by_rule(payload)) == {"error_spike"} and payload["checked"] == 2
-    preset = await tools.run_preset(app, "health")
+    preset = await operations.run_preset(app, "health")
     assert preset["tool"] == "scan" and "auth_failures" not in {q["rule"] for q in preset["quiet"]}
     prompts = await server.list_prompts()
     assert [p.name for p in prompts] == ["scan"]

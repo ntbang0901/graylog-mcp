@@ -67,19 +67,6 @@ DEFAULT_CHANGE_QUERY = (
     '"Server started" OR "Listening on port" OR "Booting worker" OR "configuration reloaded" OR "config reloaded"'
 )
 
-PRESET_TOOLS = {
-    "scan",
-    "root_cause",
-    "detect_changes",
-    "service_map",
-    "search_logs",
-    "count_logs",
-    "error_summary",
-    "log_histogram",
-    "top_values",
-    "trace_request",
-    "compare_periods",
-}
 API_CHOICES = {
     "message_api": {"auto", "universal", "views", "scripting"},
     "aggregation_api": {"auto", "views", "scripting"},
@@ -774,6 +761,9 @@ def _port(value: Any) -> int:
 def _parse_presets(data: Any) -> dict[str, Preset]:
     if not isinstance(data, dict):
         raise ConfigError("presets: expected a table of [presets.<name>]")
+    from graylog_mcp.operations import preset_names  # local import: operations imports tools, which imports this
+
+    allowed = preset_names()
     out = {}
     for name, item in data.items():
         where = f"presets.{name}"
@@ -781,8 +771,8 @@ def _parse_presets(data: Any) -> dict[str, Preset]:
             raise ConfigError(f"{where}: expected a table")
         _check_keys(where, item, _PRESET_KEYS)
         tool = item.get("tool", "search_logs")
-        if tool not in PRESET_TOOLS:
-            raise ConfigError(f"{where}.tool: expected one of {', '.join(sorted(PRESET_TOOLS))}")
+        if tool not in allowed:
+            raise ConfigError(f"{where}.tool: expected one of {', '.join(sorted(allowed))}")
         args = item.get("args", {})
         if not isinstance(args, dict):
             raise ConfigError(f"{where}.args: expected a table")

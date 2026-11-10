@@ -27,9 +27,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, rca, recover, scan, tools, usage
+from graylog_mcp import __version__, operations, recover, tools, usage
 from graylog_mcp import secrets as secret_store
-from graylog_mcp.ask.pipeline import ask as ask_question
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import (
     ENV_NAME,
@@ -46,26 +45,6 @@ from graylog_mcp.redact import PACKS, PROFILES, Redactor
 from graylog_mcp.setup import clients, configfile, connect, doctor
 from graylog_mcp.setup.detect import detect, local_timezone
 from graylog_mcp.shaping import dumps
-
-TOOLS: dict[str, Any] = {
-    "scan": scan.scan,
-    "root_cause": rca.root_cause,
-    "detect_changes": rca.detect_changes,
-    "service_map": rca.service_map,
-    "search_logs": tools.search_logs,
-    "count_logs": tools.count_logs,
-    "error_summary": tools.error_summary,
-    "log_histogram": tools.log_histogram,
-    "top_values": tools.top_values,
-    "compare_periods": tools.compare_periods,
-    "trace_request": tools.trace_request,
-    "context_around": tools.context_around,
-    "get_message": tools.get_message,
-    "list_streams": tools.list_streams,
-    "list_fields": tools.list_fields,
-    "ask": ask_question,
-}
-NO_INSTANCE = {"list_instances", "list_presets"}
 
 
 class AdminState:
@@ -322,6 +301,7 @@ def build_app(state: AdminState) -> Starlette:
                 }
             )
         shared = await _shared_status(state)
+        playground = operations.playground()
         return JSONResponse(
             {
                 "version": __version__,
@@ -340,7 +320,9 @@ def build_app(state: AdminState) -> Starlette:
                 "clients": client_list,
                 "packs": sorted(PACKS),
                 "profiles": {name: p.summary for name, p in PROFILES.items()},
-                "tools": sorted(TOOLS),
+                "tools": sorted(playground),
+                "tool_templates": {name: dict(op.template) for name, op in playground.items()},
+                "quick_tools": list(operations.QUICK_RUN),
                 "local_timezone": local_timezone(),
             }
         )
@@ -625,9 +607,10 @@ def build_app(state: AdminState) -> Starlette:
     async def run_tool(request: Request) -> Response:
         body = await _body(request)
         name = str(body.get("tool") or "")
-        fn = TOOLS.get(name)
-        if fn is None:
+        op = operations.playground().get(name)
+        if op is None:
             return _err(f"unknown tool {name!r}")
+        fn = op.fn
         args = body.get("args") or {}
         if not isinstance(args, dict):
             return _err("args must be a JSON object")

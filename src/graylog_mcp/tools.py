@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import logging
 import re
 import statistics
@@ -22,7 +21,7 @@ from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError
-from graylog_mcp.config import Config, ConfigError, InstanceConfig
+from graylog_mcp.config import Config, InstanceConfig
 from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
 from graylog_mcp.shaping import Budget, Shaper, dedup, dumps, group_key, is_error_level, is_internal, truncate
@@ -414,7 +413,7 @@ async def _empty_hint(
     if found:
         hint = f"no matches: {found}. See diagnosis"
         return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
-    hint = "no matches: widen the range, check field names with list_fields, or simplify the query"
+    hint = "no matches: widen the range, check field names with describe(what='fields'), or simplify the query"
     if focus:
         hint += ". Only this repository's service was searched (focus); pass streams=['*'] to search every stream"
     return f"{hint}. Graylog says: {'; '.join(problems)}" if problems else hint
@@ -854,7 +853,7 @@ async def error_summary(
     if not groups and total:
         out["hint"] = (
             f"{total} errors but no values for field '{field}'; it may not exist in these logs. "
-            "Try group_by='source' or check names with list_fields"
+            "Try group_by='source' or check names with describe(what='fields')"
         )
     elif not total:
         out["hint"] = f"no messages match error_query {gl.cfg.error_query!r} in this range"
@@ -975,7 +974,9 @@ async def top_values(
     if missing:
         out["without_field"] = missing
     if not values and total:
-        out["hint"] = f"no values for field '{field}' among {total} messages; check the name with list_fields"
+        out["hint"] = (
+            f"no values for field '{field}' among {total} messages; check the name with describe(what='fields')"
+        )
     budget = app.budget()
     budget.take(out)
     out["values"] = budget.fit(values)
@@ -1195,36 +1196,3 @@ def list_presets(app: App) -> dict[str, Any]:
             for p in app.config.presets.values()
         ]
     }
-
-
-PRESET_DISPATCH: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
-    "search_logs": search_logs,
-    "count_logs": count_logs,
-    "error_summary": error_summary,
-    "log_histogram": log_histogram,
-    "top_values": top_values,
-    "trace_request": trace_request,
-    "compare_periods": compare_periods,
-}
-
-
-async def run_preset(
-    app: App, name: str, overrides: dict[str, Any] | None = None, instance: str | None = None
-) -> dict[str, Any]:
-    preset = app.config.presets.get(name)
-    if preset is None:
-        known = ", ".join(sorted(app.config.presets)) or "none configured"
-        raise ToolInputError(f"unknown preset {name!r}; available: {known}")
-    fn = PRESET_DISPATCH[preset.tool]
-    args = {**preset.args, **(overrides or {})}
-    if instance:
-        args["instance"] = instance
-    allowed = set(inspect.signature(fn).parameters) - {"app"}
-    unknown = sorted(set(args) - allowed)
-    if unknown:
-        raise ToolInputError(f"preset {name!r}: {preset.tool} does not take {', '.join(unknown)}")
-    try:
-        result = await fn(app, **args)
-    except TypeError as exc:
-        raise ConfigError(f"preset {name!r}: {exc}") from None
-    return {"preset": name, "tool": preset.tool, **result}
