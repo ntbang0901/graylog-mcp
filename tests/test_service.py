@@ -564,7 +564,7 @@ def test_start_runs_the_background_server(monkeypatch, tmp_path, capsys):
     fake_claude.install(tmp_path, monkeypatch)
     (pay / ".mcp.json").write_text(json.dumps({"mcpServers": {"graylog": {"command": "uvx", "args": []}}}))
 
-    assert main(["start", "--port", "8123"]) == 0
+    assert main(["start", "--port", "8123", "--config", ".graylog-mcp.toml"]) == 0
     out = capsys.readouterr().out
     assert started == [(["/tools/graylog-mcp", "serve", "--shared", "--admin", "--port", "8123", "--config",
                          str((tmp_path / ".graylog-mcp.toml").resolve())], True)]  # fmt: skip
@@ -594,6 +594,56 @@ def test_start_keeps_its_port_and_fails_when_another_program_has_it(monkeypatch,
     assert spawned[0][spawned[0].index("--port") + 1] == "6679"
     assert service.current_port() == 6679  # later commands follow the port asked for
     assert service.shared_url() == "http://127.0.0.1:6679/mcp"
+
+
+def test_start_uses_the_same_config_wherever_it_runs(monkeypatch, tmp_path):
+    """The folder 'start' runs in never picks the server's config: the one saved last time, else the user config."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(service, "installed", lambda: service.Install("0.1.0", None, None, "other"))
+    monkeypatch.setattr(service, "probe", lambda port, timeout=0.5: None)
+    monkeypatch.setattr(service, "port_free", lambda port: True)
+    monkeypatch.setattr(service, "wait_healthy", lambda port, timeout=20.0, commit=None: {"status": "ok"})
+    monkeypatch.setattr(service.Autostart, "kind", property(lambda self: None))
+    spawned: list = []
+    monkeypatch.setattr(service, "spawn_detached", spawned.append)
+
+    def start_in(folder: Path) -> str:
+        folder.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(folder)
+        assert main(["start", "--no-browser", "--no-claude"]) == 0
+        return spawned[-1][spawned[-1].index("--config") + 1]
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".graylog-mcp.toml").write_text("", encoding="utf-8")  # a repository's own config: not the server's
+    assert start_in(repo) == start_in(tmp_path / "elsewhere") == str(service.user_config_path())
+    mine = tmp_path / "mine.toml"
+    mine.write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert main(["start", "--no-browser", "--no-claude", "--config", str(mine)]) == 0
+    assert start_in(repo) == start_in(tmp_path / "other") == str(mine.resolve())  # kept until another --config
+    mine.unlink()  # a saved file that is gone (moved, or never written): back to the user config
+    assert start_in(tmp_path / "other") == str(service.user_config_path())
+
+
+async def test_standalone_admin_page_edits_and_starts_the_servers_config(monkeypatch, tmp_path):
+    """Opened in a folder without a config, the page edits the server's config and never invents one there."""
+    from graylog_mcp.admin.app import AdminState, build_app
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    saved = tmp_path / "home.toml"
+    saved.write_text("", encoding="utf-8")
+    service.save_settings(config=str(saved))
+    folder = tmp_path / "repo"
+    (folder / ".git").mkdir(parents=True)
+    state = AdminState(folder, None, "tok", allowed_hosts=("testserver",))
+    assert state.path == saved
+    spawned: list = []
+    monkeypatch.setattr(service, "spawn_detached", spawned.append)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(state)), base_url="http://testserver",
+                                 headers={"X-Admin-Token": "tok"}) as client:  # fmt: skip
+        assert (await client.post("/api/setup/start", json={})).json()["ok"]
+    assert spawned and "--config" not in spawned[0]  # 'start' picks the server's config itself
 
 
 def test_ports(monkeypatch):
