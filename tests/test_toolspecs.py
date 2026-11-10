@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
@@ -87,6 +87,15 @@ def test_a_tool_with_one_mode_passes_every_argument_as_given():
 
 def _modes():
     return [(spec, mode, OPERATIONS[mode.op]) for spec in TOOLS for mode in spec.modes.values()]
+
+
+def test_a_switch_offers_exactly_the_modes_declared():
+    for spec in TOOLS:
+        if spec.switch is None:
+            assert len(spec.modes) == 1 or spec.choose is not None, spec.name
+        else:
+            offered = get_args(spec.args.model_fields[spec.switch].annotation)
+            assert set(offered) == set(spec.modes), spec.name
 
 
 def test_every_parameter_reaches_an_operation():

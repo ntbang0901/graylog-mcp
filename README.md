@@ -842,7 +842,9 @@ src/graylog_mcp/
   tools.py      tool implementations
   rca.py        root cause analysis: onsets, change detection, service map, ranking
   ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
-  server.py     MCP tool declarations and model instructions
+  operations.py every operation in one table: what presets, the admin page and usage know by name
+  toolspecs/    the tools a model sees, each declared once: its arguments and the operations it runs
+  server.py     model instructions, and the MCP tools built from those declarations
 ```
 
 ## License
