@@ -286,7 +286,8 @@ environment, then restart the server. Without a key the tool is not even listed 
 `--model NAME` and `--base-url https://...` on the same command save your choice of model and endpoint (a key for
 another account or a proxy of your own); the environment variables `GRAYLOG_MCP_ASK_MODEL` and
 `GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model` in a config file wins over both. The endpoint must speak
-TypeSafe's System One API (`POST /v1/systemone`).
+TypeSafe's System One API (`POST /v1/systemone`). `graylog-mcp logout --ask` forgets the saved key, model and
+endpoint.
 The default model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
 from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
 only" so the asker can correct it.

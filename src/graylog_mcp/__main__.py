@@ -279,7 +279,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp init [options]             guided setup in the terminal
        graylog-mcp login [INSTANCE...]        save tokens/passwords on this machine (outside the repo)
        graylog-mcp login --ask                save your API key for the ask tool (--model, --base-url)
-       graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords
+       graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords (--ask: the ask tool's key)
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
@@ -529,9 +529,21 @@ def _logout(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="graylog-mcp logout", description="Forget saved tokens/passwords")
     parser.add_argument("instances", nargs="*", help="instances to forget (default: all saved)")
     parser.add_argument("--config", "-c")
+    parser.add_argument("--ask", action="store_true", help="forget the API key, model and endpoint of the ask tool")
     args = parser.parse_args(argv)
     names: list[str] = []
-    if args.instances:
+    if args.ask and args.instances:
+        print("graylog-mcp logout: --ask forgets only what login --ask saved; name no instance", file=sys.stderr)
+        return 2
+    if args.ask:
+        from graylog_mcp.config import ASK_BASE_URL_VAR, ASK_MODEL_VAR, AskConfig
+
+        try:
+            ask = _load_for_tools(args.config).ask
+        except ConfigError:  # the key may have been saved before any instance was configured
+            ask = AskConfig()
+        names = [ask.api_key_env, ASK_MODEL_VAR, ASK_BASE_URL_VAR]
+    elif args.instances:
         try:
             config = _load_for_tools(args.config)
             names = [config.instance(n).secret_env or "" for n in args.instances]

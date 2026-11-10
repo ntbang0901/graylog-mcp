@@ -180,7 +180,7 @@ def test_ask_config_is_validated(key):
     assert cfg.enabled and cfg.language == "vi" and cfg.relevance == 0.7
     assert "fake-typesafe-key" not in repr(cfg)
     for bad in ({"language": "fr"}, {"base_url": "http://x.test"}, {"relevance": 2}, {"code_patterns": ["("]},
-                {"api_key": "x"}, {"api_key_env": "fake-typesafe-key"}):  # fmt: skip
+                {"api_key": "x"}, {"api_key_env": "fake-typesafe-key"}, {"base_url": ""}, {"model": ""}):  # fmt: skip
         with pytest.raises(ConfigError):
             parse_config({**base, "ask": bad}, source="test")
 
@@ -244,6 +244,11 @@ def test_login_ask_tests_and_saves_the_key_model_and_endpoint(monkeypatch, capsy
     assert secrets.get("TYPESAFE_API_KEY") == "fake-typesafe-key"
     cfg = make_config().ask
     assert (cfg.model, cfg.base_url, cfg.enabled) == ("jev-preview", "https://llm.example.com", True)
+
+    assert main(["logout", "--ask", "main"]) == 2
+    assert main(["logout", "--ask"]) == 0
+    cfg = make_config().ask
+    assert (cfg.model, cfg.base_url, cfg.enabled) == ("jev-latest", "https://api.typesafe.ai", False)
 
 
 def test_login_ask_saves_nothing_when_the_key_is_refused(monkeypatch, capsys):

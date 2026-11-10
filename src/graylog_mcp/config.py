@@ -913,7 +913,7 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
     # the user's own choice (graylog-mcp login --ask, or the environment) when the config says nothing
-    base_url = data.get("base_url") or secrets.get(ASK_BASE_URL_VAR) or AskConfig.base_url
+    base_url = data["base_url"] if "base_url" in data else secrets.get(ASK_BASE_URL_VAR) or AskConfig.base_url
     if not isinstance(base_url, str) or not base_url.startswith("https://"):
         raise ConfigError("ask.base_url: must start with https://")
     language = data.get("language", "en")
@@ -925,7 +925,7 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
             re.compile(pattern)
         except re.error as exc:
             raise ConfigError(f"ask.code_patterns: {pattern!r} is not a regular expression ({exc})") from None
-    model = data.get("model") or secrets.get(ASK_MODEL_VAR) or AskConfig.model
+    model = data["model"] if "model" in data else secrets.get(ASK_MODEL_VAR) or AskConfig.model
     if not isinstance(model, str) or not model:
         raise ConfigError("ask.model: expected a model name")
     return AskConfig(
