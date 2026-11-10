@@ -1132,7 +1132,7 @@ const callWhat = (e) => { const a = e.args || {}; return a.query || a.trace_id |
 async function rerun(e) {
   await showPage("playground");
   setTool(e.tool);
-  const args = {...(TEMPLATES[e.tool] || {}), ...(e.args || {})};
+  const args = {...toolTemplate(e.tool), ...(e.args || {})};
   if (e.instance && STATE.instances.some((x) => x.name === e.instance)) $("p_env").value = e.instance;
   $("p_args").value = JSON.stringify(args, null, 2); $("p_args").focus();
 }
@@ -1619,22 +1619,18 @@ document.querySelector("#redaction .card").addEventListener("input", redactionCh
 $("addPattern").addEventListener("click", () => addPatternRow().querySelector(".pn").focus());
 
 // ------------------------------------------------------------------ playground
-const TEMPLATES = {
-  root_cause: {range: "1h"}, scan: {range: "1h"}, detect_changes: {range: "6h"}, service_map: {range: "1h"}, search_logs: {query: "level:<=3", range: "15m", limit: 20},
-  count_logs: {query: "*", range: "1h"}, error_summary: {range: "1h", group_by: "exception"}, log_histogram: {query: "level:<=3", range: "6h"},
-  top_values: {field: "source", range: "1h"}, compare_periods: {window: "1h"}, trace_request: {trace_id: "", range: "24h"},
-  context_around: {ref: "index/id", seconds: 30}, get_message: {ref: "index/id"}, list_streams: {}, list_fields: {contains: ""},
-};
-const QUICK = ["root_cause", "scan", "error_summary", "search_logs", "log_histogram", "trace_request"];
+// starting arguments and quick-run chips come from the server's table of operations (/api/state)
+const toolTemplate = (t) => (STATE && STATE.tool_templates && STATE.tool_templates[t]) || {};
+const quickTools = () => (STATE && STATE.quick_tools) || [];
 function setTool(t) {
-  $("p_tool").value = t; $("p_args").value = JSON.stringify(TEMPLATES[t] || {}, null, 2);
+  $("p_tool").value = t; $("p_args").value = JSON.stringify(toolTemplate(t), null, 2);
   document.querySelectorAll("#p_quick .chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.tool === t)));
 }
 function renderPlayground() {
   const sel = $("p_tool"), keep = sel.value || "root_cause";
   sel.innerHTML = STATE.tools.map((t) => `<option${t === keep ? " selected" : ""}>${esc(t)}</option>`).join("");
-  $("p_quick").innerHTML = QUICK.filter((t) => STATE.tools.includes(t)).map((t) => `<button class="chip" data-tool="${esc(t)}" aria-pressed="${t === keep}">${esc(t)}</button>`).join("");
-  if (!$("p_args").value) $("p_args").value = JSON.stringify(TEMPLATES[sel.value] || {}, null, 2);
+  $("p_quick").innerHTML = quickTools().filter((t) => STATE.tools.includes(t)).map((t) => `<button class="chip" data-tool="${esc(t)}" aria-pressed="${t === keep}">${esc(t)}</button>`).join("");
+  if (!$("p_args").value) $("p_args").value = JSON.stringify(toolTemplate(sel.value), null, 2);
 }
 $("p_quick").addEventListener("click", (ev) => { const c = ev.target.closest("[data-tool]"); if (c) setTool(c.dataset.tool); });
 $("p_tool").addEventListener("change", () => setTool($("p_tool").value));

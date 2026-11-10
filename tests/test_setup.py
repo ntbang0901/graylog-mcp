@@ -501,3 +501,24 @@ async def test_admin_settings_by_scope(admin):
     applied = await client.post("/api/detect/apply", json={"suggested": detected["suggested"], "scope": "group:erp"})
     assert applied.json()["ok"]
     assert (await client.get("/api/scope?scope=group:erp")).json()["values"]["version_fields"] == ["app_version"]
+
+
+async def test_admin_offers_the_operations_the_table_marks_for_it(admin):
+    from graylog_mcp import operations
+
+    client, _ = admin
+    state = (await client.get("/api/state")).json()
+    assert state["tools"] == sorted(operations.playground())
+    assert state["quick_tools"] == list(operations.QUICK_RUN)
+    assert state["tool_templates"]["top_values"] == {"field": "source", "range": "1h"}
+    assert state["tool_templates"]["ask"] == {}
+    for name in ("run_preset", "list_instances"):
+        assert (await client.post("/api/run", json={"tool": name, "args": {}})).status_code == 400
+
+
+def test_the_admin_page_keeps_no_operation_list_of_its_own():
+    import graylog_mcp.admin as admin_package  # `admin` is a fixture in this file
+
+    html = (Path(admin_package.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+    assert "const TEMPLATES" not in html and "const QUICK" not in html
+    assert "tool_templates" in html and "quick_tools" in html
