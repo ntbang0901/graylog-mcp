@@ -47,6 +47,12 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.6",
 ]
+lint = [
+    "actionlint-py>=1.7.12.25",
+    "pip-audit>=2.10.1",
+    "pre-commit>=4.7",
+    "zizmor>=1.31.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graylog_mcp"]
