@@ -58,7 +58,11 @@ class JevClient:
             answers = resp.json()["answers"]
         except (ValueError, KeyError, TypeError):
             raise JevError("TypeSafe returned an answer ask cannot read") from None
-        if not isinstance(answers, dict) or not set(questions) <= set(answers):
+        if (
+            not isinstance(answers, dict)
+            or not set(questions) <= set(answers)
+            or not all(isinstance(answers[name], dict) for name in questions)
+        ):
             raise JevError("TypeSafe returned an incomplete answer")
         return answers
 

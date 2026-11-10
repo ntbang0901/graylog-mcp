@@ -25,8 +25,11 @@ CLOSE_SCORES = 0.1  # the best two matches closer than this are not told apart
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
     jev = app.jev
     if jev is None:
-        raise ToolInputError("ask is off: set TYPESAFE_API_KEY (or run 'graylog-mcp login') and restart the server")
-    question = question.strip()[:MAX_QUESTION_CHARS]
+        raise ToolInputError(
+            "ask is off: set TYPESAFE_API_KEY in the environment or in secrets.toml and restart the server"
+        )
+    # a pasted log line or token must not reach TypeSafe unredacted
+    question = app.redactor.text(question.strip()[:MAX_QUESTION_CHARS])
     if not question:
         raise ToolInputError("question is required")
     sent = requests_sent.get()

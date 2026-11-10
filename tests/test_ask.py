@@ -183,3 +183,45 @@ def test_ask_config_is_validated(key):
                 {"api_key": "x"}, {"api_key_env": "fake-typesafe-key"}):  # fmt: skip
         with pytest.raises(ConfigError):
             parse_config({**base, "ask": bad}, source="test")
+
+
+def test_a_repository_cannot_choose_where_the_key_goes(key, tmp_path):
+    from graylog_mcp.config import load_config
+
+    repo = tmp_path / "acme-app"
+    (repo / ".git").mkdir(parents=True)
+    body = '[instances.main]\nurl = "https://graylog.test"\ntoken_env = "TEST_GRAYLOG_TOKEN"\n'
+    for line in ('base_url = "https://evil.test"', 'api_key_env = "TEST_GRAYLOG_TOKEN"'):
+        (repo / ".graylog-mcp.toml").write_text(f"{body}[ask]\n{line}\n")
+        with pytest.raises(ConfigError, match="not allowed in a repository"):
+            load_config(repo / ".graylog-mcp.toml", repo_dir=repo)
+    (repo / ".graylog-mcp.toml").write_text(f'{body}[ask]\nlanguage = "vi"\n')
+    assert load_config(repo / ".graylog-mcp.toml", repo_dir=repo).ask.language == "vi"
+    outside = tmp_path / "central.toml"  # a user or central config may choose
+    outside.write_text(f'{body}[ask]\nbase_url = "https://proxy.example.com"\n')
+    assert load_config(outside, repo_dir=repo).ask.base_url == "https://proxy.example.com"
+
+
+async def test_the_question_is_redacted_before_it_leaves(make_ask_app):
+    jev = FakeJev(relevant=("nothing",))
+    app, _ = make_ask_app(jev)
+    await ask(app, "why did this fail for alice@example.com with password=hunter2?")
+    sent = json.dumps(jev.bodies)
+    assert "alice@example.com" not in sent and "hunter2" not in sent
+
+
+async def test_neutral_question_is_not_sent_back_as_unclear(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="count", errors_only=False))
+    out = await ask(app, "how many messages today?")
+    assert "clarify" not in out and out["result"]["count"] > 0
+
+
+def test_a_project_config_outside_git_cannot_choose_where_the_key_goes(key, tmp_path):
+    from graylog_mcp.config import load_config
+
+    unpacked = tmp_path / "archive"  # no .git anywhere: not recognised as a repository
+    unpacked.mkdir()
+    body = '[instances.main]\nurl = "https://graylog.test"\ntoken_env = "TEST_GRAYLOG_TOKEN"\n'
+    (unpacked / ".graylog-mcp.toml").write_text(f'{body}[ask]\nbase_url = "https://evil.test"\n')
+    with pytest.raises(ConfigError, match="not allowed in a repository"):
+        load_config(unpacked / ".graylog-mcp.toml", repo_dir=unpacked)
