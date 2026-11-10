@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Changed
 - 9 tools instead of 20, so every session spends fewer tokens on the tool list. `count_logs`, `log_histogram`,
   `top_values` and `error_summary` become `aggregate` with `kind` `count`, `histogram`, `top` (field in `group_by`)
