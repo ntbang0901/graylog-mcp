@@ -1,0 +1,1191 @@
+{
+  "instructions": "Read-only access to Graylog logs. Nothing you do here changes Graylog. Sensitive values are\nalready masked ([REDACTED], [EMAIL], [CARD], [PHONE], ...); never try to recover them.\n\nQuery syntax (Lucene, as in the Graylog search bar):\n- field:value, field:\"exact phrase\", AND / OR / NOT (upper case), parentheses for grouping.\n- Wildcards: message:time*  (no leading wildcard). Existence: _exists_:trace_id.\n- Ranges: http_status:[500 TO 599], took_ms:>1000, level:<=3.\n- Escape special characters in values with quotes: path:\"/api/v1/orders\".\n- Field names are case-sensitive; call describe(what='fields') when unsure. Streams accept names or ids.\n- level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.\n  The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.\n\nEnvironments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one\nsystem group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'\n(e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only\none group has it. When the user names a system or an environment, pick that instance; when it is\nambiguous, ask. Never mix results from different instances without saying which is which.\nFocus: inside a repository, search_logs, aggregate, compare_periods and root_cause view='changes' only look at\nthat repository's service (results carry 'focus' with the filter added). Search other services or streams only\nwhen the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service\nfield (e.g. application:\"other-service\"). trace_request and the other root_cause views always span every service.\nInside a group's repository only that group is loaded (describe shows 'scope'); if the user\nasks about another group, say it is not loaded here and how to enable it, as the error explains.\n\nSearches that find nothing: search_logs and aggregate kind='count' try the likely fixes and return 'suggestions', each\nwith its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,\noutside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'\nsays which AND clause matches nothing and the values its field really has ('did_you_mean'). When a\nresult carries 'rewritten', the query you sent could not match as written (a field this Graylog does not\nhave, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,\nfor the reasons in 'why'; tell the user when that changes the meaning of their question.\n\nTime: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'\n(interpreted in the instance timezone shown in results). Output timestamps carry their offset.\n\nScanning (for \"is anything wrong?\", \"scan for errors\", \"check X\", a health check):\n- One scan call, not a loop of searches: it runs every rule concurrently with exact counts against a baseline\n  and returns only what fired, most severe first. Triage fast with min_severity='high'.\n- A specific need becomes ad hoc rules in that same call: checks=[{'name': ..., 'query': ...} + a condition]:\n  threshold (fires when count > N; 0 = any occurrence is bad), growth (the rate grew N times; for things that\n  normally happen, with min_count against noise), or group_by + new_groups (a value the baseline never saw).\n  Put several checks in one call; rules=[names or tags] runs configured rules (describe(what='scan_rules')).\n- Accurate queries: quoted phrases (\"Connection refused\") and field:value with real field names (describe);\n  no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.\n- Growth checks on things that follow traffic (errors, 5xx, timeouts) take per_traffic=true: a busy hour\n  is not an incident. A growth fires only when significant ('confidence' in the result); a 'note' on a quiet\n  rule says it grew but within chance: do not report that as a problem.\n- Window from the question. Baseline: the period right before by default; baseline='24h' when the window is\n  short; baseline_shift='1d' (or '7d') when traffic has a daily (weekly) curve, e.g. morning peaks.\n- Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call\n  it healthy); 'baseline_note' means the comparison is weaker (missing baseline data). Report severity,\n  count vs baseline, trend, confidence, first seen and the sample's ref.\n- Then drill into a finding with its 'query': aggregate kind='histogram' (when), kind='errors' (what),\n  search_logs (lines); several findings at once: root_cause.\n\nSuggested investigation flow:\n0. For \"what is causing this?\": root_cause first. It ranks the service that broke first, with nearby\n   deploys (view='changes') and the call graph (view='service_map') as evidence; then verify with the tools below.\n1. Size the problem: aggregate kind='count' / 'histogram' (the 'onset' field marks when a spike started).\n2. Group it: aggregate kind='errors' (exact counts per exception/logger/source, first/last seen, one sample).\n3. Before/after a deploy or incident start: compare_periods with split_at.\n4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.\n5. Follow one request across services: trace_request with a trace/correlation/request id.\n6. See what happened around one message: get_message with its 'ref' and context_seconds.\nCounts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the\nreturned page.\nResults are size-capped: when 'truncated' is true, narrow the query or page with next_offset.\n",
+  "tools": [
+    {
+      "name": "search_logs",
+      "title": "Search logs",
+      "description": "Search log messages with a Lucene query. Returns compact, redacted lines with a 'ref' (index/id) usable by get_message. Default range: last 15 minutes.",
+      "input_schema": {
+        "properties": {
+          "query": {
+            "default": "*",
+            "description": "Lucene query, '*' for everything",
+            "title": "Query",
+            "type": "string"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relative range ending now or at to_time: '15m', '2h', '1d'",
+            "title": "Range"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'",
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute end; default now",
+            "title": "To Time"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Fields to return; default timestamp/source/level/message, ['*'] for all",
+            "title": "Fields"
+          },
+          "sort": {
+            "default": "timestamp:desc",
+            "description": "'timestamp:desc' (default), 'asc', or '<field>:asc|desc'",
+            "title": "Sort",
+            "type": "string"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Messages to fetch (capped by config)",
+            "title": "Limit"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Skip this many messages (use next_offset)",
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "dedup_lines": {
+            "default": true,
+            "description": "Group lines that only differ in numbers/ids/timestamps (default true)",
+            "title": "Dedup Lines",
+            "type": "boolean"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "title": "search_logsArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Search logs",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "aggregate",
+      "title": "Aggregate",
+      "description": "Exact counts computed by Graylog. kind='count': number of matching messages, cheap, to size a problem. 'histogram': counts over time with the peak, first/last non-empty bucket and the 'onset' of a spike, to find when a problem started. 'top': top values of the group_by field with counts and percentages. 'errors': errors (configured error query) grouped by exception, logger, source or any field, with first/last seen and a sample message per group.",
+      "input_schema": {
+        "properties": {
+          "kind": {
+            "description": "What to compute",
+            "enum": [
+              "count",
+              "histogram",
+              "top",
+              "errors"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Lucene query, '*' by default; for 'errors' ANDed with the error query",
+            "title": "Query"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Relative range: '15m', '2h', '1d'; 15m for count, else 1h",
+            "title": "Range"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'",
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute end; default now",
+            "title": "To Time"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "group_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "top: the field (required); errors: 'exception' (default), 'logger', 'source' or a field",
+            "title": "Group By"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "histogram: bucket size such as '5m'; automatic",
+            "title": "Interval"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "top/errors: number of groups (default 10)",
+            "title": "Limit"
+          },
+          "samples": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "errors: one sample message per group (default true)",
+            "title": "Samples"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "aggregateArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Aggregate",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "get_message",
+      "title": "Get message",
+      "description": "One message with all its fields (redacted), by ref. Long values are cut to keep the answer small: 'cut_fields' names them with their size; pass those names in 'fields' to read them. With context_seconds: the messages logged around it instead.",
+      "input_schema": {
+        "properties": {
+          "ref": {
+            "description": "'index/message_id' from a previous result's 'ref', or a message id",
+            "title": "Ref",
+            "type": "string"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Without context_seconds: only these fields, each up to its full size; ['*'] for all of them in full",
+            "title": "Fields"
+          },
+          "compact_stacktrace": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Without context_seconds: fold framework stack frames (default true); false for the raw trace",
+            "title": "Compact Stacktrace"
+          },
+          "context_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Return the messages logged within ±this many seconds instead",
+            "title": "Context Seconds"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source",
+                  "stream",
+                  "all"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Context from the same host/app ('source', default), same streams, or 'all'",
+            "title": "Scope"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Context: extra Lucene filter inside the window",
+            "title": "Query"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "minimum": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Context: max messages, split before/after (60)",
+            "title": "Limit"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "title": "get_messageArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Get message",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "trace_request",
+      "title": "Trace request",
+      "description": "Follow one request across services: searches the configured trace fields (falls back to full text) on all streams and returns a chronological timeline, per-service steps with durations, and the first error.",
+      "input_schema": {
+        "properties": {
+          "trace_id": {
+            "description": "Correlation / request / trace id to follow",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "24h",
+            "description": "Relative range ending now or at to_time: '15m', '2h', '1d'",
+            "title": "Range"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'",
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute end; default now",
+            "title": "To Time"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": 200,
+            "description": "Max messages in the timeline",
+            "title": "Limit"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "trace_id"
+        ],
+        "title": "trace_requestArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Trace request",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "compare_periods",
+      "title": "Compare periods",
+      "description": "Compare two periods (default: last window vs the one before; or around split_at). Lists groups that are new, increased, gone or decreased, normalised per hour. Defaults to errors only.",
+      "input_schema": {
+        "properties": {
+          "split_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Point in time (e.g. a deploy); compares [split-window, split] with [split, split+window]",
+            "title": "Split At"
+          },
+          "window": {
+            "default": "1h",
+            "description": "Length of each period when using split_at or the default",
+            "title": "Window",
+            "type": "string"
+          },
+          "baseline_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit baseline start",
+            "title": "Baseline From"
+          },
+          "baseline_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit baseline end",
+            "title": "Baseline To"
+          },
+          "current_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit current period start",
+            "title": "Current From"
+          },
+          "current_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Explicit current period end; default now",
+            "title": "Current To"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Extra Lucene filter",
+            "title": "Query"
+          },
+          "errors_only": {
+            "default": true,
+            "description": "AND the configured error query (default true)",
+            "title": "Errors Only",
+            "type": "boolean"
+          },
+          "group_by": {
+            "default": "exception",
+            "description": "'exception', 'logger', 'source' or any field",
+            "title": "Group By",
+            "type": "string"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "limit": {
+            "default": 15,
+            "description": "Groups to return",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "title": "compare_periodsArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Compare periods",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "scan",
+      "title": "Scan",
+      "description": "Health scan in one call: runs every scan rule (crashes, resource exhaustion, error spikes, new error types, 5xx, timeouts/connectivity, database, auth failures, plus the rules in the config) concurrently with exact counts against a baseline, and returns only what fired, most severe first, with the query, top groups and a sample. Start here for 'is anything wrong?', 'scan for errors', 'check X'. For a specific need pass rules (names/tags) or checks (ad hoc rules).",
+      "input_schema": {
+        "properties": {
+          "range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "1h",
+            "description": "Window to scan, ending now (or at to_time): '15m', '1h', '24h'",
+            "title": "Range"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'",
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute end; default now",
+            "title": "To Time"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Length of the normal period right before the window, to compare rates with; same as the window by default. A longer one ('24h') is steadier for spiky traffic",
+            "title": "Baseline"
+          },
+          "baseline_shift": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seasonal baseline instead: compare with the same window shifted back by this ('1d' for the same hour yesterday, '7d' for last week), several times; the median period is the reference. Use it for traffic with a daily or weekly curve",
+            "title": "Baseline Shift"
+          },
+          "baseline_periods": {
+            "default": 3,
+            "description": "How many shifted periods baseline_shift compares with",
+            "maximum": 10,
+            "minimum": 1,
+            "title": "Baseline Periods",
+            "type": "integer"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Rule names or tags from describe(what='scan_rules') (e.g. ['errors'], ['database']); all rules when omitted, unless checks is given (then add 'all' to run them too)",
+            "title": "Rules"
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Ad hoc rules for what the user asks to scan, same keys as a configured rule: {'name': 'declined', 'query': 'message:declined', 'threshold': 0} fires on any match; {'query': '...', 'growth': 2, 'min_count': 10} on a doubled rate; {'errors_only': true, 'group_by': 'exception', 'new_groups': true} on new error groups. Add 'per_traffic': true to a growth check on anything that follows traffic (errors, 5xx, timeouts) so it compares shares of traffic, with 'traffic_query' for what counts as traffic. Optional keys: severity, exclude, baseline, baseline_shift, confidence (default 0.99), group_by",
+            "title": "Checks"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Extra Lucene filter applied to every rule, e.g. 'env:prod'",
+            "title": "Query"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "min_severity": {
+            "default": "low",
+            "description": "Run only rules at least this severe: critical | high | medium | low",
+            "title": "Min Severity",
+            "type": "string"
+          },
+          "samples": {
+            "default": true,
+            "description": "Attach one sample message per finding",
+            "title": "Samples",
+            "type": "boolean"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "title": "scanArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Scan",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "root_cause",
+      "title": "Root cause",
+      "description": "Find which service broke first and why. Compares every service's errors, traffic and latency with a baseline, pins the first error of each to the millisecond, detects deploys/restarts/host rollouts from the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence. Start here for 'what is causing this incident?'. view='changes': only the deploys and restarts found in the logs (new version-field values, host rollouts, start/stop lines). view='service_map': only which service calls which, from sampled traces, with traffic, error rate and p50/p95 latency per edge.",
+      "input_schema": {
+        "properties": {
+          "view": {
+            "default": "verdict",
+            "description": "What to return; 'verdict' by default",
+            "enum": [
+              "verdict",
+              "changes",
+              "service_map"
+            ],
+            "title": "View",
+            "type": "string"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window to analyse (the incident): '30m', '1h'; 6h for changes, else 1h",
+            "title": "Range"
+          },
+          "from_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute start, overrides range: ISO 8601 or 'YYYY-MM-DD HH:MM'",
+            "title": "From Time"
+          },
+          "to_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Absolute end; default now",
+            "title": "To Time"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "verdict: length of the normal period right before the window; same as the window",
+            "title": "Baseline"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional Lucene filter for scope, e.g. 'env:prod'",
+            "title": "Query"
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stream titles or ids; default the repository's focus, else all. ['*'] for everything",
+            "title": "Streams"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 10,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "service_map: number of traces to sample (200)",
+            "title": "Sample"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "title": "root_causeArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Root cause",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "ask",
+      "title": "Ask",
+      "description": "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the error the question describes, follows its trace across services, and states what it understood (environment, period) so it can be corrected. Asks back when the question is too vague. Sends TypeSafe the question and redacted, size-capped error text (250 characters each); never raw logs.",
+      "input_schema": {
+        "properties": {
+          "question": {
+            "description": "The question in the user's own words, in any language",
+            "title": "Question",
+            "type": "string"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "askArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Ask",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "describe",
+      "title": "Describe",
+      "description": "What is there to query. 'instances': configured Graylog instances with detected version, the API in use and active redaction rules. 'streams': streams (id, title, description) the token can read. 'fields': field names (and types where available), plus the configured trace fields and error query; use before writing queries on unfamiliar logs. 'presets': named queries from the configuration. 'scan_rules': scan rules with their query, condition, severity and tags.",
+      "input_schema": {
+        "properties": {
+          "what": {
+            "default": "instances",
+            "description": "What to list; 'instances' by default",
+            "enum": [
+              "instances",
+              "streams",
+              "fields",
+              "presets",
+              "scan_rules"
+            ],
+            "title": "What",
+            "type": "string"
+          },
+          "contains": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "fields: only names containing this text",
+            "title": "Contains"
+          },
+          "include_internal": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "fields: include Graylog's gl2_* fields",
+            "title": "Include Internal"
+          },
+          "include_disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "streams: also list paused streams",
+            "title": "Include Disabled"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "title": "describeArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Describe",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    },
+    {
+      "name": "run_preset",
+      "title": "Run preset",
+      "description": "Run a named preset query, optionally overriding its arguments.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "Preset name from describe(what='presets')",
+            "title": "Name",
+            "type": "string"
+          },
+          "overrides": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Arguments overriding the preset, e.g. {\"range\": \"6h\"}",
+            "title": "Overrides"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Instance from describe, e.g. 'payment/prod'; the default when omitted",
+            "title": "Instance"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "run_presetArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Run preset",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
+    }
+  ]
+}
