@@ -246,13 +246,14 @@ async def _check(config: Config) -> int:
 
 
 def _version_line() -> str:
-    """'graylog-mcp 0.2.0 (7a696fc)': the commit is known for a copy installed from git."""
+    """'graylog-mcp 1.2.3 (7a696fc)': the commit is known for a copy installed from git."""
     from graylog_mcp.setup import service
 
     return f"graylog-mcp {service.installed().label}"
 
 
 def _version(argv: list[str]) -> int:
+    argparse.ArgumentParser(prog="graylog-mcp version", description="Print the version and commit").parse_args(argv)
     print(_version_line())
     return 0
 

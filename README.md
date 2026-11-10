@@ -46,6 +46,7 @@ Afterwards:
 | `graylog-mcp ui` | open the admin page again |
 | `graylog-mcp status` | is it running, which version, is Claude Code connected |
 | `graylog-mcp update` | install the latest version and restart (or "Check for updates" on the page) |
+| `graylog-mcp version` | the version of this copy and, when installed from git, its commit |
 | `graylog-mcp stop` | stop it and no longer start it at login |
 
 Prefer the terminal? `graylog-mcp init` is a guided setup that writes `.graylog-mcp.toml` and registers the

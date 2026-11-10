@@ -130,3 +130,9 @@ def test_version_command_and_flag_print_the_same_line_with_the_commit(monkeypatc
 def test_version_is_in_the_help(capsys):
     assert main(["--help"]) == 0
     assert "graylog-mcp version" in capsys.readouterr().out
+
+
+def test_version_refuses_an_unknown_argument():
+    with pytest.raises(SystemExit) as stop:
+        main(["version", "--bogus"])
+    assert stop.value.code == 2
