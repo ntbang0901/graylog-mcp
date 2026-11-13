@@ -141,6 +141,7 @@ def test_xdg_autostart_without_systemd(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(service.shutil, "which", lambda name: None)
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("DESKTOP_SESSION", raising=False)  # a real desktop session sets this too
     spawned = []
     monkeypatch.setattr(service, "spawn_detached", lambda cmd: spawned.append(cmd) or 1)
     auto = service.Autostart(Recorder(), system="Linux")
@@ -312,7 +313,7 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         health = service.probe(port)
         assert health and health["admin"] is True and "commit" in health
         page = httpx.get(f"{base}/admin/", trust_env=False)
-        assert page.status_code == 200 and "graylog-mcp" in page.text and "setupCard" in page.text
+        assert page.status_code == 200 and "graylog-mcp" in page.text and "attnList" in page.text
         token = {"X-Admin-Token": service.admin_token()}
         assert httpx.get(f"{base}/admin/api/state", trust_env=False).status_code == 401
         state = httpx.get(f"{base}/admin/api/state", headers=token, trust_env=False).json()
