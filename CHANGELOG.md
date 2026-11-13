@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The admin page (`graylog-mcp ui`) is being rebuilt as an operations console. So far: four colour schemes (Slate,
+  Midnight, Graphite, Catppuccin) with light and dark themes and a comfortable or compact density, chosen in a
+  Settings dialog; a sidebar in three groups (Monitor, Configure, Tools); an environment picker in the top bar
+  that the screens narrow to; a status bar; keyboard shortcuts (`/`, `E`, `,`, `T`, `G` then a letter); and a new
+  Overview whose "Needs attention" list replaces the setup card and "Other checks"; and a new Activity screen where the
+  calls chart filters the call list (click or arrow to a bar), rows expand to show a call's arguments, and `P` opens a
+  call in the Playground. The Playground is a split view with a line-numbered arguments editor that checks the JSON, a
+  collapsible or raw result with masked values marked, and a list of this visit's last 20 runs; and on Environments, a Test button in each row that shows its result there, and the
+  add and edit drawer rebuilt as a dialog with Connection, Check and Fields tabs; and on Log fields, a level breadcrumb, a tag
+  on every field saying where its value comes from (with a ✕ to clear it at this level), and a Detect column that stays in
+  view and highlights the fields it just wrote; and on Redaction, the settings as an accordion and a before/after Try it that
+  marks every masked token and counts them; and on Connect, a tab per client with three numbered steps, and on the Config file
+  page, a line-number gutter, a check before every save and the offending line marked. When the call history or the health
+  check cannot be loaded, Overview and Activity now say so instead of waiting; a leave-without-saving confirm opens on
+  Cancel; the Config, Log fields and Connect pages say so when they cannot load, and the config editor stays read-only then. Every screen now starts at the same left edge and has the same content width, so the breadcrumb and the content no longer jump when you switch screens. Screens fade in and rise 4px when you switch to them, and the Overview figures count up once per time range; reduced motion skips both. The admin API is unchanged.
+
 ## [0.3.1] - 2026-11-10
 
 ### Added

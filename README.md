@@ -526,7 +526,8 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
-- **Dashboard**: the setup steps (one **Finish setup** button), log volume and errors over the last 24 hours or
+- **Overview**: a status line, then **Needs attention** (failing environments, failed checks, setup steps with one
+  **Finish setup** button, searches that found nothing, each with its fix), log volume and errors over the last 24 hours or
   7 days (read from Graylog when the page opens, nothing stored), every environment's health with a sparkline or
   its problem and a button to fix it (*Add token*, *Fix*), the tools the model used, and the searches that found
   nothing;
@@ -543,8 +544,14 @@ Clients that do not start the server inside the repository (Claude Desktop) need
   mask your sample text;
 - **Playground**: run any tool against any environment and see the exact output, its size and an
   approximate token count;
-- **Other clients**: snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
-- **Config file**: edit the TOML with validation and an automatic backup.
+- **Connect**: a tab per client (Claude Code first), each a three-step stack; snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
+- **Config file** (reached from the status bar, the command palette or the *Raw file* button): edit the TOML with line
+  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup.
+
+An **environment picker** in the top bar carries one environment across Overview, Activity, Playground and Log fields.
+**Settings** (the gear, or <kbd>,</kbd>) picks the colour scheme (Slate, Midnight, Graphite, Catppuccin), light or dark, and density.
+Shortcuts: <kbd>/</kbd> search, <kbd>E</kbd> environment, <kbd>,</kbd> settings, <kbd>T</kbd> theme, <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd>
+switch tabs, <kbd>G</kbd> then <kbd>O</kbd>/<kbd>A</kbd>/<kbd>E</kbd>/<kbd>F</kbd>/<kbd>R</kbd>/<kbd>P</kbd>/<kbd>C</kbd> go to a screen.
 
 Tool calls are recorded by the MCP server (stdio or shared) in `~/.config/graylog-mcp/usage.jsonl`: tool,
 environment, duration, number of results, size, and the query or id asked for, **redacted with your redaction
