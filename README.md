@@ -35,9 +35,9 @@ uvx --from git+https://github.com/ntbang0901/graylog-mcp graylog-mcp start
 ```
 
 It installs graylog-mcp, runs it in the background as **one process for every Claude session**, starts it
-again when you log in, connects Claude Code in the repositories of your groups and opens the admin page. Its **Get set up** card
-shows what is left; **Finish setup** does every step that needs no input in one click and then opens the form
-for what does (usually: your Graylog URL and a token).
+again when you log in, connects Claude Code in the repositories of your groups and opens the admin page. Its
+**Needs attention** list on the Overview shows what is left; **Finish setup** does every step that needs no input in
+one click and then opens the form for what does (usually: your Graylog URL and a token).
 
 Afterwards:
 
@@ -45,7 +45,7 @@ Afterwards:
 |---|---|
 | `graylog-mcp ui` | open the admin page again |
 | `graylog-mcp status` | is it running, which version, is Claude Code connected |
-| `graylog-mcp update` | install the latest version and restart (or "Check for updates" on the page) |
+| `graylog-mcp update` | install the latest version and restart (or "Check for updates" in the page's command palette) |
 | `graylog-mcp version` | the version of this copy and, when installed from git, its commit |
 | `graylog-mcp stop` | stop it and no longer start it at login |
 
@@ -97,7 +97,8 @@ search endpoints that execute or check a query without saving it (`/views/search
 ## Tools
 
 All tools are annotated `readOnlyHint` and accept an optional `instance`. Tools that do several related things
-take a `kind`, `view` or `what`; an argument that does not apply to the one chosen is refused, not ignored.
+take a `kind`, `view` or `what`; an argument that does not apply to the one chosen is refused, not ignored
+(`describe` ignores `instance` for the listings that span every instance).
 
 **Scan**
 - `scan` — "is anything wrong?" in one call. Runs every scan rule concurrently (crashes, resource exhaustion,
@@ -108,7 +109,8 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 **Root cause analysis**
 - `root_cause` — "what broke first, and why?" in one call. Compares every service's errors, traffic and
   latency with a baseline window, pins each service's first error to the millisecond, detects deploys in
-  the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence.
+  the logs, infers the call graph from traces, and returns a ranked verdict with a timeline and evidence
+  (`view="verdict"`, the default).
   - `view="changes"` — only the deploys and restarts found in the logs themselves: a new value of a version
     field (`app_version`, `build`, `commit`, ...), a host rollout (new sources replacing old ones), start/stop
     lines. No CI/CD integration needed.
@@ -132,8 +134,8 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
   streams (falls back to full text); returns a cross-service timeline, per-service steps with durations
   and the first error.
-- `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
-  disappeared or shrank, normalised per hour.
+- `compare_periods` — two periods (e.g. before/after a deploy): which error groups are `new`, `increased`,
+  `gone`, `decreased` or `unchanged`, normalised per hour.
 
 **Discover**
 - `describe` — `what="instances"` (default: detected version and the API in use), `"streams"`, `"fields"` (so
@@ -141,6 +143,10 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 - `run_preset` — runs a named query you define in the config. A preset's `tool` keeps the names of the
   underlying operations: `scan`, `root_cause`, `detect_changes`, `service_map`, `search_logs`, `count_logs`,
   `error_summary`, `log_histogram`, `top_values`, `trace_request` or `compare_periods`.
+
+**Ask**
+- `ask` — a question in plain language, for people who do not write Lucene. Listed only when an API key for it is
+  set. See [Ask in plain language](#ask-in-plain-language).
 
 The server also sends the model instructions about Lucene syntax and a suggested investigation flow.
 
@@ -265,8 +271,8 @@ Writing rules that are fast and accurate:
    clause really has in the range with the close ones (`service:paymnt` -> did you mean `payment`; numbers are
    never guessed), and the dead clauses that match on their own further back.
 
-Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > What
-graylog-mcp learned) shows each one with its counts, weight and whether it applies by itself, and forgets one on
+Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > Learned)
+shows each one with its counts, weight and whether it applies by itself, and forgets one on
 request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
 ## Ask in plain language
@@ -293,7 +299,8 @@ from the existing tools and fixed sentences, and starts with a line such as "Und
 only" so the asker can correct it.
 
 **What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
-`max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
+`max_candidates` (30) error groups with one sample message each, redacted like every other output and cut to
+`send_chars` (250) characters.
 Never raw logs, field values the redactor masks, or anything from the Graylog token. Graylog itself is still only
 read (GET and the read-only searches).
 
@@ -391,8 +398,8 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
   | `profile` | Adds to the core rules |
   |-----------|------------------------|
   | `basic` (default) | nothing |
-  | `pii` | field names for personal names, phone, birth date, home/billing/shipping address, street |
-  | `finance` | field names for account, card, CVV, IBAN, routing and tax ids; the `eu` pack (IBAN) |
+  | `pii` | field names for personal names, phone and mobile, birth date, home/billing/shipping address, street |
+  | `finance` | field names for account, card, CVV/CVC, IBAN, routing and tax ids; the `eu` pack (IBAN) |
   | `strict` | `pii` + `finance` + every country pack + IPv4 addresses (noisy: `1.2.3.4` version numbers are masked) |
 
   ```toml
@@ -408,7 +415,7 @@ missing fields and no message index; invalid queries come back as HTTP 500 from 
   from `app_packages` are kept; the rest becomes `… N frames`. Without `app_packages`, the first N frames
   are kept (the last N for Python).
 - **Repeated lines**: numbers, UUIDs, hex, IPs and timestamps are normalised and identical templates
-  grouped with `count`, `first`, `last` and one sample.
+  grouped with `count`, `first`, `last`, up to five `sources` and one sample.
 - **Size**: per-value and per-call character caps, with `truncated` and `next_offset`.
 - **Time**: shown in the configured timezone with its offset. Each line carries `ref: index/id` for
   follow-up calls.
@@ -433,15 +440,24 @@ Environment variables:
 | `GRAYLOG_APP_PACKAGES` | e.g. `com.acme,/srv/app/` |
 | `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
 | `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
+| `GRAYLOG_MCP_GROUPS` | groups this client may reach, e.g. `payment,erp` or `*` ([Repositories of a group](#repositories-of-a-group)) |
+| `GRAYLOG_MCP_SERVICE` | the service to focus on, `off` for none ([Focus](#focus-search-this-repositorys-service-by-default)) |
+| `GRAYLOG_MCP_USAGE` | `off`: do not record tool calls for the admin page |
+| `GRAYLOG_MCP_LEARN` | `off`: do not learn or apply fixes for searches that find nothing |
+| `GRAYLOG_MCP_ASK_MODEL`, `GRAYLOG_MCP_ASK_BASE_URL` | model and endpoint of `ask` ([Ask](#ask-in-plain-language)) |
+| `GRAYLOG_MCP_SECRETS` | path of the per-user secrets file (default `~/.config/graylog-mcp/secrets.toml`) |
+| `GRAYLOG_MCP_HOME` | folder of the server's own state: admin token, learned fixes, usage (default `~/.config/graylog-mcp`) |
 
-A TOML file (`--config` or `GRAYLOG_MCP_CONFIG`, else `.graylog-mcp.toml` in the current directory or a
-parent up to the repository root, else `~/.config/graylog-mcp/config.toml`) covers the
+`~/.config` stands for `$XDG_CONFIG_HOME` when that is set.
+
+A TOML file (`--config` or `GRAYLOG_MCP_CONFIG`, else `.graylog-mcp.toml` or `graylog-mcp.toml` in the current
+directory or a parent up to the repository root, else `~/.config/graylog-mcp/config.toml`) covers the
 rest: several instances, token or basic auth, TLS verification and CA bundle, proxy, timezone,
 `trace_fields`, `error_query` (because `level` is a syslog number or a string depending on how logs are
 shipped), `app_packages`, redaction packs and custom patterns, presets and limits. Secrets are never
 written in the file; it names the environment variable that holds them (`token_env`, `password_env`).
-The file is validated at startup and any mistake (unknown key, bad regex, unknown timezone, missing
-secret) stops the server with a precise message.
+The file is validated at startup and any mistake (unknown key, bad regex, unknown timezone) stops the server
+with a precise message. A missing secret only disables the instance that needs it.
 
 See [`examples/config.toml`](examples/config.toml) for every option.
 
@@ -453,8 +469,8 @@ in the repo gets the same setup. Tokens stay out of the file: each instance name
 
 **Only use this with repositories you trust.** The file is applied as it is, with no approval step, and with the
 shared server, opening a client in the repository is enough. Its `url`, `proxy`, `verify_tls` and `*_env` settings
-decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can switch masking
-off, `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
+decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can exempt values
+from masking (`allow`, `exclude_fields`), `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
 did not write before you run `start`, `init` or `install` there, or open a client in that repository.
 
 ```toml
@@ -518,54 +534,68 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 | Command | What it does |
 |---------|--------------|
 | `graylog-mcp init` | Guided setup: environments, connection test, field detection, config file, client registration. `--yes --env staging=https://... --env prod=https://...` for scripts. |
-| `graylog-mcp login [INSTANCE...]` | Asks for each missing token/password, tests it, and saves it for this user in `~/.config/graylog-mcp/secrets.toml` (owner-only permissions, outside any repository). The server reads environment variables first, then this file. `graylog-mcp logout` forgets them. |
-| `graylog-mcp doctor` | Checks every environment (token set, reachable, TLS, version, readable streams, data, configured fields exist, error query matches, redaction) and prints a fix for each problem. Exit code 1 on failure, `--json` for CI. |
-| `graylog-mcp detect` | Suggests `service_fields`, `trace_fields`, `version_fields`, `latency_fields`, `error_query` (syslog numbers or words), exception/logger fields and `app_packages` from the logs, with coverage and redacted sample values. `--apply` writes them. |
-| `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). |
-| `graylog-mcp ui` | Local admin web UI (below). |
+| `graylog-mcp login [INSTANCE...]` | Asks for each missing token/password, tests it (`--no-test` skips that), and saves it for this user in `~/.config/graylog-mcp/secrets.toml` (owner-only permissions, outside any repository). The server reads environment variables first, then this file. `graylog-mcp logout` forgets them. |
+| `graylog-mcp doctor` | Checks every environment (token set, reachable, version, readable streams, data, configured fields exist, error query matches, redaction) and prints a fix for each problem, such as `ca_bundle` for a TLS error. Exit code 1 on failure, `--json` for CI. |
+| `graylog-mcp detect` | Suggests `service_fields`, `trace_fields`, `version_fields`, `latency_fields`, `error_query` (syslog numbers or words), exception/logger fields and `app_packages` from the logs, with coverage and redacted sample values. `--instance` and `--range` pick what to look at, `--apply` writes them. |
+| `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). `--scope project\|user` overrides the client's usual scope, `--dry-run` prints the entry and writes nothing. |
+| `graylog-mcp ui` | Local admin web UI (below): the page of the background server when `start` runs one, else its own on `127.0.0.1:8765` (`--standalone` forces that, `--no-browser` only prints the link). |
 
-`graylog-mcp ui` opens a page on `127.0.0.1` with:
+`graylog-mcp ui` opens a page on `127.0.0.1`. A sidebar groups its screens as **Monitor** (Overview, Activity),
+**Configure** (Environments, Log fields, Redaction) and **Tools** (Playground, Connect):
 
-- **Overview**: a status line, then **Needs attention** (failing environments, failed checks, setup steps with one
-  **Finish setup** button, searches that found nothing, each with its fix), log volume and errors over the last 24 hours or
-  7 days (read from Graylog when the page opens, nothing stored), every environment's health with a sparkline or
-  its problem and a button to fix it (*Add token*, *Fix*), the tools the model used, and the searches that found
-  nothing;
-- **Activity**: every tool call the model made, per hour: found something / found nothing / error, per-tool
-  counts and latency (median, p95), and the recent calls with what was asked; *Re-run* opens one in the
-  Playground;
-- **Environments**: one card per group with its environments, default environment, repositories and their
-  focus; descriptions and defaults save as you change them. The environment form tests the connection and saves
-  in one click (*Save anyway* if Graylog cannot be reached), names the environment from the URL
-  (`graylog-uat.acme.com` gives `uat`) and saves the token or password to your per-user secrets file;
-- **Log fields**: settings per scope, with detection from your logs in the same page: suggestions next to the
-  value in effect, applied to the scope you are editing;
-- **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
-  mask your sample text;
-- **Playground**: run any tool against any environment and see the exact output, its size and an
-  approximate token count;
-- **Connect**: a tab per client (Claude Code first), each a three-step stack; snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
-- **Config file** (reached from the status bar, the command palette or the *Raw file* button): edit the TOML with line
-  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup.
+- **Overview**: a status line, then **Needs attention** (failing environments, failed checks, setup steps, with a
+  **Finish setup** button when several of them need no input, and searches that found nothing, each with its fix),
+  every environment's health with a sparkline or its problem and a button to fix it, log volume and errors over the
+  last 24 hours or 7 days (read from Graylog when the page opens, nothing stored), the tools the model used, and the
+  searches that found nothing;
+- **Activity**: a chart of the tool calls the model made (found something / found nothing / error); clicking or
+  arrowing to a bar filters the calls below it. Three tabs: **Calls** (filter by text or by outcome; a row expands
+  to show the call's arguments, and **Open in Playground** or <kbd>P</kbd> runs it again), **By tool** (counts and
+  latency, median and p95) and **Learned** (the fixes learned from searches that found nothing);
+- **Environments**: one card per group with its environments, default environment, repositories and their focus;
+  descriptions and defaults save as you change them, and each environment row has a **Test** button that shows its
+  result in the row. Adding or editing an environment opens a dialog with **Connection**, **Check** and **Fields**
+  tabs: it tests the connection and saves in one click (**Save anyway** if Graylog cannot be reached), names the
+  environment from the URL (`graylog-uat.acme.com` gives `uat`) and saves the token or password to your per-user
+  secrets file;
+- **Log fields**: settings per scope, picked with a level breadcrumb; a tag on every field says which level its
+  value comes from (✕ clears it at this level), and **Detect fields** reads your logs and writes suggestions to the
+  scope you are editing, highlighting the fields it changed;
+- **Redaction**: the settings as an accordion (profile, country packs, custom patterns, values never to mask,
+  field names), and **Try it**: your sample text before and after masking, with every masked token marked and counted;
+- **Playground**: run any tool against any environment. The arguments editor has line numbers and checks the JSON
+  (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> runs); the result shows pretty (collapsible) or raw with masked
+  values marked, its size and an approximate token count, and **This session** keeps the last 20 runs of the visit;
+- **Connect**: a tab per client (Claude Code, Claude Desktop, Cursor, VS Code), each in three steps: how the
+  server starts, the snippet, and a one-click install;
+- **Config file** (from the status bar, the command palette or a page's **Raw file** button): the TOML with line
+  numbers. <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> checks the file, marks the offending line and saves only a
+  valid file, keeping the previous version as `.bak`.
 
-An **environment picker** in the top bar carries one environment across Overview, Activity, Playground and Log fields.
-**Settings** (the gear, or <kbd>,</kbd>) picks the colour scheme (Slate, Midnight, Graphite, Catppuccin), light or dark, and density.
-Shortcuts: <kbd>/</kbd> search, <kbd>E</kbd> environment, <kbd>,</kbd> settings, <kbd>T</kbd> theme, <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd>
-switch tabs, <kbd>G</kbd> then <kbd>O</kbd>/<kbd>A</kbd>/<kbd>E</kbd>/<kbd>F</kbd>/<kbd>R</kbd>/<kbd>P</kbd>/<kbd>C</kbd> go to a screen.
+An **environment picker** in the top bar carries one environment across Overview, Activity, Playground and Log
+fields. **Settings** (the gear, or <kbd>,</kbd>) picks the colour scheme (Slate, Midnight, Graphite, Catppuccin),
+the appearance (System, which follows the OS, Light or Dark) and the density (comfortable or compact). The layout
+works on a phone, and reduced motion turns the screen transitions off.
+
+Shortcuts: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> opens the command palette (any page,
+environment, tool or action), <kbd>E</kbd> the environment picker, <kbd>,</kbd> Settings; <kbd>T</kbd> switches
+light and dark, <kbd>1</kbd>–<kbd>4</kbd> the colour scheme, and <kbd>G</kbd> then
+<kbd>O</kbd>/<kbd>A</kbd>/<kbd>E</kbd>/<kbd>F</kbd>/<kbd>R</kbd>/<kbd>P</kbd>/<kbd>C</kbd> goes to a screen. In
+Activity's Calls tab, <kbd>J</kbd>/<kbd>K</kbd> move through the calls and <kbd>Enter</kbd> expands one.
+
+Unsaved changes show a save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>); leaving the screen asks before
+discarding them. When a screen's data, the call history or the health check cannot be loaded, the page says so,
+and the config editor stays read-only so an empty box cannot be saved over the file.
 
 Tool calls are recorded by the MCP server (stdio or shared) in `~/.config/graylog-mcp/usage.jsonl`: tool,
 environment, duration, number of results, size, and the query or id asked for, **redacted with your redaction
 rules before it is written**. It stays on your machine, is trimmed past 4 MB, and `GRAYLOG_MCP_USAGE=off` in the
 server's environment turns it off.
 
-<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> jumps to any page, environment, tool or action; unsaved changes show a
-save bar (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd>) and are not lost by leaving the page. Light or dark follows
-the OS until you pick one (the **Follow OS theme** checkbox goes back to it), with a phone layout; slate greys, teal for actions and data, amber for warnings, coral for failures.
-
 The UI listens on loopback only, checks the Host header, and every API call needs the random token in the
-link printed at startup. It writes the config file and client configs when you ask. A token or password
-entered in the form is saved, when you tick "Save it on this machine", to the same per-user secrets file as
-`graylog-mcp login`, never to the config file.
+link it opens (`graylog-mcp ui` prints it). It writes the config file and client configs when you ask. A token or
+password entered in the environment dialog is saved to the same per-user secrets file as `graylog-mcp login`,
+never to the config file.
 
 `*_env` settings hold the **name** of a variable (`GRAYLOG_PROD_TOKEN`), never the secret: a value that is not
 a valid variable name is refused, and never echoed back, since it is most likely a secret typed into the wrong
@@ -669,7 +699,7 @@ graylog-mcp repo remove payment ~/code/payment-api
 ### Focus: search this repository's service by default
 
 Inside a repository, "errors in the last hour" means that service's errors. `search_logs`, `aggregate`,
-`compare_periods` and `root_cause` with `view="changes"` add a filter on the
+`compare_periods`, `scan` and `root_cause` with `view="changes"` add a filter on the
 service field and say so in their result (`focus`). Other services and streams are searched only when asked for:
 `streams=["*"]` (everything), explicit `streams`, or a query that names a service field
 (`application:"other-service"`). `trace_request` and the other `root_cause` views always span every service.
@@ -727,7 +757,8 @@ What `start` does, so you know what is on your machine:
   each repository of your groups, creating the file when it has none (the other servers in it stay, the previous
   file is kept as `.mcp.json.bak`):
   `{"mcpServers": {"graylog": {"type": "http", "url": "http://127.0.0.1:18742/mcp", "headers": {"X-Graylog-MCP-Repo": "${PWD:-}"}}}}`.
-  Claude Code fills in the folder it runs in; the server walks up to the repository, and asks you once to approve
+  Claude Code fills in the folder it runs in (on Windows, which has no `PWD`, the folder is written out
+  instead); the server walks up to the repository, and asks you once to approve
   a project's server. A repository whose `.mcp.json` still starts graylog-mcp itself gets a private override
   (Claude Code's local scope) instead: the file stays as it is for your teammates. `graylog-mcp start --global`
   registers it once for every project (user scope) instead. Without it, `start` removes a registration for every
@@ -797,14 +828,19 @@ graylog-mcp serve --shared --host 0.0.0.0 --port 8000 --config /etc/graylog-mcp/
 ```
 
 The config is read again within seconds of a change: deploy the file, no restart. The admin page writes files
-on the machine it runs on, so it only listens on the loopback address; reach it with an SSH tunnel
-(`ssh -L 8000:127.0.0.1:8000 vm`, then `http://127.0.0.1:8000/admin/` with `serve --admin`).
+on the machine it runs on, so it only listens on the loopback address and `serve --admin` refuses a non-loopback
+`--host`. Run it as a separate process on the VM and reach it with an SSH tunnel:
+
+```bash
+graylog-mcp ui --config /etc/graylog-mcp/org.toml --no-browser   # on the VM: prints a link on 127.0.0.1:8765
+ssh -L 8765:127.0.0.1:8765 vm                                      # on your machine, then open that link
+```
 
 On each developer's machine, nothing runs but Claude Code:
 
 | | |
 |---|---|
-| `GRAYLOG_MCP_HTTP_TOKEN=<token>` | the server's token, in the environment Claude Code starts in (shell profile; `setx` on Windows). Claude Code sends it as `Authorization: Bearer ${GRAYLOG_MCP_HTTP_TOKEN}`; no graylog-mcp command prints it |
+| `GRAYLOG_MCP_HTTP_TOKEN=<token>` | the server's token, in the environment Claude Code starts in (shell profile; `setx` on Windows). Claude Code sends it as `Authorization: Bearer ${GRAYLOG_MCP_HTTP_TOKEN:-}`; no graylog-mcp command prints it |
 | `graylog-mcp connect https://graylog-mcp.example.com` | shows how the server identifies the current repository and registers the server in Claude Code for every project (asks for the token when the variable is not set, to check the connection) |
 | `graylog-mcp connect URL --project` | writes the repository's `.mcp.json` instead. It holds no secret and no path: commit it; each teammate only sets the variable |
 | `graylog-mcp status` | is the server reachable, which version, and how it identifies this repository: group, focus, default environment, each Graylog instance |
@@ -820,12 +856,12 @@ remote.
 
 ```bash
 uv sync
-uv run pytest              # unit + contract tests (no network), coverage >= 85%
+uv run pytest              # unit + contract tests (no network); add --cov for the 85% coverage gate CI applies
 uv run ruff check && uv run ruff format --check && uv run mypy
 ```
 
 - **Unit tests**: masking (including values that must *not* be masked), stack traces in five languages,
-  line grouping, time parsing, pivot building and parsing, config validation, HTTP auth.
+  line grouping, time parsing, config validation, HTTP auth.
 - **Contract tests**: every tool against an in-memory Graylog (`tests/fake_graylog.py`, served through
   `httpx.MockTransport`) that reproduces the response shapes of 4.3, 5.0, 5.2, 6.1 and 7.0, with planted
   sensitive values that must never reach the output, an assertion that no request could change state,
@@ -837,29 +873,43 @@ uv run ruff check && uv run ruff format --check && uv run mypy
   tests/integration/run.sh v50      # or v43 v52 v61 v70
   ```
 
-  CI runs the whole matrix weekly, on demand, and on pull requests that change the backends.
+  CI runs the whole matrix weekly, on demand, and on pull requests that change the backends, the client, root
+  cause analysis, scan, the fake Graylog or the integration tests.
 
-CI on every push: ruff, mypy, tests on Linux (Python 3.11-3.13), Windows and macOS, wheel build with
-metadata check and a smoke test in a clean environment, and a Docker build with an HTTP smoke test. CodeQL
-scans the code and workflows; Dependabot keeps dependencies and actions current. See
+CI on every pull request and every push to `main`: the lockfile check, ruff, mypy, a check that the version agrees
+in `pyproject.toml`, `__init__.py` and `CHANGELOG.md`, and the pre-commit hygiene hooks; tests on Linux (Python
+3.11-3.13), Windows and macOS (Python 3.13); `start`, a crash, a restart and `stop` with each OS's real service
+manager; a wheel build with a metadata check and a smoke test in a clean environment; a Docker build (amd64 and
+arm64) with an HTTP smoke test and a scan for fixable high-severity vulnerabilities; `pip-audit` on the runtime
+dependencies, actionlint and zizmor on the workflows, and dependency review on pull requests. CodeQL scans the code and workflows; Dependabot keeps dependencies and actions current. See
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## Project layout
 
 ```
 src/graylog_mcp/
+  __main__.py   command line: serve, start/stop/status/update, init, login, doctor, detect, install, repo, ui, ...
   config.py     environment + TOML, validated at startup (fail fast)
+  secrets.py    per-user secret store outside any repository
   client.py     async httpx client: auth, TLS, proxy, read-only guard, HTTP error mapping
-  backends/     version detection and API selection: universal.py, views.py, scripting.py
+  backends/     version detection and API selection: base.py (shared types), universal.py, views.py, scripting.py
   timerange.py  time parsing, display, interval selection
   redact.py     core rules, country packs, Luhn / IBAN checks
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
+  scan.py       scan: many rules in one call, only what fired comes back
+  scanrules.py  the built-in scan rules
+  recover.py    searches that find nothing: rewrites, counted suggestions, learned fixes, diagnosis
+  focus.py      focus on the current repository's service
   rca.py        root cause analysis: onsets, change detection, service map, ranking
   ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name
   toolspecs/    the tools a model sees, each declared once: its arguments and the operations it runs
   server.py     model instructions, and the MCP tools built from those declarations
+  shared.py     one server for every session (`serve --shared`)
+  usage.py      the record of tool calls, one JSON line per call
+  admin/        the admin page: app.py (its API) and static/index.html (the page, one file)
+  setup/        setup helpers: wizard (init), doctor, detect, clients (install), connect, remote, service (start)
 ```
 
 ## License
