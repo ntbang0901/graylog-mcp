@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
   with the same definitions as the admin page's Logs screen: `error` on each such line, `business_errors` per
   service and step, and `first_business_error`. `error_queries` names the queries used.
 
+### Fixed
+- A trace longer than `limit` no longer loses its errors: `trace_request` adds every error line and the last line to
+  the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
+  left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the
+  rest.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 from graylog_mcp.backends import Graylog
-from graylog_mcp.backends.base import MessageQuery, RawMessage
+from graylog_mcp.backends.base import MessagePage, MessageQuery, RawMessage
 from graylog_mcp.client import GraylogError
+from graylog_mcp.shaping import Budget
 from graylog_mcp.timerange import TimeRange, format_ts, parse_graylog_ts
 from graylog_mcp.tools import (
     SAMPLE_CHARS,
@@ -117,14 +120,16 @@ async def trace_request(
     business, technical = error_queries(gl.cfg, status_field)
     marks = await _error_marks(gl, base, technical, business, tr, stream_ids)
     out["error_queries"] = {"technical": technical} | ({"business": business} if business else {})
+    notes = []
     if marks.refused:
-        out["note"] = "an error query was refused by Graylog; errors are marked by level only"
+        notes.append("an error query was refused by Graylog; errors are marked by level only")
 
+    lines, cut = await _beyond_the_limit(gl, base, page, marks, tr, stream_ids, limit)
     shaper = app.shaper(gl)
     service_fields = gl.cfg.service_fields
-    times = [parse_graylog_ts(m.fields.get("timestamp")) for m in page.messages]
+    times = [parse_graylog_ts(m.fields.get("timestamp")) for m in lines]
     t0 = next((t for t in times if t), None)
-    matched = sorted({f for m in page.messages for f in trace_fields if str(m.fields.get(f, "")) == trace_id})
+    matched = sorted({f for m in lines for f in trace_fields if str(m.fields.get(f, "")) == trace_id})
 
     def counts() -> dict[str, int]:
         return {"errors": 0} | ({"business_errors": 0} if marks.business is not None else {})
@@ -133,7 +138,7 @@ async def trace_request(
     steps: list[dict[str, Any]] = []
     timeline = []
     first: dict[str, dict[str, Any]] = {}  # the earliest line of each error kind
-    for raw, ts in zip(page.messages, times, strict=True):
+    for raw, ts in zip(lines, times, strict=True):
         svc = _service(app, raw.fields, service_fields)
         kind = marks.kind(raw)
         entry = shaper.message(raw.fields, raw.index, raw.id, limit=SAMPLE_CHARS)
@@ -178,10 +183,89 @@ async def trace_request(
     _link(app, budget, out, gl, "traces", tr, streams=streams, trace=trace_id)
     budget.take({k: v for k, v in out.items() if k != "ui"})
     out["steps"] = budget.fit(steps)
-    out["timeline"] = budget.fit(timeline)
+    out["timeline"] = keep_by_priority(timeline, budget)
     out["truncated"] = budget.truncated
-    if page.total is not None and page.total > len(page.messages):
-        out["note"] = (
-            f"showing the earliest {len(page.messages)} of {page.total} messages; narrow the range or raise limit"
+    shown = len(out["timeline"])
+    if page.total is not None and page.total > shown:
+        out["hidden"] = page.total - shown
+    if cut:
+        some = f"{shown} of {page.total} messages" if page.total is not None else f"{shown} messages and more exist"
+        notes.append(
+            f"showing {some}: every error line, the earliest {limit} and the last one; narrow the range or raise limit"
         )
+    if notes:
+        out["note"] = "; ".join(notes)
     return out
+
+
+async def _beyond_the_limit(
+    gl: Graylog,
+    base: str,
+    page: MessagePage,
+    marks: ErrorMarks,
+    tr: TimeRange,
+    streams: tuple[str, ...],
+    limit: int,
+) -> tuple[list[RawMessage], bool]:
+    """The page's messages and whether the trace has more. A longer trace also gets its error lines and its last
+    line, in time order: what went wrong often lies after the earliest ``limit`` messages."""
+    if page.total is None:  # the Scripting API reports no total
+        if len(page.messages) < limit:
+            return page.messages, False
+    elif page.total <= len(page.messages):
+        return page.messages, False
+    last = await gl.search(MessageQuery(query=base, timerange=tr, streams=streams, sort_order="desc", limit=1))
+    seen = {m.id for m in page.messages}
+    extra: list[RawMessage] = []
+    for m in [*(marks.technical or []), *(marks.business or []), *last.messages]:
+        if m.id not in seen:
+            seen.add(m.id)
+            extra.append(m)
+    if not extra:
+        return page.messages, page.total is not None
+
+    def when(m: RawMessage) -> tuple[bool, Any]:
+        ts = parse_graylog_ts(m.fields.get("timestamp"))
+        return ts is None, ts
+
+    return sorted([*page.messages, *extra], key=when), True
+
+
+def _spread(n: int) -> Iterator[int]:
+    """0..n-1, the middle first, then the middle of each half: a prefix of it is spread over the whole range."""
+    queue = deque([(0, n)])
+    while queue:
+        lo, hi = queue.popleft()
+        if lo >= hi:
+            continue
+        mid = (lo + hi) // 2
+        yield mid
+        queue.extend([(lo, mid), (mid + 1, hi)])
+
+
+def keep_by_priority(entries: list[dict[str, Any]], budget: Budget) -> list[dict[str, Any]]:
+    """The timeline entries that fit ``budget``, in their order: technical errors first, then business errors, the
+    first and last line of each step (a run of lines of one service), then the rest spread evenly."""
+    edges = [
+        i
+        for i, e in enumerate(entries)
+        if i == 0
+        or i == len(entries) - 1
+        or entries[i - 1].get("service") != e.get("service")
+        or entries[i + 1].get("service") != e.get("service")
+    ]
+    order = [
+        [i for i, e in enumerate(entries) if e.get("error") == TECHNICAL],
+        [i for i, e in enumerate(entries) if e.get("error") == BUSINESS],
+        edges,
+        list(_spread(len(entries))),
+    ]
+    kept: set[int] = set()
+    for group in order:
+        for i in group:
+            if i in kept:
+                continue
+            if not budget.take(entries[i]):
+                break
+            kept.add(i)
+    return [entries[i] for i in sorted(kept)]
