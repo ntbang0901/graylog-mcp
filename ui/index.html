@@ -1,0 +1,57 @@
+<!doctype html>
+<html
+    lang="en"
+    data-palette="slate"
+    data-theme="light"
+    data-mode="system"
+    data-density="comfortable"
+>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>graylog-mcp admin</title>
+        <meta
+            name="description"
+            content="Local admin page for graylog-mcp: environment health, what the model asked, log fields and redaction."
+        />
+        <!-- the server writes "" or "/admin": the page routes by path and builds its links on it -->
+        <meta name="graylog-mcp-root" content="__GRAYLOG_MCP_ROOT__" />
+        <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+        <script>
+            // scheme, appearance and density before first paint: the viewer's picks, else Slate, the OS setting, comfortable
+            {
+                let p = null,
+                    t = null,
+                    d = null;
+                try {
+                    p = localStorage.getItem("gm-palette");
+                    t = localStorage.getItem("gm-theme");
+                    d = localStorage.getItem("gm-density");
+                } catch (e) {
+                    /* storage blocked */
+                }
+                const r = document.documentElement;
+                r.dataset.palette = [
+                    "slate",
+                    "midnight",
+                    "graphite",
+                    "catppuccin",
+                ].includes(p)
+                    ? p
+                    : "slate";
+                r.dataset.mode = t === "light" || t === "dark" ? t : "system";
+                r.dataset.theme =
+                    r.dataset.mode === "system"
+                        ? matchMedia("(prefers-color-scheme: dark)").matches
+                            ? "dark"
+                            : "light"
+                        : r.dataset.mode;
+                r.dataset.density = d === "compact" ? "compact" : "comfortable";
+            }
+        </script>
+    </head>
+    <body>
+        <div id="app"></div>
+        <script type="module" src="./src/main.tsx"></script>
+    </body>
+</html>

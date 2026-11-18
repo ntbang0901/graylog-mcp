@@ -1,0 +1,54 @@
+/* ---------- shell: the sidebar is fixed so the top bar is the only sticky element */
+.sidebar { position: fixed; inset: 0 auto 0 0; z-index: var(--z-sticky-nav); width: var(--sidebar-w); display: flex; flex-direction: column; gap: var(--space-3xs); padding: var(--space-md) var(--space-sm); overflow-y: auto; background: var(--color-paper-2); border-right: var(--rule-hair) solid var(--color-rule); }
+.brand { display: flex; align-items: center; gap: var(--space-xs); padding: 0 var(--space-xs) var(--space-md); font-weight: 700; font-size: var(--text-md); letter-spacing: var(--tracking-display); }
+.brand .logo { width: 24px; height: 24px; border-radius: 6px; background: var(--color-accent); display: grid; place-items: center; color: var(--color-accent-ink); }
+.nav { display: flex; align-items: center; gap: var(--space-xs); width: 100%; min-height: var(--control-sm); padding: var(--space-2xs) var(--space-xs); border: 0; border-radius: var(--radius-control); background: none; color: var(--color-ink-2); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out); }
+.nav:active { background: var(--color-paper-3); }
+.nav[aria-current="page"] { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); font-weight: 600; }
+.nav .count { margin-left: auto; }
+.nav-sep { height: 1px; background: var(--color-rule); margin: var(--space-xs) var(--space-xs); }
+.sidebar .foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--space-2xs); padding: var(--space-xs) var(--space-2xs) 0; font-size: var(--text-xs); color: var(--color-muted); }
+
+/* every screen has the same left edge (--pad from the sidebar) and the same content width (--cap, left-aligned),
+   so the breadcrumb and the content line up and the content box never changes when switching screens */
+.main { margin-left: var(--sidebar-w); min-width: 0; --cap: 1520px; --pad: var(--space-xl); }
+.topbar { position: sticky; top: 0; z-index: var(--z-sticky); display: flex; align-items: center; gap: var(--space-md); padding-block: var(--space-md); padding-inline: var(--pad); background: var(--color-paper); border-bottom: var(--rule-hair) solid var(--color-rule); }
+.topbar .sub { margin-top: var(--space-2xs); color: var(--color-muted); }
+.topbar .right { margin-left: auto; display: flex; gap: var(--space-xs); align-items: center; min-width: 0; }
+.kbar { display: inline-flex; align-items: center; gap: var(--space-xs); min-width: 240px; min-height: var(--control); padding: 0 var(--space-xs) 0 var(--space-sm); border: var(--rule-hair) solid var(--color-field-edge); border-radius: var(--radius-control); background: var(--color-paper); color: var(--color-muted); font: inherit; cursor: pointer; transition: background-color var(--dur-micro) var(--ease-out); }
+.kbar:active { background: var(--color-paper-3); }
+.kbar .kbd { margin-left: auto; }
+#cfgStatus { cursor: pointer; }
+.content { padding-block: var(--space-lg) var(--space-3xl); padding-inline: var(--pad); }
+.content > .page { max-width: var(--cap); }
+.page { display: none; }
+.page.active { display: block; }
+/* ---------- sections: no boxes. A section opens on an ink rule, and rules line up across columns. */
+.card { border-top: var(--rule-hair) solid var(--color-ink); padding-top: var(--space-sm); margin-bottom: var(--space-xl); min-width: 0; }
+.well { border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-2); padding: var(--space-md); margin-bottom: var(--space-xl); }
+.card-head { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-sm); flex-wrap: wrap; min-height: var(--control-sm); }
+.section-title { display: flex; align-items: center; gap: var(--space-xs); margin: var(--space-lg) 0 var(--space-xs); font-weight: 600; flex-wrap: wrap; }
+.section-title:first-child { margin-top: 0; }
+.section-title .small { font-weight: 400; }
+#detectOut:not(:empty) { margin-top: var(--space-md); }
+.spacer { flex: 1; }
+.muted { color: var(--color-muted); } .faint { color: var(--color-muted); } .small { font-size: var(--text-xs); }
+.hidden { display: none !important; }
+.nowrap { white-space: nowrap; } .mt-xs { margin-top: var(--space-xs); } .mt-sm { margin-top: var(--space-sm); } .mb-xs { margin-bottom: var(--space-xs); } .mb-lg { margin-bottom: var(--space-lg); } .center { align-items: center; }
+.anywhere { overflow-wrap: anywhere; }
+.auto-width { width: auto; } .row > .grow-search { flex: 0 1 320px; } .row > .grow-2 { flex: 2 1 360px; } .row > .grow-none { flex: 0 1 160px; } .row > .grow-source { flex: 0 1 420px; }
+.seg-fit { align-self: flex-start; } .raw-path { font-weight: 400; letter-spacing: 0; }
+.pattern-row { margin-bottom: var(--space-xs); align-items: center; }
+.pattern-row > .pn-field { flex: 1 1 90px; } .pattern-row > .pp-field { flex: 2 1 160px; } .pattern-row > .pr-field { flex: 1 1 100px; }
+.full-line { flex: 1 1 100%; }
+.row { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: flex-end; }
+.row > .field { flex: 1 1 200px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md) var(--space-lg); }
+.grid2.start { align-items: start; gap: var(--space-xl); }
+.grid2.start > .card { border-top: 0; padding-top: 0; }
+.sticky-side { position: sticky; top: var(--space-3xl); margin-bottom: 0; }
+.field { display: flex; flex-direction: column; gap: var(--space-2xs); min-width: 0; }
+.field > .label { font-weight: 600; display: flex; gap: var(--space-xs); align-items: center; flex-wrap: wrap; }
+.field > .hint, .hint { font-size: var(--text-xs); color: var(--color-muted); }
+.field > .error { font-size: var(--text-xs); color: var(--color-error); }
+.req::after { content: "*"; color: var(--color-error); margin-left: var(--space-3xs); }

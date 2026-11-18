@@ -17,6 +17,7 @@ AND / OR / NOT and parentheses.
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -665,8 +666,11 @@ class FakeGraylog:
         vals = [m.get(series["field"]) for m in msgs if m.get(series["field"]) is not None]
         if series["field"] == "timestamp":
             vals = [_parse_ts(v).timestamp() * 1000 for v in vals]
-        if not vals:
-            return None
+        if not vals:  # what Graylog 5.2 to 7.0 answer for a percentile or a max over no values
+            return {"percentile": "NaN", "min": "Infinity", "max": "-Infinity"}.get(t)
+        if t == "percentile":
+            ranked = sorted(float(v) for v in vals if isinstance(v, int | float))
+            return ranked[max(0, math.ceil(series["percentile"] / 100 * len(ranked)) - 1)] if ranked else "NaN"
         if t == "min":
             return min(vals)
         if t == "max":
@@ -677,6 +681,16 @@ class FakeGraylog:
             nums = [float(v) for v in vals if isinstance(v, int | float)]
             return sum(nums) / len(nums) if nums else None
         raise ValueError(t)
+
+    def _ordered(self, items: list[tuple[tuple, list[dict]]], by: list[tuple[dict, bool]]) -> list:
+        """Groups by count, largest first, or by the first metric asked to sort them (a group without it last)."""
+        if not by:
+            return sorted(items, key=lambda kv: -len(kv[1]))
+        series, descending = by[0]
+        valued = [(self._metric(series, kv[1]), kv) for kv in items]
+        known = sorted([(v, kv) for v, kv in valued if isinstance(v, int | float)], key=lambda p: p[0],
+                       reverse=descending)  # fmt: skip
+        return [kv for _, kv in known] + [kv for v, kv in valued if not isinstance(v, int | float)]
 
     def pivot(self, st: dict, hits: list[dict]) -> dict:
         groups = self._group_keys(st)
@@ -708,7 +722,11 @@ class FakeGraylog:
         if values_groups and has_time:
             items.sort(key=lambda kv: kv[0])  # per-bucket terms: keep every bucket
         elif values_groups:
-            items.sort(key=lambda kv: -len(kv[1]))
+            items = self._ordered(items, [
+                (s, sort["direction"] == "Descending")
+                for sort in st.get("sort") or [] if sort.get("type") == "series"
+                for s in st["series"] if s["id"] == sort["field"]
+            ])  # fmt: skip
             items = items[: values_groups[0].get("limit", 10)]
         else:
             items.sort(key=lambda kv: kv[0])
@@ -767,6 +785,12 @@ class FakeGraylog:
             },
         )
 
+    @staticmethod
+    def _series_of(metric: dict) -> dict:
+        """A Scripting API metric as the views series ``_metric`` reads."""
+        return {"type": metric["function"], "field": metric.get("field"),
+                "percentile": (metric.get("configuration") or {}).get("percentile")}  # fmt: skip
+
     def scripting_aggregate(self, body: dict) -> httpx.Response:
         tr = body["timerange"]
         hits = self.select(body.get("query", "*"), _parse_ts(tr["from"]), _parse_ts(tr["to"]), body.get("streams"))
@@ -777,8 +801,9 @@ class FakeGraylog:
         for m in hits:
             key = tuple(m.get(g["field"], "(Empty Value)") for g in groups)
             buckets.setdefault(tuple(str(k) for k in key), []).append(m)
-        items = sorted(buckets.items(), key=lambda kv: -len(kv[1]))[: groups[0].get("limit", 10) if groups else None]
         metrics = body["metrics"]
+        sorted_by = [(self._series_of(mt), mt["sort"] == "desc") for mt in metrics if mt.get("sort")]
+        items = self._ordered(list(buckets.items()), sorted_by)[: groups[0].get("limit", 10) if groups else None]
         schema = [
             {"column_type": "grouping", "type": "string", "field": g["field"], "name": f"grouping: {g['field']}"}
             for g in groups
@@ -792,9 +817,5 @@ class FakeGraylog:
             }
             for mt in metrics
         ]
-        rows = []
-        for key, msgs in items:
-            rows.append(
-                list(key) + [self._metric({"type": mt["function"], "field": mt.get("field")}, msgs) for mt in metrics]
-            )
+        rows = [list(key) + [self._metric(self._series_of(mt), msgs) for mt in metrics] for key, msgs in items]
         return self.json(200, {"schema": schema, "datarows": rows, "metadata": {"effective_timerange": tr}})

@@ -17,7 +17,9 @@ import logging
 import random
 import re
 import ssl
+import time
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -39,14 +41,40 @@ RETRY_BASE_SECONDS = 0.5
 RETRY_MAX_SECONDS = 10.0
 # HTTP requests of the current tool call, retries included; a list so the tasks it gathers add to the same count
 requests_sent: ContextVar[list[int] | None] = ContextVar("requests_sent", default=None)
+MAX_SPANS = 200  # requests kept per tool call; a scan of many rules sends more, those are only counted
+
+
+@dataclass
+class SpanLog:
+    """The requests one tool call sent, for the admin page's waterfall. Queries are raw here: the usage record
+    redacts them before they are written."""
+
+    started: float = field(default_factory=time.monotonic)
+    items: list[dict[str, Any]] = field(default_factory=list)
+    dropped: int = 0
+
+    def add(self, span: dict[str, Any]) -> None:
+        if len(self.items) < MAX_SPANS:
+            self.items.append(span)
+        else:
+            self.dropped += 1
+
+    def ms_since_start(self, when: float) -> int:
+        return int((when - self.started) * 1000)
+
+
+# like requests_sent: one object shared by the tasks a tool call gathers
+spans_recorded: ContextVar[SpanLog | None] = ContextVar("spans_recorded", default=None)
 
 
 class GraylogError(Exception):
-    """An error with a message written for the model reading it."""
+    """An error with a message written for the model reading it. ``reason`` names a failure without an HTTP
+    status: timeout, connect, tls, dropped, http."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, reason: str | None = None):
         super().__init__(message)
         self.status = status
+        self.reason = reason
 
 
 class AuthError(GraylogError):
@@ -111,6 +139,18 @@ def describe_query_error(payload: Any, fallback: str) -> str:
 class _Retryable(Exception):
     def __init__(self, error: GraylogError):
         self.error = error
+
+
+def _query_of(params: dict[str, Any], body: dict[str, Any] | None) -> str | None:
+    """The query a request runs: universal search in ``query=``, the Scripting API in ``body.query``, views in
+    ``body.queries[0].query.query_string``."""
+    found: Any = params.get("query")
+    if found is None and isinstance(body, dict):
+        found = body.get("query")
+        if found is None:
+            with contextlib.suppress(LookupError, TypeError, AttributeError):
+                found = body["queries"][0]["query"]["query_string"]
+    return found if isinstance(found, str) else None
 
 
 def _backoff(attempt: int) -> float:
@@ -223,24 +263,47 @@ class GraylogClient:
             await self._close_if_retired()
 
     async def _with_retries(self, method: str, path: str, clean: dict[str, Any], json: dict[str, Any] | None) -> Any:
+        spans, began = spans_recorded.get(), time.monotonic()
+        span: dict[str, Any] = {"method": method, "path": path, "instance": self.cfg.name, "wait_ms": 0}
+        if (query := _query_of(clean, json)) is not None:
+            span["query"] = query
         attempt = 0
-        while True:
-            try:
-                async with self._slots:
-                    if (sent := requests_sent.get()) is not None:
-                        sent[0] += 1
-                    resp = await self._send(method, path, clean, json)
-            except _Retryable as exc:
-                if attempt >= self.cfg.retries:
-                    raise exc.error from None
-                delay = _backoff(attempt)
-            else:
-                if resp.status_code not in RETRY_STATUSES or attempt >= self.cfg.retries:
-                    return self._handle(resp, path)
-                delay = _retry_after(resp) or _backoff(attempt)
-            attempt += 1
-            log.info("instance %s: retrying %s %s in %.1fs (attempt %d)", self.cfg.name, method, path, delay, attempt)
-            await asyncio.sleep(delay)
+        try:
+            while True:
+                try:
+                    waiting = time.monotonic()
+                    async with self._slots:
+                        span["wait_ms"] += int((time.monotonic() - waiting) * 1000)
+                        if (sent := requests_sent.get()) is not None:
+                            sent[0] += 1
+                        resp = await self._send(method, path, clean, json)
+                except _Retryable as exc:
+                    span["status"] = exc.error.reason
+                    if attempt >= self.cfg.retries:
+                        raise exc.error from None
+                    delay = _backoff(attempt)
+                else:
+                    span["status"] = resp.status_code
+                    if resp.status_code not in RETRY_STATUSES or attempt >= self.cfg.retries:
+                        return self._handle(resp, path)
+                    delay = _retry_after(resp) or _backoff(attempt)
+                attempt += 1
+                log.info(
+                    "instance %s: retrying %s %s in %.1fs (attempt %d)", self.cfg.name, method, path, delay, attempt
+                )
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            span["status"] = "cancelled"
+            raise
+        except GraylogError as exc:
+            if exc.reason and exc.status is None:
+                span["status"] = exc.reason
+            raise
+        finally:
+            if spans is not None:
+                span.update(start_ms=spans.ms_since_start(began), ms=int((time.monotonic() - began) * 1000))
+                span["attempts"] = attempt + 1
+                spans.add(span)
 
     async def _send(
         self, method: str, path: str, params: dict[str, Any], json: dict[str, Any] | None
@@ -250,20 +313,23 @@ class GraylogClient:
         except httpx.TimeoutException:
             raise GraylogError(
                 f"timeout after {self.cfg.timeout:.0f}s calling {path} on instance '{self.cfg.name}'; "
-                "narrow the time range or query, or raise 'timeout' for this instance"
+                "narrow the time range or query, or raise 'timeout' for this instance",
+                reason="timeout",
             ) from None
         except httpx.ConnectError as exc:
             hint = ""
             if "CERTIFICATE" in str(exc).upper() or "SSL" in str(exc).upper():
                 hint = " (TLS verification failed: set ca_bundle, or verify_tls = false for testing)"
-            error = GraylogError(f"cannot connect to {self.cfg.url}: {exc}{hint}")
+            error = GraylogError(f"cannot connect to {self.cfg.url}: {exc}{hint}", reason="tls" if hint else "connect")
             if hint:
                 raise error from None  # a certificate problem does not go away by retrying
             raise _Retryable(error) from None
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError) as exc:
-            raise _Retryable(GraylogError(f"connection to {self.cfg.url} dropped calling {path}: {exc}")) from None
+            raise _Retryable(
+                GraylogError(f"connection to {self.cfg.url} dropped calling {path}: {exc}", reason="dropped")
+            ) from None
         except httpx.HTTPError as exc:
-            raise GraylogError(f"HTTP error calling {path}: {exc}") from None
+            raise GraylogError(f"HTTP error calling {path}: {exc}", reason="http") from None
 
     def _handle(self, resp: httpx.Response, path: str) -> Any:
         status = resp.status_code

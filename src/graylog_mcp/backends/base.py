@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,11 +37,15 @@ class MessagePage:
 
 @dataclass(frozen=True)
 class Metric:
-    function: str  # count | min | max | avg | sum | card
+    function: str  # count | min | max | avg | sum | card | percentile
     field: str | None = None
+    percentile: float | None = None  # 0 to 100, for "percentile"
+    sort: str | None = None  # "asc" | "desc": order the groups by this metric instead of by count
 
     @property
     def name(self) -> str:
+        if self.function == "percentile":
+            return f"percentile({self.field},{self.percentile:g})"
         return f"{self.function}({self.field or ''})"
 
 
@@ -59,6 +64,15 @@ MISSING_MARKERS = frozenset({"(Empty Value)"})
 
 def normalize_key(value: Any) -> Any:
     return None if value in MISSING_MARKERS else value
+
+
+def normalize_value(value: Any) -> Any:
+    """A metric over no values: Graylog answers "NaN" (percentile, avg) or "-Infinity" / "Infinity" (max, min)."""
+    if isinstance(value, str) and value in ("NaN", "Infinity", "-Infinity"):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 @dataclass

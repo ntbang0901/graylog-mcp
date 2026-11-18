@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from graylog_mcp import ui_links
 from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import COUNT, AggResult, MessageQuery, Metric
 from graylog_mcp.client import GraylogError
@@ -786,6 +787,9 @@ async def root_cause(
     }
     if lat_used:
         out["latency_field"] = lat_used
+    url = ui_links.link(app, gl.cfg.name, "dashboard", tr, query=query, streams=streams)
+    if url:
+        out["ui"] = url  # counted by the budget below with the rest of out
 
     if not ranked:
         out["verdict"] = "no service deviates clearly from the baseline in this range"

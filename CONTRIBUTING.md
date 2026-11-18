@@ -37,6 +37,42 @@ version in a comment; Dependabot keeps them, the Python dependencies and the bas
 minor and patch updates merge on their own once CI passes. The integration matrix runs weekly and on pull
 requests that touch the backends.
 
+## The admin page
+
+The page behind `graylog-mcp ui` is built from `ui/` (Vite, Preact, TypeScript and `@preact/signals`). Its build is
+committed in `src/graylog_mcp/admin/static/`, so Python work, the wheel and the tests need no Node. Edit `ui/src`,
+never the build. You need Node 22.23.4 or newer:
+
+```bash
+cd ui
+npm ci
+npm run build               # writes ../src/graylog_mcp/admin/static; commit the result with the source
+npm run check               # tsc --noEmit, with strict and noImplicitAny enabled
+npm run test                # store import, computed state, navigation guard and request races
+npm run format              # Prettier for UI source/config; keeps the existing CSS/assets untouched
+npm run format:check        # checks the same files without changing them
+```
+
+`ui/src/components/` has one `.tsx` component per screen, plus the shell and overlays. Shared state and derived
+values live in `ui/src/store.ts` as signals and computeds; environment changes update subscribers directly.
+`api.ts` handles token storage and requests at both `/` and `/admin/`. Browser initialization runs from the
+entry point and component effects; shared modules do no DOM work at import time. Keep the API types in
+`ui/src/scripts/types.ts` in step with `admin/app.py`.
+
+`ui/src/styles/main.css` imports the global CSS parts in cascade order: keep that order and the existing class
+names. Animation goes through `ui/src/scripts/motion.ts`, which checks reduced motion. Native dialogs open and
+close through refs in effects. The CSP allows only external scripts/styles and the hash of the theme bootstrap
+in `ui/index.html`. Use JSX text and handlers. Data-driven sizes and colours use `style={{…}}`, which Preact
+applies through the CSSOM; never put style attributes in HTML or build HTML strings. Vite keeps CSS and JS in
+external files under `assets/` with relative links, so both admin mount paths work.
+Preact 11 requires explicit units for lengths in style objects (``left: `${x}px` ``); unitless properties such as
+`flex` and `opacity` can stay numeric.
+
+CI rebuilds the page and fails when the committed build differs from `ui/`. To work with live reload, run
+`graylog-mcp ui` in one terminal and `npm run dev` in another: the dev server forwards `/api` to the admin
+server (set `ADMIN_URL` to its address, default `http://127.0.0.1:8765`) and the page is
+`http://localhost:4321/#token=<the token printed by graylog-mcp ui>`.
+
 ## Rules of the project
 
 - **Read-only.** Never add a request that changes Graylog state. New `POST` endpoints must execute or check

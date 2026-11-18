@@ -202,7 +202,7 @@ CORE_RULES: tuple[Rule, ...] = (
             r"(?i)((?<![A-Za-z0-9])(?:access|refresh|id|auth|csrf|xsrf|bearer)?[_\-]?(?:" + _SECRET_WORDS + r")"
             r"|pass(?:word|wd|phrase)|secret(?:[_\-]?key)?|(?:access|refresh|id|auth)[_\-]?token|"
             r"(?:api|access|private)[_\-]?key|cookies?|credentials?|jsessionid|session[_\-]?(?:id|key|token))"
-            r"(\\?[\"']?)(\s*(?:=>|:=|==|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
+            r"(\*?\\?[\"']?)(\s*(?:=>|:=|==|[=:])\s*)(?!(?-i:\[[A-Z_]+\]))"
             r"(\\\"(?:(?!\\\").)*\\\"|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|<[^>\n]{0,256}>|\[[^\]\n]{0,256}\]|"
             r"(?:\\?[\"']|<)?[^\s&,;\"'<>)\]}]+)"
         ),

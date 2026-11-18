@@ -6,6 +6,82 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Each tool call is now recorded when it starts and when it ends, with who called it (the conversation: a Codex
+  session, the HTTP session, else the server process; the client's tool call id; the client), the Graylog requests it
+  sent (path, redacted query, wait, duration, status, retries) and the first 2,000 characters of its redacted result.
+  A call that never ended reads back as running, or interrupted once its process is gone. Playground runs are recorded
+  too, apart from the model's calls. `GRAYLOG_MCP_USAGE=calls` keeps the calls without the result previews.
+- `graylog-mcp install claude-code --trace` (or the switch on the admin page's Connect screen) adds two opt-in hooks
+  to the Claude Code settings, so calls are grouped by Claude Code conversation, subagent and turn (the user's
+  prompt before them). The hooks record hashed ids only, never the prompt's text; `--untrace` takes them out.
+- The admin page's API lists the recorded calls by conversation and turn (a new turn at each prompt, else after a
+  pause of 10 minutes), opens one turn with its Graylog requests and result previews, and exports it as JSON. Its
+  usage numbers add the calls per environment and, per tool, slow calls (1 s, 3 s, 10 s), results cut to the size
+  budget, the size returned and the last call; `source=all` counts the Playground's runs too. The Activity list
+  marks a call still running, cancelled or refused instead of showing it as an error.
+- The admin page's Activity screen has four tabs: Dashboard (calls per hour, per environment and a sortable table
+  per tool), Conversations (each turn, and in one turn its calls by agent with a waterfall of their Graylog
+  requests, the result preview, a JSON download and a refresh while a call runs), Calls and Learned. A
+  *Playground runs* switch counts the Playground's runs too.
+- Settings for reading request logs, per environment or group like the other field settings: `endpoint_fields`
+  (the API), `status_fields` (the HTTP status), `business_error_query` and `technical_error_query` (default: status
+  4xx and 5xx), `slow_ms` (thresholds for slow calls) and `latency_unit`. `detect` and the admin page's Log fields
+  screen suggest the API and status fields, a route template before a path with ids in it, and a status field only
+  when it holds HTTP codes.
+- The admin page's API reads request logs for a log explorer (`/api/explorer/dashboard`, `messages`, `traces`,
+  `trace/<id>`): messages per application and status class, a histogram, and per API its business and technical
+  errors, p50/p95/p99 latency and slow calls, all counted by Graylog over the whole range; pages of messages with
+  how many match; the newest traces with their duration, services and first API; and one trace in order. Values
+  are redacted and lists capped (500 messages, offset up to 10,000). These reads are recorded apart from the
+  model's calls, and the page's own refreshes (`refresh=1`) not at all.
+- While an admin page runs on the machine, `search_logs`, `trace_request` and `root_cause` add `ui`, a link to the
+  same view in its log explorer: the instance, the redacted query and the absolute range, never the admin token. A
+  trace id that redaction would change is left out of the link. `ui_links = "off"` turns the links off.
+- The admin page has a Logs screen (`/logs/dashboard`, `/logs/traces`, `/logs/all`): per application and status
+  class, a histogram and a sortable table per API (business and technical errors, p50/p95/p99, slow calls); the
+  newest traces and one trace as a timeline; every message with its fields and a folded stack trace, paged. A click
+  on a status, an application, an API or one of its counts narrows the query; a bar narrows the range. The view is in
+  the address, favourite views stay in the browser, the agent's recent searches open again, and an optional refresh
+  (30 s at the most often) pauses while the browser tab is hidden or a row is open. *Open in Graylog* opens the same
+  search there.
+- Admin Overview: an "Inside <environment>" section breaks one environment down by service (with its errors), by level
+  and by exception type, from the new read-only `GET /api/breakdown`. Every row opens a log drawer with the lines
+  behind its number: filter to errors, narrow with a query, load more, open a line to see every field, follow its
+  trace id or read the lines around it, and carry the search to the Playground or to the Logs screen.
+- Admin Overview: the older figures open their log lines too. A point on Log volume or a bar on Errors opens that hour
+  (or 6 hours), the Log messages and Errors tiles open every line or every error line, the counts on an environment row
+  open that environment's lines, and the Tool calls and Found something tiles open Activity. The drawer can switch
+  environment.
+
+### Changed
+- The admin page is built from `ui/` (Vite, Preact and `@preact/signals`, strict TypeScript, one component per screen)
+  into `src/graylog_mcp/admin/static/` (`index.html` plus committed hashed files in `assets/`), and is served from
+  there; the wheel, Docker and the tests need no Node. The Content-Security-Policy no longer allows inline scripts
+  except the one that sets the colour scheme before first paint, which it allows by hash, nor inline styles (sizes
+  that come from data are applied through the CSSOM), and the favicon is a file. The page loads from `/` under
+  `graylog-mcp ui` and from `/admin/` under `graylog-mcp start`.
+- The Motion library drives the screen switch, the Activity list, the confirm box and palette, toasts, the
+  segmented-control pill, the figure count-up and the Overview charts, which draw themselves in once per data set;
+  all of it is skipped when the system asks for reduced motion.
+- `graylog-mcp ui` keeps its port (8765, or `--port`) instead of moving to the next free one: when that port is
+  its own running admin page it opens that page, and when another program holds it, it says so.
+- Each screen of the admin page has its own address (`/admin/activity/conversations/<id>?turn=<ms>`), so the
+  browser's Back and Forward work and a turn or call can be linked to; the old `#activity` links still open. The
+  page's access token is kept per browser instead of per tab, and a page opened without it says how to sign in.
+- Usage records move from the single `usage.jsonl` to `usage/`, one file per process and day, so servers no longer
+  share a file. The old file is imported on first use.
+- Usage records are no longer trimmed at 4 MB but kept in tiers, tidied in a background thread: every detail for
+  today and yesterday, each call without its result and requests (a summary of them) up to 15 days, one line per
+  conversation up to 90 days, the folder under 50 MB. `GRAYLOG_MCP_USAGE_HOT_DAYS`, `GRAYLOG_MCP_USAGE_DAYS`,
+  `GRAYLOG_MCP_USAGE_SESSION_DAYS` and `GRAYLOG_MCP_USAGE_MAX_MB` change the limits.
+
+### Fixed
+- Redaction now masks a secret after a field name ending in a wildcard (`password*:value`), as in a query a suggested
+  fix rewrote.
+- A metric over no values, which Graylog 5.2 and later return as the text `NaN` or `-Infinity`, now reads as no
+  value instead of a number, for example in root cause analysis's latency of a minute with no latency field.
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed

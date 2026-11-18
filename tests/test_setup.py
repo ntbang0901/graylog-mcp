@@ -278,6 +278,53 @@ async def test_admin_security_headers_on_every_response(admin):
         assert resp.headers["referrer-policy"] == "no-referrer"
 
 
+async def test_admin_page_loads_its_script_and_styles_from_the_package(admin):
+    import re
+
+    client, _ = admin
+    page = (await client.get("/logs/traces", headers={"X-Admin-Token": ""})).text
+    # links from the page's root (here ""), so they load at any of its addresses (see test_service for /admin/)
+    assert "./assets/" not in page
+    files = re.findall(r'(?:src|href)="(/assets/[^"]+)"', page)
+    assert any(f.endswith(".js") for f in files) and any(f.endswith(".css") for f in files)
+    for path in files:
+        resp = await client.get(path, headers={"X-Admin-Token": ""})
+        assert resp.status_code == 200 and len(resp.content) > 1000
+        assert "immutable" in resp.headers["cache-control"]
+    assert (await client.get(files[0].replace("assets/", "assets/..%2f"))).status_code == 404
+    assert (await client.get("/assets/nope.js")).status_code == 404
+    assert (await client.get("/assets/.hidden")).status_code == 404
+    icon = await client.get("/favicon.svg", headers={"X-Admin-Token": ""})
+    assert icon.status_code == 200 and icon.headers["content-type"] == "image/svg+xml" and b"<svg" in icon.content
+    assert 'href="/favicon.svg"' in page
+
+
+async def test_admin_csp_allows_only_the_pages_own_inline_script(admin):
+    import base64
+    import hashlib
+    import re
+
+    client, _ = admin
+    resp = await client.get("/")
+    inline = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script[^>]*>", resp.text, re.S | re.I)
+    assert len(inline) == 1  # the colour scheme before first paint, nothing else
+    digest = base64.b64encode(hashlib.sha256(inline[0].encode()).digest()).decode()
+    script_src = re.search(r"script-src ([^;]*)", resp.headers["content-security-policy"]).group(1)
+    assert script_src == f"'self' 'sha256-{digest}'"
+
+
+async def test_admin_styles_come_from_files_only(admin):
+    """No style attribute in the markup or in a script template, so the CSP needs no 'unsafe-inline' for styles."""
+    client, _ = admin
+    csp = (await client.get("/")).headers["content-security-policy"]
+    assert "style-src 'self';" in csp and "img-src 'self';" in csp and "unsafe-inline" not in csp
+    assert "style=" not in (await client.get("/")).text
+    source = Path(__file__).resolve().parents[1] / "ui" / "src"
+    assert "style=" not in "".join(
+        p.read_text(encoding="utf-8") for p in source.rglob("*") if p.suffix in {".astro", ".ts"}
+    )
+
+
 async def test_admin_flow(admin):
     client, project = admin
     state = (await client.get("/api/state")).json()
@@ -518,8 +565,37 @@ async def test_admin_offers_the_operations_the_table_marks_for_it(admin):
 
 
 def test_the_admin_page_keeps_no_operation_list_of_its_own():
-    import graylog_mcp.admin as admin_package  # `admin` is a fixture in this file
+    # the page is built from ui/src (the built script is minified, so its names prove nothing)
+    sources = [p for p in (Path(__file__).parent.parent / "ui" / "src").rglob("*") if p.suffix in (".ts", ".astro")]
+    code = "\n".join(p.read_text(encoding="utf-8") for p in sources)
+    assert "const TEMPLATES" not in code and "const QUICK" not in code
+    assert "tool_templates" in code and "quick_tools" in code
 
-    html = (Path(admin_package.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
-    assert "const TEMPLATES" not in html and "const QUICK" not in html
-    assert "tool_templates" in html and "quick_tools" in html
+
+async def test_detect_suggests_the_api_and_status_fields(fake_transport, monkeypatch):
+    from graylog_mcp.config import parse_config
+    from graylog_mcp.setup.detect import detect
+    from graylog_mcp.tools import App
+    from tests.test_regressions import _add
+
+    for i in range(120):
+        _add(fake_transport, seconds_ago=60 + i, route="/orders/{id}", path=f"/orders/{1000 + i}",
+             http_status=404 if i % 10 == 0 else 200, status="success", took_ms=20 + i)  # fmt: skip
+    monkeypatch.setenv("OK_T", "x")
+    app = App.create(parse_config({"instances": {"a": {"url": "https://a.test", "token_env": "OK_T"}}}),
+                     transport=fake_transport.transport)  # fmt: skip
+    found = (await detect(app, app.gl(None), "1h"))["suggested"]
+    assert found["endpoint_fields"] == ["route", "path"]  # the template first: the path has an id in it
+    assert found["status_fields"] == ["http_status"]  # "status" holds words, not codes
+    assert "took_ms" in found["latency_fields"]
+
+
+def test_the_admin_page_writes_slow_thresholds_as_numbers():
+    from graylog_mcp.setup.configfile import write_scope
+
+    data = write_scope({}, "group:acme", {"slow_ms": "500, 2000", "latency_unit": "ms"})
+    assert data["groups"]["acme"] == {"slow_ms": [500, 2000], "latency_unit": "ms"}
+    data = write_scope({}, "global", {"endpoint_fields": "route, path"})
+    assert data["investigation"] == {"endpoint_fields": ["route", "path"]}
+    with pytest.raises(ConfigError, match="slow_ms: expected whole numbers"):
+        write_scope({}, "global", {"slow_ms": "fast"})

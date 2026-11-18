@@ -17,6 +17,7 @@ from graylog_mcp.backends.base import (
     Metric,
     RawMessage,
     normalize_key,
+    normalize_value,
 )
 from graylog_mcp.client import GraylogClient
 from graylog_mcp.timerange import TimeRange
@@ -27,6 +28,17 @@ MISSING = "-"  # placeholder for fields absent from a message
 
 def _columns(data: dict[str, Any]) -> list[dict[str, Any]]:
     return list(data.get("schema") or [])
+
+
+def _metric(m: Metric) -> dict[str, Any]:
+    out: dict[str, Any] = {"function": m.function}
+    if m.field:
+        out["field"] = m.field
+    if m.percentile is not None:
+        out["configuration"] = {"percentile": m.percentile}
+    if m.sort:
+        out["sort"] = m.sort
+    return out
 
 
 class ScriptingBackend:
@@ -70,19 +82,20 @@ class ScriptingBackend:
             "query": query or "*",
             "timerange": tr.views(),
             "group_by": [{"field": f, "limit": limit} for f in group_by],
-            "metrics": [{"function": m.function, **({"field": m.field} if m.field else {})} for m in metrics],
+            "metrics": [_metric(m) for m in metrics],
         }
         if streams:
             body["streams"] = list(streams)
         data = await self.client.post("search/aggregate", body)
         cols = _columns(data)
-        kinds: list[tuple[str, Any]] = []
-        for col in cols:
-            if col.get("column_type") == "metric":
-                fn = str(col.get("function", "")).lower()
-                kinds.append(("metric", Metric(fn, col.get("field") or None).name))
-            else:
-                kinds.append(("group", col.get("field")))
+        metric_cols = [c for c in cols if c.get("column_type") == "metric"]
+        # Every percentile of a field gets the same column name ("percentile(took_ms)"), so the columns are matched
+        # to the metrics asked for by position; Graylog keeps their order.
+        if len(metric_cols) == len(metrics):
+            names = iter([m.name for m in metrics])
+        else:
+            names = iter([Metric(str(c.get("function", "")).lower(), c.get("field") or None).name for c in metric_cols])
+        kinds = [("metric", next(names)) if c.get("column_type") == "metric" else ("group", "") for c in cols]
         rows = []
         for raw in data.get("datarows") or []:
             row = AggRow(keys=[])
@@ -90,6 +103,6 @@ class ScriptingBackend:
                 if kind == "group":
                     row.keys.append(normalize_key(value))
                 else:
-                    row.values[name] = value
+                    row.values[name] = normalize_value(value)
             rows.append(row)
         return AggResult(rows=rows, total=None, api=self.name)

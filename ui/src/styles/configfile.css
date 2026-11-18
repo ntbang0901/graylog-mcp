@@ -1,0 +1,4 @@
+/* config file: the editor takes the height */
+.ed.tall textarea { min-height: 60vh; }
+.ed .gut .gl { display: block; }
+.ed .gut .gl.err { color: var(--color-error); background: var(--color-error-soft); font-weight: 600; }

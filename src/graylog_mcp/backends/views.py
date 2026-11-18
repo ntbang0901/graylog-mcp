@@ -23,6 +23,7 @@ from graylog_mcp.backends.base import (
     Metric,
     RawMessage,
     normalize_key,
+    normalize_value,
 )
 from graylog_mcp.client import GraylogClient, QueryError, describe_query_error
 from graylog_mcp.timerange import TimeRange
@@ -50,6 +51,8 @@ def _series(m: Metric) -> dict[str, Any]:
     out: dict[str, Any] = {"type": m.function, "id": m.name}
     if m.field:
         out["field"] = m.field
+    if m.percentile is not None:
+        out["percentile"] = m.percentile
     return out
 
 
@@ -81,7 +84,11 @@ def build_pivot(
         "row_groups": row_groups,
         "column_groups": [],
         "series": [_series(m) for m in metrics],
-        "sort": [],
+        "sort": [
+            {"type": "series", "field": m.name, "direction": "Ascending" if m.sort == "asc" else "Descending"}
+            for m in metrics
+            if m.sort
+        ],
         "rollup": True,
     }
 
@@ -107,7 +114,7 @@ def parse_pivot(st: dict[str, Any]) -> AggResult:
         for v in row.get("values") or []:
             key = v.get("key") or []
             if key:
-                values[str(key[-1])] = v.get("value")
+                values[str(key[-1])] = normalize_value(v.get("value"))
         if row.get("source") == "leaf":
             rows.append(AggRow(keys=[normalize_key(k) for k in row.get("key") or []], values=values))
         elif not row.get("key") and COUNT.name in values and isinstance(values[COUNT.name], int | float):

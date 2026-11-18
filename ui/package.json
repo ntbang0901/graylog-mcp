@@ -1,0 +1,28 @@
+{
+  "name": "graylog-mcp-admin-ui",
+  "private": true,
+  "type": "module",
+  "description": "Preact and signals admin console for graylog-mcp. Builds the committed Python static assets.",
+  "engines": {
+    "node": ">=22.23.4"
+  },
+  "scripts": {
+    "dev": "vite --port 4321",
+    "build": "vite build",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.4",
+    "motion": "14.14.0",
+    "preact": "11.2.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  }
+}

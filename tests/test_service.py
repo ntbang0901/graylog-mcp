@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+import re
 import stat
 import subprocess
 import sys
@@ -313,7 +314,15 @@ def test_shared_server_with_admin_page(tmp_path, monkeypatch):
         health = service.probe(port)
         assert health and health["admin"] is True and "commit" in health
         page = httpx.get(f"{base}/admin/", trust_env=False)
-        assert page.status_code == 200 and "graylog-mcp" in page.text and "attnList" in page.text
+        assert page.status_code == 200 and "graylog-mcp" in page.text and 'id="app"' in page.text
+        # a view's own address opens the page, whose files load from under /admin/ (a link to /assets/ would reach
+        # the MCP app instead, and one relative to /admin/activity/... nothing)
+        deep = httpx.get(f"{base}/admin/activity/conversations/aaaaaaaaaaaa?turn=1", trust_env=False)
+        assert '<meta name="graylog-mcp-root" content="/admin"' in deep.text
+        links = re.findall(r'(?:src|href)="(/admin/(?:assets/[^"]+|favicon\.svg))"', deep.text)
+        assert any(link.endswith(".js") for link in links) and any(link.endswith(".css") for link in links)
+        for link in links:
+            assert httpx.get(f"{base}{link}", trust_env=False).status_code == 200
         token = {"X-Admin-Token": service.admin_token()}
         assert httpx.get(f"{base}/admin/api/state", trust_env=False).status_code == 401
         state = httpx.get(f"{base}/admin/api/state", headers=token, trust_env=False).json()

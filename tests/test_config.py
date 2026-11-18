@@ -168,3 +168,39 @@ def test_project_config_not_searched_beyond_repo(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     assert find_project_config(repo) is None
+
+
+def test_log_explorer_settings(monkeypatch):
+    monkeypatch.setenv("T", "t")
+    inst = {"url": "https://a.test", "token_env": "T"}
+    default = parse_config({"instances": {"a": inst}}).instance(None)
+    assert default.endpoint_fields[0] == "route" and default.status_fields[0] == "http_status"
+    assert default.slow_ms == (1000, 3000, 10000) and default.latency_unit == "auto"
+    assert default.business_error_query == default.technical_error_query == ""  # made from the status field
+
+    cfg = parse_config({
+        "investigation": {"endpoint_fields": ["api"], "slow_ms": [3000, 500, 500]},
+        "groups": {"acme": {"status_fields": ["code"], "latency_unit": "s",
+                            "environments": {"prod": {**inst, "technical_error_query": "code:>=500"}}}},
+    })  # fmt: skip
+    prod = cfg.instances["acme/prod"]
+    assert prod.endpoint_fields == ("api",) and prod.slow_ms == (500, 3000)  # sorted, once each
+    assert prod.status_fields == ("code",) and prod.latency_unit == "s"  # from the group
+    assert prod.technical_error_query == "code:>=500" and prod.business_error_query == ""
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("slow_ms", [0], "slow_ms: expected 1 to 5 positive"),
+        ("slow_ms", "1000", "slow_ms: expected 1 to 5 positive"),
+        ("slow_ms", [1, 2, 3, 4, 5, 6], "slow_ms: expected 1 to 5 positive"),
+        ("latency_unit", "us", "latency_unit: expected one of auto, ms, s"),
+        ("business_error_query", "  ", "business_error_query: expected a non-empty"),
+        ("endpoint_fields", [1], "endpoint_fields"),
+    ],
+)
+def test_log_explorer_settings_name_the_key_in_error(monkeypatch, key, value, match):
+    monkeypatch.setenv("T", "t")
+    with pytest.raises(ConfigError, match=match):
+        parse_config({"instances": {"a": {"url": "https://a.test", "token_env": "T", key: value}}})

@@ -1,0 +1,10 @@
+/* redaction: the settings as an accordion, masked tokens marked in the output */
+.acc { border-top: var(--rule-hair) solid var(--color-rule); margin-top: var(--space-sm); }
+.acc > summary { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-sm) 0; font-weight: 600; color: var(--color-ink); list-style: none; }
+.acc > summary::-webkit-details-marker { display: none; }
+.acc > summary::before { content: "▸"; width: 1.1em; color: var(--color-muted); transition: transform var(--dur-micro) var(--ease-out); }
+.acc[open] > summary::before { transform: rotate(90deg); }
+.acc[open] > summary { margin-bottom: 0; }
+.acc-meta { margin-left: auto; font: 400 11.5px var(--font-mono); color: var(--color-muted); }
+.acc-body { display: grid; gap: var(--space-sm); padding-bottom: var(--space-md); }
+#r_output mark { background: var(--color-accent-soft); color: var(--color-accent-soft-ink); border-radius: 3px; padding: 0 2px; }

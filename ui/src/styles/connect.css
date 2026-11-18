@@ -1,0 +1,10 @@
+/* connect: a tab per client, three numbered steps */
+.ctabs { margin-top: 0; margin-bottom: var(--space-md); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-lg); }
+.step { display: grid; gap: var(--space-xs); padding-left: calc(28px + var(--space-sm)); position: relative; }
+.step + .step { padding-top: var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule); }
+.step select { max-width: 32rem; }
+.shead { display: flex; align-items: center; gap: var(--space-sm); margin-left: calc(-28px - var(--space-sm)); }
+.shead h2 { margin: 0; font-size: var(--text-md); }
+.snum { flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent-soft-ink); font: 600 13px var(--font-mono); }
+@media (max-width: 40rem) { .step { padding-left: 0; } .shead { margin-left: 0; } }

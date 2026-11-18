@@ -4,6 +4,7 @@
 
 default_instance = "prod"
 timezone = "Asia/Ho_Chi_Minh"        # naive times in tool calls and all output use this zone
+ui_links = "auto"                    # "off": no link to the admin page's log explorer in results
 
 [limits]
 default_limit = 50                   # messages per search when the model does not say
@@ -47,6 +48,13 @@ group_fields = { exception = "exception_class", logger = "logger_name", source =
 # root_cause / detect_changes: the first existing field of each list is used
 version_fields = ["app_version", "version", "build", "git_commit", "image_tag"]
 latency_fields = ["took_ms", "duration_ms", "elapsed_ms", "response_time_ms"]
+# log explorer's API table: the first existing field of each list is used
+endpoint_fields = ["route", "http_route", "path", "request_path", "uri", "url_path", "endpoint"]
+status_fields = ["http_status", "status_code", "response_status", "status"]
+business_error_query = ""            # empty: http status 400-499
+technical_error_query = ""           # empty: http status 500-599, or error_query
+slow_ms = [1000, 3000, 10000]        # thresholds offered for "slow calls"
+latency_unit = "auto"                # ms or s; auto reads request_time as seconds, the rest as ms
 # lines that mark a process start/stop or a config reload
 change_query = '(message:Started AND message:"running for") OR "Shutting down" OR "Graceful shutdown" OR SIGTERM'
 

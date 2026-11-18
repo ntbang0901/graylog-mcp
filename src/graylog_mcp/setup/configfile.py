@@ -249,6 +249,7 @@ def default_token_env(name: str) -> str:
 INVESTIGATION_SETTINGS = (
     "trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields",
     "error_query", "change_query", "message_lookup_range", "group_fields.exception", "group_fields.logger",
+    "endpoint_fields", "status_fields", "business_error_query", "technical_error_query", "slow_ms", "latency_unit",
 )  # fmt: skip
 CONNECTION_SETTINGS = (
     "timezone", "verify_tls", "ca_bundle", "proxy", "timeout", "max_concurrency", "retries", "message_api",
@@ -256,7 +257,11 @@ CONNECTION_SETTINGS = (
 )  # fmt: skip
 INT_SETTINGS = {"max_concurrency", "retries"}
 GLOBAL_SETTINGS = ("default_group", "default_environment", "default_instance", "app_packages")
-LIST_SETTINGS = {"trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields", "app_packages"}
+LIST_SETTINGS = {
+    "trace_fields", "service_fields", "version_fields", "latency_fields", "default_fields", "app_packages",
+    "endpoint_fields", "status_fields", "slow_ms",
+}  # fmt: skip
+INT_LIST_SETTINGS = {"slow_ms"}
 
 
 def scope_keys(scope: str) -> tuple[str, ...]:
@@ -329,6 +334,11 @@ def write_scope(data: dict[str, Any], scope: str, values: dict[str, Any]) -> dic
         value = raw
         if key in LIST_SETTINGS and isinstance(raw, str):
             value = [v.strip() for v in raw.split(",") if v.strip()]
+        if key in INT_LIST_SETTINGS and isinstance(value, list):
+            try:
+                value = [int(v) for v in value]
+            except ValueError:
+                raise ConfigError(f"{key}: expected whole numbers separated by commas") from None
         if key == "timeout" and isinstance(raw, str):
             value = float(raw) if raw.strip() else None
         if key in INT_SETTINGS and isinstance(raw, str):
@@ -386,6 +396,12 @@ def effective_scope(config: Config, scope: str) -> dict[str, Any]:
         "message_lookup_range": inst.message_lookup_range,
         "group_fields.exception": inst.group_fields.get("exception"),
         "group_fields.logger": inst.group_fields.get("logger"),
+        "endpoint_fields": list(inst.endpoint_fields),
+        "status_fields": list(inst.status_fields),
+        "business_error_query": inst.business_error_query,
+        "technical_error_query": inst.technical_error_query,
+        "slow_ms": list(inst.slow_ms),
+        "latency_unit": inst.latency_unit,
         "verify_tls": inst.verify_tls,
         "ca_bundle": inst.ca_bundle,
         "proxy": inst.proxy,

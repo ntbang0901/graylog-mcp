@@ -313,11 +313,13 @@ class Graylog:
             sampleable = len(group_by) == 1 and all(m.function == "count" or m.field == "timestamp" for m in metrics)
             if _not_aggregatable(exc) and sampleable:
                 log.info("instance %s: %s cannot be aggregated; counting a sample", self.cfg.name, group_by[0])
-                return await self._sampled(query, tr, streams, group_by[0], limit)
+                return await self._sampled(query, tr, streams, group_by[0], limit, metrics)
             await self._explain(exc, query, tr, streams)
             raise
 
-    async def _sampled(self, query: str, tr: TimeRange, streams: tuple[str, ...], field: str, limit: int) -> AggResult:
+    async def _sampled(
+        self, query: str, tr: TimeRange, streams: tuple[str, ...], field: str, limit: int, metrics: list[Metric]
+    ) -> AggResult:
         """Count the values of a field over the newest messages; full-text fields are grouped by template
         (numbers, ids and timestamps replaced) so variants of one log line count together."""
         groups: dict[Any, dict[str, Any]] = {}
@@ -358,7 +360,10 @@ class Graylog:
             )
             for key, g in sorted(groups.items(), key=lambda kv: -kv[1]["count"])
         ]
-        present = [r for r in rows if r.keys[0] is not None][:limit]
+        present = [r for r in rows if r.keys[0] is not None]
+        if by := next((m for m in metrics if m.sort and m.name in ("min(timestamp)", "max(timestamp)")), None):
+            present.sort(key=lambda r: r.values[by.name] or "", reverse=by.sort == "desc")  # ISO strings
+        present = present[:limit]
         return AggResult(present + [r for r in rows if r.keys[0] is None], total=total, api="sampled", sampled=seen)
 
     async def _aggregate(

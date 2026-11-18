@@ -1,0 +1,24 @@
+/* log fields: the level breadcrumb, a sticky Detect column, a tag for where each value comes from */
+.scopebar { display: flex; align-items: flex-end; gap: var(--space-sm); flex-wrap: wrap; margin-bottom: var(--space-xs); }
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3xs); font-family: var(--font-mono); font-size: var(--text-sm); }
+.crumbs button { min-height: 30px; padding: 0 var(--space-xs); border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; cursor: pointer; }
+.crumbs button:hover { color: var(--color-ink); background: var(--color-paper-2); }
+.crumbs button[aria-current="true"] { color: var(--color-ink); font-weight: 600; background: var(--color-accent-soft); cursor: default; }
+.crumbs .sep { color: var(--color-muted); }
+.row-field { flex-direction: row; align-items: center; gap: var(--space-xs); }
+.row-field select { width: auto; max-width: 16rem; }
+.fgrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-lg); align-items: start; }
+@media (min-width: 75rem) { .fgrid { grid-template-columns: minmax(0, 1fr) minmax(0, 24rem); } .fside .card { position: sticky; top: var(--space-md); max-height: calc(100vh - 2 * var(--space-md)); overflow: auto; } }
+.fside .row { flex-direction: column; align-items: stretch; }
+.fside .row > .field { flex: none; }
+.from { font: 400 11.5px var(--font-mono); color: var(--color-muted); }
+.clr { min-height: 0; padding: 0 var(--space-3xs); border: 0; border-radius: var(--radius-small); background: none; color: var(--color-muted); font: inherit; cursor: pointer; }
+.clr:hover { color: var(--color-error); background: var(--color-error-soft); }
+@media (max-width: 40rem) { .scopebar .spacer { display: none; } .scopebar .row-field { width: 100%; } .row-field select { max-width: none; flex: 1; } .scopebar .btn { padding-inline: 0; } }
+.field.fresh { animation: fresh 2.4s var(--ease-out); border-radius: var(--radius-control); }
+@keyframes fresh { 0%, 60% { background: var(--color-accent-soft); box-shadow: 0 0 0 6px var(--color-accent-soft); } to { background: none; box-shadow: none; } }
+@media (prefers-reduced-motion: reduce) { .field.fresh { animation: none; background: var(--color-accent-soft); box-shadow: 0 0 0 6px var(--color-accent-soft); } }
+.sugs { display: grid; gap: var(--space-xs); margin-top: var(--space-sm); }
+.sug { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-xs); align-items: start; padding: var(--space-xs); border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-control); cursor: pointer; }
+.sug .sn { display: grid; gap: var(--space-3xs); min-width: 0; }
+.sug .sn > span { overflow-wrap: anywhere; }

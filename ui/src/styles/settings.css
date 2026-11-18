@@ -1,0 +1,25 @@
+/* settings */
+.schemes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.scheme { display: grid; align-content: start; gap: 8px; padding: 8px; border: 1px solid var(--color-rule); border-radius: var(--radius-card); background: none; text-align: left; transition: border-color var(--dur-short), box-shadow var(--dur-short); }
+.scheme:hover { border-color: var(--color-field-edge); }
+.scheme[aria-checked="true"] { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); }
+.pv { display: grid; grid-template-columns: 1fr 1fr; height: 64px; border-radius: 7px; overflow: hidden; border: 1px solid var(--color-rule); }
+.pv > div { background: var(--color-paper); padding: 8px; display: grid; gap: 5px; align-content: start; }
+.pv i { display: block; height: 4px; border-radius: 2px; background: var(--color-rule); }
+.pv i.a { width: 60%; background: var(--color-accent); height: 7px; }
+.pv i.f { width: 35%; background: var(--color-error); }
+.pv i.s { width: 80%; }
+.pv i.s.short { width: 55%; }
+.scheme .nm { font-weight: 600; font-size: 13px; display: flex; gap: 6px; align-items: center; }
+.scheme .nm .glabel { font-size: 9.5px; }
+.scheme .ds { font-size: 12px; color: var(--color-muted); line-height: 1.35; }
+.keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 22px; font-size: 13px; color: var(--color-ink-2); }
+.keys div { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.keys span:last-child { display: flex; gap: 3px; }
+.srow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.glabel { font: 500 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--color-muted); }
+.glabel.gap { margin-bottom: 8px; }
+.kbd.mono { font-family: var(--font-mono); }
+::view-transition-group(root) { animation-duration: .3s; animation-timing-function: var(--ease-out); }
+.vt-reveal::view-transition-old(root), .vt-reveal::view-transition-new(root) { animation: none; mix-blend-mode: normal; }

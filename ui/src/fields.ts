@@ -1,0 +1,167 @@
+export const SETTING_META: Record<string, readonly [string, string, string]> = {
+    description: ["Description", "text", "shown to the model, e.g. Production"],
+    trace_fields: [
+        "Trace / correlation id fields",
+        "list",
+        "used by trace_request and the service map",
+    ],
+    service_fields: [
+        "Service name fields",
+        "list",
+        "the first one present names the service",
+    ],
+    version_fields: ["Version fields", "list", "a new value marks a deploy"],
+    latency_fields: [
+        "Latency fields",
+        "list",
+        "used by root_cause and the log explorer",
+    ],
+    endpoint_fields: [
+        "API fields",
+        "list",
+        "the first one present names the API; a route template beats a path with ids",
+    ],
+    status_fields: [
+        "HTTP status fields",
+        "list",
+        "the first one present holds the status code",
+    ],
+    business_error_query: [
+        "Business error query",
+        "text",
+        "empty: a status from 400 to 499",
+    ],
+    technical_error_query: [
+        "Technical error query",
+        "text",
+        "empty: a status from 500 to 599, or the error query",
+    ],
+    slow_ms: ["Slow call thresholds (ms)", "list", "e.g. 1000, 3000, 10000"],
+    latency_unit: [
+        "Latency unit",
+        "select:auto,ms,s",
+        "auto: ms, but seconds for request_time",
+    ],
+    default_fields: ["Fields shown in search results", "list", ""],
+    error_query: [
+        "Error query",
+        "text",
+        "Lucene, e.g. level:<=3 or level:(ERROR OR FATAL)",
+    ],
+    change_query: [
+        "Start / stop lines",
+        "text",
+        "lines that mark a restart or config reload",
+    ],
+    message_lookup_range: ["get_message lookup range", "text", "e.g. 30d"],
+    "group_fields.exception": [
+        "Exception class field",
+        "text",
+        "error_summary group_by=exception",
+    ],
+    "group_fields.logger": [
+        "Logger field",
+        "text",
+        "error_summary group_by=logger",
+    ],
+    timezone: ["Timezone", "text", "IANA name, e.g. Asia/Ho_Chi_Minh"],
+    verify_tls: ["Verify TLS certificate", "bool", ""],
+    ca_bundle: ["CA bundle path", "text", "for internal certificates"],
+    proxy: ["Proxy", "text", "e.g. http://proxy:3128"],
+    timeout: ["Timeout (seconds)", "number", ""],
+    max_concurrency: [
+        "Max concurrent requests",
+        "number",
+        "to this Graylog, across every session",
+    ],
+    retries: [
+        "Retries",
+        "number",
+        "after connection errors, 429 and 502/503/504",
+    ],
+    message_api: [
+        "Message API",
+        "select:auto,universal,views,scripting",
+        "auto picks by Graylog version",
+    ],
+    aggregation_api: [
+        "Aggregation API",
+        "select:auto,views,scripting",
+        "auto picks by Graylog version",
+    ],
+    default_group: [
+        "Default group",
+        "groups",
+        "when a question names no system",
+    ],
+    default_environment: [
+        "Default environment",
+        "text",
+        "when only a system is named",
+    ],
+    default_instance: [
+        "Default instance",
+        "instances",
+        "overrides the two above",
+    ],
+    app_packages: [
+        "Application packages",
+        "list",
+        "stack frames from these are kept, e.g. com.acme",
+    ],
+    group_fields: ["Exception / logger fields", "text", ""],
+};
+export const SETTING_SECTIONS: [string, string, string[]][] = [
+    [
+        "Field names in your logs",
+        "Leave empty to use what the parent level uses",
+        [
+            "service_fields",
+            "trace_fields",
+            "version_fields",
+            "latency_fields",
+            "group_fields.exception",
+            "group_fields.logger",
+            "default_fields",
+            "app_packages",
+        ],
+    ],
+    ["Queries", "", ["error_query", "change_query", "message_lookup_range"]],
+    [
+        "Log explorer",
+        "How the API table reads your request logs",
+        [
+            "endpoint_fields",
+            "status_fields",
+            "latency_unit",
+            "slow_ms",
+            "business_error_query",
+            "technical_error_query",
+        ],
+    ],
+    [
+        "General",
+        "Defaults and display",
+        [
+            "description",
+            "timezone",
+            "default_group",
+            "default_environment",
+            "default_instance",
+        ],
+    ],
+    [
+        "Connection",
+        "",
+        [
+            "verify_tls",
+            "ca_bundle",
+            "proxy",
+            "timeout",
+            "max_concurrency",
+            "retries",
+            "message_api",
+            "aggregation_api",
+        ],
+    ],
+];

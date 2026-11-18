@@ -1,0 +1,52 @@
+/* ---------- savebar, drawer, modal, palette, toasts: only what floats gets a shadow */
+.savebar { position: fixed; left: 50%; bottom: var(--space-md); transform: translateX(-50%); z-index: var(--z-sticky-nav); display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; max-width: calc(100% - var(--space-lg)); padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md); border-radius: var(--radius-card); background: var(--color-paper); box-shadow: var(--shadow-card); animation: fadein var(--dur-short) var(--ease-out); }
+.overlay { position: fixed; inset: 0; z-index: var(--z-modal); background: var(--color-scrim); }
+@keyframes fadein { from { opacity: 0; } }
+#modalWrap.leaving, #paletteWrap.leaving { pointer-events: none; }
+.modal { position: fixed; z-index: var(--z-modal); top: 18dvh; inset-inline: 0; margin-inline: auto; width: min(440px, 92%); padding: var(--space-lg); border-radius: var(--radius-card); background: var(--color-paper); box-shadow: var(--shadow-card); }
+.modal h3 { margin-bottom: var(--space-xs); }
+.modal .actions { justify-content: flex-end; margin-top: var(--space-lg); }
+.palette { position: fixed; z-index: var(--z-modal); top: 12dvh; inset-inline: 0; margin-inline: auto; width: min(600px, 94%); border-radius: var(--radius-card); background: var(--color-paper); box-shadow: var(--shadow-card); overflow: hidden; }
+.palette input { min-height: 48px; padding: var(--space-sm) var(--space-md); border: 0; border-bottom: var(--rule-hair) solid var(--color-ink); border-radius: 0; font-size: var(--text-md); }
+.palette ul { list-style: none; margin: 0; padding: var(--space-2xs); max-height: 50dvh; overflow: auto; }
+.palette li { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-control); cursor: pointer; }
+.palette li .kind { margin-left: auto; font-size: var(--text-xs); color: var(--color-muted); }
+.palette li[aria-selected="true"] { background: var(--color-paper-3); }
+.palette .none { color: var(--color-muted); }
+#toasts { position: fixed; bottom: var(--space-md); right: var(--space-md); z-index: var(--z-toast); display: flex; flex-direction: column; gap: var(--space-xs); max-width: min(440px, calc(100% - var(--space-xl))); }
+.toast { display: flex; gap: var(--space-sm); align-items: flex-start; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-control); background: var(--color-paper); box-shadow: var(--shadow-card); }
+.toast.fail svg.i { color: var(--color-error); }
+.cov { display: flex; gap: var(--space-xs); align-items: center; min-width: 140px; }
+.cov .bar { flex: 1; height: 6px; border-radius: var(--radius-small); background: var(--color-paper-3); overflow: hidden; }
+.cov .bar > div { height: 6px; background: var(--chart-ink); }
+
+/* ---------- native dialogs (Settings): enter and exit */
+dialog { border: 1px solid var(--color-rule); background: var(--color-paper); color: var(--color-ink); border-radius: var(--radius-card); padding: 0; width: min(560px, 92vw); margin-top: 12vh; box-shadow: var(--shadow-card);
+  opacity: 0; transform: translateY(-8px) scale(.97);
+  transition: opacity var(--dur-short) var(--ease-out), transform var(--dur-long) var(--ease-out), overlay var(--dur-long) allow-discrete, display var(--dur-long) allow-discrete; }
+dialog[open] { opacity: 1; transform: none; }
+@starting-style { dialog[open] { opacity: 0; transform: translateY(-8px) scale(.97); } }
+dialog::backdrop { background: transparent; transition: background var(--dur-long), backdrop-filter var(--dur-long), overlay var(--dur-long) allow-discrete, display var(--dur-long) allow-discrete; }
+dialog[open]::backdrop { background: var(--color-scrim); backdrop-filter: blur(3px); }
+@starting-style { dialog[open]::backdrop { background: transparent; backdrop-filter: none; } }
+.dhead { display: flex; align-items: center; gap: var(--space-sm); padding: 14px 18px; border-bottom: 1px solid var(--color-rule); }
+.dbody { padding: 16px 18px 18px; display: grid; gap: 16px; }
+.dfoot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--color-rule); }
+/* environment dialog: tabs under the head, the body scrolls */
+dialog.wide { width: min(640px, 94vw); margin-top: 6vh; max-height: 88vh; }
+dialog.wide[open] { display: flex; flex-direction: column; }
+dialog.wide .dbody.scroll { overflow: auto; flex: 1; min-height: 0; }
+dialog.wide .pane { display: grid; gap: var(--space-md); align-content: start; }
+dialog.wide .pane[hidden] { display: none; }
+.dtabs { margin: 0; padding: 0 18px; flex: none; overflow: visible; }
+.chk { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--space-xs); align-items: baseline; padding-block: var(--space-2xs); border-bottom: var(--rule-hair) solid var(--color-rule); }
+.chk:last-child { border-bottom: 0; }
+.rtest { margin-top: var(--space-3xs); font-size: var(--text-xs); color: var(--color-muted); }
+.rtest.bad, .bad-text { color: var(--color-error); }
+.envtable tr.ctx td:first-child { box-shadow: inset 2px 0 var(--color-accent); }
+.ghead { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+
+/* Native top-layer wrappers retain the palette and confirmation panel geometry. */
+dialog.layer-dialog { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; padding: 0; background: transparent; box-shadow: none; overflow: visible; }
+dialog.layer-dialog[open] { transform: none; }
+dialog.layer-dialog[open]::backdrop { backdrop-filter: none; }

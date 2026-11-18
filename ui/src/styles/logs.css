@@ -1,0 +1,57 @@
+/* the Logs screen */
+.lg-bar .lg-q { max-width: 30rem; flex: 2 1 260px; }
+.lg-streams { min-height: var(--control-sm); width: 13rem; max-width: 100%; padding: 0 10px; font: 13px var(--font-mono); }
+.lg-custom { display: inline-flex; flex-wrap: wrap; gap: var(--space-2xs); align-items: center; }
+.lg-custom input { width: auto; min-height: var(--control-sm); font: 13px var(--font-mono); }
+#logs .banner.warn { border-color: var(--color-warn); } #logs .banner.warn svg.i { color: var(--color-warn); }
+.lg-stale { margin-bottom: var(--space-sm); }
+/* a link-looking button: an API, an application, a count that opens its logs */
+.lg-link { max-width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.16em; cursor: pointer; }
+.lg-link:hover { color: var(--color-link-hover); }
+.lg-sort { padding: 0; border: 0; background: none; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
+
+/* dashboard */
+.lg-apps .hb { grid-template-columns: minmax(90px, 160px) minmax(0, 1fr) auto; }
+.lg-apps .hb .track { position: relative; }
+.lg-apps .hb .track > i.lg-err { position: absolute; top: 0; bottom: 0; left: 0; background: var(--color-error); }
+.lg-apps .hb .v { white-space: nowrap; }
+.lvl-row.lg-static { cursor: default; }
+.lvl-row.lg-static:hover { background: none; }
+.lg-api td.bad { color: var(--color-error); font-weight: 600; }
+.lg-api td.warn { color: var(--color-warn); font-weight: 600; }
+
+/* traces and messages */
+.lg-table tr.lg-go { cursor: pointer; transition: background-color var(--dur-micro); }
+.lg-table tr.lg-go:hover td, .lg-table tr.open td { background: var(--color-paper-2); }
+.lg-table tr.lg-go:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.lg-id { max-width: 14rem; }
+.lg-msgs td.lg-msg { max-width: 60rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.lg-msgs tr.lg-det td { white-space: normal; padding-block: var(--space-sm); }
+.lg-foot { margin-top: var(--space-sm); }
+.lg-wrap { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+.lg-stack summary { font: 12.5px var(--font-mono); overflow-wrap: anywhere; }
+.lg-stack pre.json { max-height: 40vh; margin-top: var(--space-2xs); }
+.lg-trace-head { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-xs); min-width: 0; }
+.lg-trace-head h2 { font-size: var(--text-lg); }
+
+/* one trace: a row per message, its place on the trace's span drawn as a mark */
+.lg-tline { border-top: var(--rule-hair) solid var(--color-rule); }
+.lg-tcall { border-bottom: var(--rule-hair) solid var(--color-rule); }
+.lg-thead { display: grid; grid-template-columns: 4.5rem minmax(6rem, 9rem) minmax(0, 1fr) auto minmax(6rem, 0.6fr); gap: var(--space-sm); align-items: center; width: 100%; min-height: var(--row-h); padding: var(--space-2xs) 0; border: 0; background: none; color: inherit; font: 12.5px var(--font-mono); text-align: left; cursor: pointer; transition: background-color var(--dur-micro); }
+.lg-thead:disabled { cursor: default; }
+.lg-thead:hover:not(:disabled), .lg-tcall.open .lg-thead { background: var(--color-paper-2); }
+.lg-thead:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.lg-thead .lg-svc { font-weight: 600; }
+.lg-thead .lg-what { color: var(--color-ink-2); }
+.lg-tbar { position: relative; height: 8px; border-radius: var(--radius-small); background: var(--color-paper-3); }
+.lg-tbar > span { position: absolute; top: 0; bottom: 0; width: 0.6%; min-width: 3px; border-radius: var(--radius-small); background: var(--chart-ink); }
+.lg-tbar > span.bad { background: var(--color-error); }
+.lg-tdet .lg-wrap { padding: 0 0 var(--space-sm) 4.5rem; }
+
+@media (max-width: 40rem) {
+  .lg-bar .spacer { display: none; }
+  .lg-bar .lg-q, .lg-streams { flex: 1 1 100%; width: auto; max-width: none; }
+  .lg-thead { grid-template-columns: 4.5rem minmax(0, 1fr) auto; }
+  .lg-thead .lg-svc, .lg-thead .lg-tbar { display: none; }
+  .lg-tdet .lg-wrap { padding-left: 0; }
+}

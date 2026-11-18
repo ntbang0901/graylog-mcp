@@ -37,6 +37,14 @@ CANDIDATES: dict[str, list[str]] = {
         "took_ms", "duration_ms", "elapsed_ms", "latency_ms", "response_time_ms", "response_time",
         "request_time", "duration", "elapsed", "time_taken",
     ],
+    "endpoint_fields": [
+        "route", "http_route", "http.route", "path", "request_path", "http_path", "uri", "request_uri", "url_path",
+        "endpoint", "api",
+    ],
+    "status_fields": [
+        "http_status", "status_code", "statusCode", "http_status_code", "response_status", "http.status_code",
+        "status",
+    ],
     "exception": ["exception_class", "exception", "ExceptionType", "exception_type", "error_type", "error.type",
                   "exceptionClass", "error_class"],
     "logger": ["logger_name", "logger", "LoggerName", "loggerName", "log.logger", "logger.name"],
@@ -99,6 +107,14 @@ def app_packages_from_traces(texts: list[str], limit: int = 3) -> list[str]:
     return [p for p, n in counts.most_common(limit) if n >= 2]
 
 
+def is_http_status(value: Any) -> bool:
+    """200 or "200"; a field named status often holds words (success, active) instead."""
+    try:
+        return 100 <= int(str(value)) <= 599
+    except ValueError:
+        return False
+
+
 def error_query_for(level_field: str, values: list[tuple[Any, int]]) -> tuple[str, str]:
     """Error query and the reason, from the observed values of the level field."""
     field = escape_field(level_field)
@@ -150,12 +166,17 @@ async def detect(app: App, gl: Graylog, range: str = "24h") -> dict[str, Any]:
     versions = ranked("version_fields", 0.2)
     latencies = [f for f in ranked("latency_fields", 0.01) if (fields.get(f) or "numeric") in NUMERIC_TYPES]
     exceptions, loggers, levels = ranked("exception", 0.0001), ranked("logger", 0.05), ranked("level", 0.2)
+    endpoints, statuses = ranked("endpoint_fields", 0.01), ranked("status_fields", 0.01)
 
     # a service field must split the logs into a handful of values, not one or thousands
-    sample_fields = list(dict.fromkeys([*services[:4], *versions[:2], *traces[:1], *exceptions[:1], *levels[:1]]))
+    sample_fields = list(dict.fromkeys([*services[:4], *versions[:2], *traces[:1], *exceptions[:1], *levels[:1],
+                                        *endpoints[:3], *statuses[:3]]))  # fmt: skip
     sampled = await asyncio.gather(*(samples(f, 50) for f in sample_fields))
     sample_values = dict(zip(sample_fields, sampled, strict=True))
     services = [f for f in services if 2 <= len(sample_values.get(f, [])) < 50] or services[:1]
+    # a route template has few values; a path with ids in it has thousands, so it comes after
+    endpoints = sorted(endpoints[:3], key=lambda f: len(sample_values.get(f, [])) >= 50)
+    statuses = [f for f in statuses[:3] if sample_values.get(f) and all(is_http_status(v) for v, _ in sample_values[f])]
 
     error_query, error_reason = None, None
     if levels:
@@ -191,6 +212,10 @@ async def detect(app: App, gl: Graylog, range: str = "24h") -> dict[str, Any]:
         suggestion["version_fields"] = versions[:3]
     if latencies:
         suggestion["latency_fields"] = latencies[:3]
+    if endpoints:
+        suggestion["endpoint_fields"] = endpoints
+    if statuses:
+        suggestion["status_fields"] = statuses
     if error_query:
         suggestion["error_query"] = error_query
     group_fields = {}
@@ -213,6 +238,8 @@ async def detect(app: App, gl: Graylog, range: str = "24h") -> dict[str, Any]:
             "trace": details(traces),
             "version": details(versions),
             "latency": details(latencies),
+            "endpoint": details(endpoints),
+            "status": details(statuses),
             "exception": details(exceptions),
             "logger": details(loggers),
             "level": details(levels),

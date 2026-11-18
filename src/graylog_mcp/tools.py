@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from graylog_mcp import recover
+from graylog_mcp import recover, ui_links
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
@@ -247,6 +247,13 @@ def _header(gl: Graylog, tr: TimeRange, **extra: Any) -> dict[str, Any]:
     return out
 
 
+def _link(app: App, budget: Budget, out: dict[str, Any], gl: Graylog, tab: str, tr: TimeRange, **view: Any) -> None:
+    """Add ``ui``, the explorer link to this view, while an admin page runs; it counts against ``budget``."""
+    url = ui_links.link(app, gl.cfg.name, tab, tr, **view)
+    if url and budget.take(url):
+        out["ui"] = url
+
+
 def _service(app: App, fields: dict[str, Any], service_fields: tuple[str, ...]) -> str:
     for name in service_fields:
         val = fields.get(name)
@@ -324,6 +331,7 @@ async def search_logs(
     shaped = [shaper.message(m.fields, m.index, m.id, select=fields) for m in page.messages]
     budget = app.budget(app.config.limits.search_output_chars)
     out = _header(gl, tr, query=query or "*", focus=focus, total=page.total, offset=offset, rewritten=rewritten)
+    _link(app, budget, out, gl, "all", tr, query=effective, streams=streams)
     if page.total is not None:
         more_after_page = offset + len(page.messages) < page.total
     else:
@@ -649,7 +657,8 @@ async def trace_request(
     ]
     out["first_error"] = first_error
     budget = app.budget()
-    budget.take({k: v for k, v in out.items()})
+    _link(app, budget, out, gl, "traces", tr, streams=streams, trace=trace_id)
+    budget.take({k: v for k, v in out.items() if k != "ui"})
     out["steps"] = budget.fit(steps)
     out["timeline"] = budget.fit(timeline)
     out["truncated"] = budget.truncated

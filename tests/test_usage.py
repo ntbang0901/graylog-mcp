@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 import httpx
 import pytest
 
 from graylog_mcp import usage
+from graylog_mcp.setup.service import home_dir
+from graylog_mcp.usage_store import store
 from tests.fake_graylog import FakeGraylog
 
 
 def _lines() -> list[dict]:
-    return [json.loads(line) for line in usage.path().read_text(encoding="utf-8").splitlines()]
+    return store().read(0, detail=True)
+
+
+def _written() -> str:
+    """Everything on disk, to prove a value was never written anywhere."""
+    return "".join(p.read_text(encoding="utf-8") for p in sorted((home_dir() / "usage").rglob("*.jsonl")))
 
 
 def test_a_call_without_an_app_is_still_redacted():
@@ -27,7 +33,8 @@ def test_a_call_without_an_app_is_still_redacted():
         time.monotonic(),
         0,
     )
-    assert "fake-value" not in usage.path().read_text(encoding="utf-8")
+    written = _written()
+    assert "password" in written and "fake-value" not in written
 
 
 async def test_tool_calls_are_recorded_with_redacted_queries(make_app):
@@ -68,24 +75,21 @@ def test_summary_buckets_tools_misses_and_previous_period():
     assert s["totals"] == {"calls": 4, "errors": 1, "searches": 2, "misses": 1, "hit_rate": 50}
     assert s["previous"]["calls"] == 1 and s["previous"]["hit_rate"] == 100
     search = next(t for t in s["tools"] if t["tool"] == "search_logs")
-    assert search == {"tool": "search_logs", "calls": 2, "errors": 0, "misses": 1, "p50_ms": 200, "p95_ms": 300}
+    expected = {"tool": "search_logs", "calls": 2, "errors": 0, "misses": 1, "p50_ms": 200, "p95_ms": 300}
+    assert {k: search[k] for k in expected} == expected  # keys the admin page reads, more may come
     assert s["tools"][0]["tool"] == "search_logs"  # most used first
     assert [m["args"]["query"] for m in s["misses"]] == ["OrderNotFound"]
     assert s["recent"][0]["ts"] > s["recent"][-1]["ts"]  # newest first
     assert len(usage.summarize(168, 6, now=now)["buckets"]) == 28
 
 
-def test_file_is_trimmed_and_can_be_turned_off(monkeypatch):
-    monkeypatch.setattr(usage, "MAX_BYTES", 2_000)
-    monkeypatch.setattr(usage, "KEEP_LINES", 5)
-    for i in range(40):
-        usage.write({"ts": time.time(), "tool": "search_logs", "n": i, "ok": True})
-    kept = _lines()
-    assert len(kept) <= 30 and kept[-1]["n"] == 39
+def test_recording_can_be_turned_off(monkeypatch):
+    usage.write({"ts": time.time(), "tool": "search_logs", "n": 1, "ok": True})
     monkeypatch.setenv("GRAYLOG_MCP_USAGE", "off")
-    before = len(_lines())
     usage.track("search_logs", None, {"query": "x"}, {"total": 1}, None, time.monotonic(), 1)
-    assert len(_lines()) == before and usage.summarize()["enabled"] is False
+    assert usage.summarize()["enabled"] is False
+    monkeypatch.delenv("GRAYLOG_MCP_USAGE")
+    assert [e.get("n") for e in _lines()] == [1]  # the call made while off was not written
 
 
 def test_results_of():
@@ -132,6 +136,19 @@ async def test_admin_usage_and_log_stats(admin_client):
     assert (await admin_client.get("/api/usage", headers={"X-Admin-Token": "bad"})).status_code == 401
 
 
+async def test_playground_runs_are_recorded_apart_from_the_model(admin_client):
+    ok = await admin_client.post("/api/run", json={"tool": "search_logs", "args": {"query": "*", "range": "1h"}})
+    assert ok.status_code == 200 and ok.json()["chars"] > 0
+    down = await admin_client.post(
+        "/api/run", json={"tool": "search_logs", "args": {"range": "1h"}, "instance": "down"}
+    )
+    assert down.status_code == 400 and "cannot connect" in down.json()["error"]
+    first, failed = _lines()
+    assert first["source"] == "playground" and first["conversation"] == "playground" and first["spans"]
+    assert failed["status"] == "error" and failed["instance"] == "down"
+    assert usage.summarize()["totals"]["calls"] == 0  # the admin trying a tool is not the model asking
+
+
 async def test_server_starts_without_waiting_for_graylog(make_app, monkeypatch):
     """Version detection runs in the background: an unreachable Graylog must not hold the start."""
     import asyncio
@@ -167,3 +184,15 @@ async def test_a_call_a_merged_tool_refuses_is_recorded(make_app):
     assert refused["tool"] == "count_logs" and not refused["ok"] and "does not take interval" in refused["error"]
     assert refused["args"] == {"query": "level:3"} and refused["instance"] == "main"
     assert incomplete["tool"] == "top_values" and not incomplete["ok"] and "needs group_by" in incomplete["error"]
+
+
+async def test_admin_breakdown_by_service_level_and_error(admin_client):
+    body = (await admin_client.get("/api/breakdown?instance=main")).json()
+    assert body["service_field"] == "service" and body["total"] > 0
+    services = {s["value"]: s for s in body["services"]}
+    assert services["payment"]["errors"] > 0 and services["payment"]["count"] >= services["payment"]["errors"]
+    assert {str(v["value"]) for v in body["levels"]} >= {"3", "6"}
+    assert body["error_field"] == "exception_class" and body["error_groups"][0]["count"] > 0
+    down = (await admin_client.get("/api/breakdown?instance=down")).json()
+    assert "error" in down and "services" not in down  # an unreachable Graylog is reported, not a 500
+    assert (await admin_client.get("/api/breakdown?instance=nope")).status_code == 400

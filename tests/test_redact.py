@@ -304,6 +304,8 @@ def test_url_passwords_are_masked_whatever_comes_before(text):
         "PGPASSWORD=fake-value",
         "secretKey=fake-value",
         "JSESSIONID=fake-value",
+        "password*=fake-value",  # a query whose field name became a prefix wildcard (a suggested fix)
+        "password*:fake-value",
     ],
 )
 def test_secret_shapes_in_log_text(text):

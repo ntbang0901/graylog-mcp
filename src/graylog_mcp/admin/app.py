@@ -9,9 +9,14 @@ secrets: tokens typed into the UI to test a connection stay in memory.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
+import hashlib
 import hmac
 import ipaddress
 import json
+import mimetypes
+import re
 import secrets
 import socket
 import time
@@ -27,9 +32,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, operations, recover, tools, usage
+from graylog_mcp import __version__, explorer, explorer_traces, operations, rca, recover, tools, ui_links, usage
 from graylog_mcp import secrets as secret_store
-from graylog_mcp.client import GraylogError
+from graylog_mcp import usage_conversations as conversations
+from graylog_mcp.client import GraylogError, QueryError
 from graylog_mcp.config import (
     ENV_NAME,
     Config,
@@ -40,10 +46,11 @@ from graylog_mcp.config import (
     resolve_repo_path,
 )
 from graylog_mcp.config import _parse_redaction as parse_redaction
+from graylog_mcp.operations import Operation
+from graylog_mcp.recording import EXPLORER, RecordContext, run_recorded
 from graylog_mcp.redact import PACKS, PROFILES, Redactor
-from graylog_mcp.setup import clients, configfile, connect, doctor
+from graylog_mcp.setup import claude_trace, clients, configfile, connect, doctor
 from graylog_mcp.setup.detect import detect, local_timezone
-from graylog_mcp.shaping import dumps
 
 
 class AdminState:
@@ -258,26 +265,75 @@ def _groups_view(config: Config | None, base_dir: Path, url: str | None = None) 
     ]
 
 
-# index.html carries its own inline script and style, so the CSP must allow 'unsafe-inline' for them;
-# it still blocks framing, foreign hosts and <base>/form hijacking. Tighten with a nonce if the page is split.
-_SECURITY_HEADERS = [
-    (k.encode(), v.encode())
-    for k, v in {
-        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
-        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-        "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
-        "Referrer-Policy": "no-referrer",
-    }.items()
-]
+# where the page is served: "" for 'graylog-mcp ui', "/admin" under the shared server (__main__.with_admin). The page
+# routes by path, so its files are linked from this root, and the page reads it from a <meta> rather than a <base>,
+# which the CSP forbids.
+ROOT_KEY = "graylog_mcp.admin_root"
+ROOT_MARK = "__GRAYLOG_MCP_ROOT__"
+ASSET_TYPES = {".js": "text/javascript", ".css": "text/css"}
+
+# The page is built from ui/ (Vite + Preact) into static/: index.html plus hashed files under assets/.
+# The only inline script sets the colour scheme before first paint; the CSP allows it by hash, taken from the
+# built page at startup so it cannot drift. The page has no style attributes (values from data use the CSSOM),
+# so styles are 'self' only; the favicon is a file, so images are too.
+_INLINE_SCRIPT = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script[^>]*>", re.S | re.I)
+
+
+def _security_headers(page: str) -> list[tuple[bytes, bytes]]:
+    hashes = [
+        "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+        for body in _INLINE_SCRIPT.findall(page)
+    ]
+    script_src = " ".join(["'self'", *hashes])
+    return [
+        (k.encode(), v.encode())
+        for k, v in {
+            "Content-Security-Policy": f"default-src 'self'; script-src {script_src}; "
+            "style-src 'self'; img-src 'self'; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+        }.items()
+    ]
 
 
 def build_app(state: AdminState) -> Starlette:
-    static = resources.files("graylog_mcp.admin").joinpath("static/index.html")
+    static = resources.files("graylog_mcp.admin").joinpath("static")
+    built = static.joinpath("index.html").read_text(encoding="utf-8")
+    security_headers = _security_headers(built)
 
-    async def index(_request: Request) -> Response:
-        return HTMLResponse(static.read_text(encoding="utf-8"), headers={"Cache-Control": "no-store"})
+    def page_at(root: str) -> str:
+        # the build links its files relative to the page (./assets/...), which breaks at /logs/traces: they are
+        # linked from the root instead
+        page = built.replace(ROOT_MARK, root).replace('="./assets/', f'="{root}/assets/')
+        return page.replace('href="favicon.svg"', f'href="{root}/favicon.svg"')
+
+    async def index(request: Request) -> Response:
+        """The page, for every path that is not an API or a file: the page routes by path, so a link to one of its
+        views opens that view."""
+        if request.url.path.startswith(("/api/", "/assets/")):
+            return _err("not found", 404)
+        return HTMLResponse(page_at(request.scope.get(ROOT_KEY, "")), headers={"Cache-Control": "no-store"})
+
+    async def asset(request: Request) -> Response:
+        # the build names every file after its content, so a browser may keep it for good
+        name = request.path_params["name"]
+        file = static.joinpath("assets", name)
+        if "/" in name or name.startswith(".") or not file.is_file():
+            return Response("not found", status_code=404, media_type="text/plain")
+        # mimetypes reads the Windows registry, which can name .js text/plain; with nosniff the page would not run
+        kind = ASSET_TYPES.get(Path(name).suffix) or mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return Response(
+            file.read_bytes(), media_type=kind, headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        )
+
+    async def favicon(_request: Request) -> Response:
+        return Response(
+            static.joinpath("favicon.svg").read_bytes(),
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     async def get_state(_request: Request) -> Response:
         error = None
@@ -611,7 +667,6 @@ def build_app(state: AdminState) -> Starlette:
         op = operations.playground().get(name)
         if op is None:
             return _err(f"unknown tool {name!r}")
-        fn = op.fn
         args = body.get("args") or {}
         if not isinstance(args, dict):
             return _err("args must be a JSON object")
@@ -619,12 +674,11 @@ def build_app(state: AdminState) -> Starlette:
             args["instance"] = body["instance"]
         started = time.monotonic()
         try:
-            result = await fn(await state.app(), **args)
+            result, text = await run_recorded(op, state.app, RecordContext(source="playground"), args)
         except TypeError as exc:
             return _err(f"bad arguments: {exc}")
         except (GraylogError, ConfigError, ValueError) as exc:
             return _err(str(exc))
-        text = dumps(result)
         return JSONResponse(
             {
                 "result": result,
@@ -638,9 +692,53 @@ def build_app(state: AdminState) -> Starlette:
         """24h in hourly buckets (default) or 7d in 6-hour buckets."""
         return ("7d", 168, 6) if request.query_params.get("range") == "7d" else ("24h", 24, 1)
 
+    def _source(request: Request) -> str | None:
+        source = request.query_params.get("source") or "mcp"
+        return source if source in ("mcp", "playground", "all") else None
+
     async def get_usage(request: Request) -> Response:
         _, hours, step = _range(request)
-        return JSONResponse(await asyncio.to_thread(usage.summarize, hours, step))
+        if (source := _source(request)) is None:
+            return _err("source is mcp, playground or all")
+        return JSONResponse(await asyncio.to_thread(usage.summarize, hours, step, None, source))
+
+    async def get_conversations(request: Request) -> Response:
+        params = request.query_params
+        hours = conversations.RANGES.get(params.get("range") or "7d")
+        if hours is None:
+            return _err(f"range is one of {', '.join(conversations.RANGES)}")
+        if (source := _source(request)) is None:
+            return _err("source is mcp, playground or all")
+        listing = await asyncio.to_thread(
+            conversations.conversations, hours, params.get("instance") or None, params.get("q"), source
+        )
+        return JSONResponse(listing)
+
+    async def _conversation(request: Request) -> dict[str, Any] | Response:
+        conversation, turn = request.path_params["id"], request.query_params.get("turn") or None
+        if not conversations.CONVERSATION_ID.fullmatch(conversation):
+            return _err("not a conversation id")
+        if turn is not None and not conversations.TURN_ID.fullmatch(turn):
+            return _err("turn is the number the conversation list gives")
+        found = await asyncio.to_thread(conversations.turn_detail, conversation, turn)
+        return found if found is not None else _err("no such conversation or turn is kept", 404)
+
+    async def get_conversation(request: Request) -> Response:
+        found = await _conversation(request)
+        return found if isinstance(found, Response) else JSONResponse(found)
+
+    async def export_conversation(request: Request) -> Response:
+        """The same, as a file to save: every value in it was redacted when it was recorded."""
+        found = await _conversation(request)
+        if isinstance(found, Response):
+            return found
+        turn = request.query_params.get("turn")
+        name = f"graylog-mcp-{found['conversation']}{f'-{turn}' if turn else ''}.json"
+        return Response(
+            json.dumps(found, ensure_ascii=False, indent=2, default=str),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
 
     async def get_logstats(request: Request) -> Response:
         """Messages and errors per bucket in every environment, straight from Graylog (nothing is stored)."""
@@ -676,6 +774,90 @@ def build_app(state: AdminState) -> Starlette:
 
         rows = await asyncio.gather(*(one(name) for name in app.instances))
         return JSONResponse({"range": rng, "bucket_hours": step, "environments": list(rows)})
+
+    explorer_ops = {
+        "dashboard": (Operation("explorer_dashboard", explorer.dashboard), ("top",)),
+        "messages": (Operation("explorer_messages", explorer.messages), ("limit", "offset")),
+        "traces": (Operation("explorer_traces", explorer_traces.traces), ("limit",)),
+        "trace": (Operation("explorer_trace", explorer_traces.trace), ()),
+    }
+    explorer_params = {"instance": "instance", "streams": "streams", "q": "query", "range": "range",
+                       "from": "from_time", "to": "to_time"}  # fmt: skip
+
+    async def explore(request: Request) -> Response:
+        """The log explorer's reads (``explorer.py``), recorded apart from the model's calls; ``refresh=1`` (the
+        page refreshing itself) is not recorded at all."""
+        op, numbers = explorer_ops[request.url.path.rsplit("/api/explorer/", 1)[1].split("/", 1)[0]]
+        params = request.query_params
+        args: dict[str, Any] = {arg: params[name] for name, arg in explorer_params.items() if params.get(name)}
+        if op.fn is explorer_traces.trace:
+            args.pop("query", None)
+            args["trace_id"] = request.path_params["id"]
+        for name in numbers:
+            if params.get(name):
+                try:
+                    args[name] = int(params[name])
+                except ValueError:
+                    return _err(f"{name} must be a whole number")
+        try:
+            if params.get("refresh") == "1":
+                result = await op.fn(await state.app(), **args)
+            else:
+                result, _ = await run_recorded(op, state.app, RecordContext(source=EXPLORER), args)
+        except GraylogError as exc:  # Graylog's answer can quote the query: redacted like everything shown
+            status = 400 if isinstance(exc, QueryError) else 502
+            with contextlib.suppress(Exception):
+                return _err((await state.app()).redactor.value(str(exc)), status)
+            return _err("Graylog refused the request", status)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        return JSONResponse(result)
+
+    async def get_breakdown(request: Request) -> Response:
+        """One environment by service, by level and by error type, through the same redacted tools the model uses."""
+        rng, _, _ = _range(request)
+        try:
+            app = await state.app()
+            gl = app.gl(request.query_params.get("instance") or None)
+        except (ConfigError, ValueError) as exc:
+            return _err(str(exc))
+        name = gl.cfg.name
+
+        def top(field: str, query: str = "*", limit: int = 8) -> Any:
+            return tools.top_values(app, field=field, query=query, range=rng, streams=["*"], limit=limit, instance=name)
+
+        async def errors() -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            for group_by in ("exception", "logger"):  # the first that has values in these logs
+                out = await tools.error_summary(
+                    app, range=rng, streams=["*"], group_by=group_by, limit=6, instance=name
+                )
+                if out.get("groups"):
+                    break
+            return out
+
+        try:
+            sf = await rca.service_field(gl)
+            services, service_errors, levels, errs = await asyncio.wait_for(
+                asyncio.gather(top(sf), top(sf, gl.cfg.error_query), top("level", limit=8), errors()), timeout=25
+            )
+        except Exception as exc:  # an unreachable Graylog is shown on the card, not as a failed page
+            return JSONResponse({"instance": name, "range": rng, "error": str(exc)[:300] or type(exc).__name__})
+        failed = {str(v["value"]): v["count"] for v in service_errors.get("values") or []}
+        return JSONResponse(
+            {
+                "instance": name,
+                "range": rng,
+                "error_query": gl.cfg.error_query,
+                "service_field": sf,
+                "total": services.get("total") or 0,
+                "services": [{**v, "errors": failed.get(str(v["value"]), 0)} for v in services.get("values") or []],
+                "levels": levels.get("values") or [],
+                "errors_total": errs.get("total_errors") or 0,
+                "error_field": errs.get("group_by"),
+                "error_groups": errs.get("groups") or [],
+            }
+        )
 
     async def get_learned(_request: Request) -> Response:
         rules = await asyncio.to_thread(recover.LEARNED.listing)
@@ -759,6 +941,24 @@ def build_app(state: AdminState) -> Starlette:
             return _err("; ".join(done["errors"]))
         files = await asyncio.to_thread(clients.repoint_all, _shared_url(state), _folders())
         return JSONResponse({"ok": True, **done, "files": [str(f) for f in files]})
+
+    def _trace_view() -> dict[str, Any]:
+        return {
+            "enabled": claude_trace.traced("user", state.project_dir),
+            "path": str(claude_trace.settings_path("user", state.project_dir)),
+        }
+
+    async def get_trace(request: Request) -> Response:
+        return JSONResponse(await asyncio.to_thread(_trace_view))
+
+    async def set_trace(request: Request) -> Response:
+        """The Claude Code conversation hooks, in the user's settings: on or off."""
+        body = await _body(request)
+        try:
+            await asyncio.to_thread(claude_trace.set_trace, "user", state.project_dir, bool(body.get("enabled")))
+        except (ValueError, OSError) as exc:
+            return _err(str(exc))
+        return JSONResponse(await asyncio.to_thread(_trace_view))
 
     async def setup_autostart(request: Request) -> Response:
         from graylog_mcp.setup import service
@@ -844,6 +1044,8 @@ def build_app(state: AdminState) -> Starlette:
 
     routes = [
         Route("/", index),
+        Route("/assets/{name}", asset),
+        Route("/favicon.svg", favicon),
         Route("/api/state", get_state),
         Route("/api/test", test_instance, methods=["POST"]),
         Route("/api/instances", save_instance, methods=["POST"]),
@@ -863,7 +1065,15 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/run", run_tool, methods=["POST"]),
         Route("/api/doctor", run_doctor),
         Route("/api/usage", get_usage),
+        Route("/api/conversations", get_conversations),
+        Route("/api/conversations/{id}", get_conversation),
+        Route("/api/conversations/{id}/export", export_conversation),
         Route("/api/logstats", get_logstats),
+        Route("/api/explorer/dashboard", explore),
+        Route("/api/explorer/messages", explore),
+        Route("/api/explorer/traces", explore),
+        Route("/api/explorer/trace/{id:path}", explore),
+        Route("/api/breakdown", get_breakdown),
         Route("/api/learned", get_learned),
         Route("/api/learned/forget", forget_learned, methods=["POST"]),
         Route("/api/config", get_config),
@@ -871,11 +1081,14 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/config/validate", validate_config, methods=["POST"]),
         Route("/api/setup", get_setup),
         Route("/api/setup/claude", setup_claude, methods=["POST"]),
+        Route("/api/setup/trace", get_trace),
+        Route("/api/setup/trace", set_trace, methods=["POST"]),
         Route("/api/setup/autostart", setup_autostart, methods=["POST"]),
         Route("/api/setup/start", setup_start, methods=["POST"]),
         Route("/api/setup/update", setup_update, methods=["POST"]),
         Route("/api/clients", client_snippets),
         Route("/api/clients/install", install_client, methods=["POST"]),
+        Route("/{path:path}", index),  # last: what no route above takes
     ]
     inner = Starlette(routes=routes)
 
@@ -888,7 +1101,7 @@ def build_app(state: AdminState) -> Starlette:
 
         async def send(message: MutableMapping[str, Any]) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), *_SECURITY_HEADERS]}
+                message = {**message, "headers": [*message.get("headers", []), *security_headers]}
             await send_raw(message)
 
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
@@ -911,15 +1124,13 @@ def build_app(state: AdminState) -> Starlette:
     return guard  # type: ignore[return-value]
 
 
-def _free_port(host: str, start: int) -> int:
-    for port in range(start, start + 20):
-        with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET) as sock:
-            try:
-                sock.bind((host, port))
-                return port
-            except OSError:
-                continue
-    raise ConfigError(f"no free port between {start} and {start + 19}")
+def _port_busy(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return True
+    return False
 
 
 def serve(project_dir: Path, config: str | None, host: str, port: int, open_browser: bool = True) -> int:
@@ -931,7 +1142,17 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         loopback = False
     if not loopback:
         raise ConfigError("the admin UI writes files on this machine and only listens on 127.0.0.1 / localhost")
-    port = _free_port(host, port)
+    shown = "localhost" if host == "localhost" else f"[{host}]" if ":" in host else host
+    # a fixed port: the page keeps its token per origin, and the links in tool results name this port
+    if _port_busy(host, port):
+        running = ui_links.current()
+        if running is None or running["port"] != port or running["base"] != "/":
+            raise ConfigError(f"port {port} is used by another program; choose a free one with --port")
+        print(f"graylog-mcp admin UI already runs on http://{shown}:{port}/ (pid {running['pid']})")
+        print("  a browser that opened it before keeps its token; otherwise use the link it printed when it started")
+        if open_browser:
+            webbrowser.open(f"http://{shown}:{port}/")
+        return 0
     token = secrets.token_urlsafe(24)
     state = AdminState(
         project_dir,
@@ -939,11 +1160,16 @@ def serve(project_dir: Path, config: str | None, host: str, port: int, open_brow
         token,
         allowed_hosts=("127.0.0.1", "localhost", "::1"),
     )
-    url = f"http://{'localhost' if host == 'localhost' else host}:{port}/#token={token}"
+    url = f"http://{shown}:{port}/#token={token}"
     print(f"graylog-mcp admin UI for {state.path}")
     print(f"  open: {url}")
     print("  (Ctrl+C to stop; the link contains a one-time access token)")
     if open_browser:
         webbrowser.open(url)
-    uvicorn.run(build_app(state), host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
+    ui_links.record(host, port, "/")
+    ui_links.forget_on_terminate()
+    try:
+        uvicorn.run(build_app(state), host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
+    finally:
+        ui_links.forget()
     return 0

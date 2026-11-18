@@ -251,7 +251,7 @@ async def test_usage_records_requests_and_what_shaped_the_result(make_app):
     app, _ = make_app("6.1.2")
     server = build_server(app)
     await server.call_tool("search_logs", {"query": "*", "range": "1h", "limit": 5, "fields": ["message"]})
-    entry = json.loads(usage.path().read_text(encoding="utf-8").splitlines()[-1])
+    entry = usage.read(0)[-1]
     assert entry["requests"] >= 1
     assert entry["params"]["range"] == "1h" and entry["params"]["limit"] == "5" and "offset" not in entry["params"]
     assert "message" in entry["params"]["fields"] and "range" not in entry.get("args", {})

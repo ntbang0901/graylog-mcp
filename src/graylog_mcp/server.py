@@ -4,29 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
-import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from graylog_mcp import __version__, tools, usage
-from graylog_mcp.client import GraylogError, requests_sent
+from graylog_mcp import __version__, tools
+from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.operations import Operation
-from graylog_mcp.shaping import dumps
+from graylog_mcp.recording import RecordContext, run_recorded
 from graylog_mcp.shared import AppPool
-from graylog_mcp.tools import App, ToolInputError
+from graylog_mcp.tools import App
 from graylog_mcp.toolspecs import TOOLS
 from graylog_mcp.toolspecs.spec import ToolSpec, flat_signature, resolve
 
 log = logging.getLogger(__name__)
+
+CONTEXT = "ctx"  # the parameter the SDK fills with the request's Context; not part of a tool's schema
 
 INSTRUCTIONS = """\
 Read-only access to Graylog logs. Nothing you do here changes Graylog. Sensitive values are
@@ -96,6 +98,8 @@ Suggested investigation flow:
 Counts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the
 returned page.
 Results are size-capped: when 'truncated' is true, narrow the query or page with next_offset.
+A field 'ui' is a local link to the same view in the admin page, for the user: give it to them as it is; do not
+open, fetch or edit it.
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
@@ -141,37 +145,31 @@ def build_server(app: App | AppPool) -> MCPServer:
         lifespan=lifespan,
     )
 
-    async def call(op: Operation, refused: str | None = None, /, **kwargs: Any) -> str:
+    async def call(op: Operation, refused: str | None, ctx: RecordContext, /, **kwargs: Any) -> str:
         """Run ``op`` and record the call; with ``refused``, record the refusal instead of running it."""
-        started, app, result, text, error = time.monotonic(), None, None, "", None
-        sent = [0]
-        requests_sent.set(sent)
         try:
-            app = current()
-            if refused:
-                raise ToolInputError(refused)
-            result = op.fn(app, **kwargs)
-            if hasattr(result, "__await__"):
-                result = await result
-            text = dumps(result)
+            _, text = await run_recorded(op, current, ctx, kwargs, refused)
             return text
         except (GraylogError, ConfigError, ValueError) as exc:
-            error = str(exc)
-            raise ToolError(error) from None
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            raise
-        finally:
-            usage.track(op.name, app, kwargs, result, error, started, len(text), sent[0])
+            raise ToolError(str(exc)) from None
 
     def register(spec: ToolSpec) -> None:
         async def run(**kwargs: Any) -> str:
+            ctx = RecordContext.from_mcp(kwargs.pop(CONTEXT, None), spec.name)
             op, refused, args = resolve(spec, kwargs)
-            return await call(op, refused, **args)
+            return await call(op, refused, ctx, **args)
 
-        # the SDK reads the tool's schema from the signature: one flat parameter per declared argument
+        # the SDK reads the tool's schema from the signature: one flat parameter per declared argument. It finds
+        # the Context parameter through typing.get_type_hints, which reads __annotations__ and not the signature:
+        # without both, the context becomes a required argument of the tool.
+        flat = flat_signature(spec.args)
+        params = [
+            *flat.parameters.values(),
+            inspect.Parameter(CONTEXT, inspect.Parameter.KEYWORD_ONLY, annotation=Context),
+        ]
         run.__name__ = spec.name
-        run.__signature__ = flat_signature(spec.args)  # type: ignore[attr-defined]
+        run.__signature__ = flat.replace(parameters=params)  # type: ignore[attr-defined]
+        run.__annotations__ = {p.name: p.annotation for p in params} | {"return": str}
         server.add_tool(
             run,
             name=spec.name,

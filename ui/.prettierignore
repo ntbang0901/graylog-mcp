@@ -1,0 +1,5 @@
+node_modules/
+package-lock.json
+# Keep the existing global CSS and supplied assets in their current format.
+src/styles/
+public/
