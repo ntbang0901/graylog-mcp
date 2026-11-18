@@ -14,8 +14,8 @@ from graylog_mcp.tools import App, ToolInputError
 from tests.conftest import make_config
 from tests.fake_graylog import PAY, FakeGraylog
 from tests.fake_jev import FakeJev
-from tests.test_trace import _add
 from tests.test_tools_contract import LEAKS, assert_read_only
+from tests.test_trace import _add
 
 
 @pytest.fixture
