@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter, deque
-from collections.abc import Awaitable, Iterator
+from collections import deque
+from collections.abc import Awaitable, Iterator, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from graylog_mcp import recover
@@ -43,28 +44,39 @@ class ErrorMarks:
     technical: list[RawMessage] | None  # None: Graylog refused the query
     business: list[RawMessage] | None  # None: no business error query, or refused
     refused: bool
+    cap: int  # lines read per kind; a list this long may not be all of them
+
+    @cached_property
+    def _technical_ids(self) -> set[str | None]:
+        return {m.id for m in self.technical or []}
+
+    @cached_property
+    def _business_ids(self) -> set[str | None]:
+        return {m.id for m in self.business or []}
+
+    @property
+    def capped(self) -> bool:
+        return any(len(found or []) >= self.cap for found in (self.technical, self.business))
 
     def kind(self, raw: RawMessage) -> str | None:
         """A line matching both queries is a technical error."""
         if self.technical is None:
             if _is_error(raw.fields):
                 return TECHNICAL
-        elif any(m.id == raw.id for m in self.technical):
+        elif raw.id in self._technical_ids:
             return TECHNICAL
-        if self.business and any(m.id == raw.id for m in self.business):
+        if raw.id in self._business_ids:
             return BUSINESS
         return None
 
 
 async def _marked(
-    gl: Graylog, base: str, clause: str | None, tr: TimeRange, streams: tuple[str, ...]
+    gl: Graylog, base: str, clause: str | None, tr: TimeRange, streams: tuple[str, ...], cap: int
 ) -> list[RawMessage] | None:
     """The earliest messages of ``base`` that match ``clause``; None without a clause or when Graylog refuses it."""
     if not clause:
         return None
-    query = MessageQuery(
-        query=and_queries(base, clause), timerange=tr, streams=streams, sort_order="asc", limit=ERROR_LINES
-    )
+    query = MessageQuery(query=and_queries(base, clause), timerange=tr, streams=streams, sort_order="asc", limit=cap)
     try:
         return (await gl.search(query)).messages
     except GraylogError:
@@ -72,21 +84,31 @@ async def _marked(
 
 
 async def _error_marks(
-    gl: Graylog, base: str, technical: str, business: str | None, tr: TimeRange, streams: tuple[str, ...]
+    gl: Graylog, base: str, technical: str, business: str | None, tr: TimeRange, streams: tuple[str, ...], limit: int
 ) -> ErrorMarks:
+    # at least as many as the page holds: every error line of the page is then among the ones read
+    cap = max(limit, ERROR_LINES)
     tech, biz = await asyncio.gather(
-        _marked(gl, base, technical, tr, streams), _marked(gl, base, business, tr, streams)
+        _marked(gl, base, technical, tr, streams, cap), _marked(gl, base, business, tr, streams, cap)
     )
-    return ErrorMarks(tech, biz, refused=tech is None or (business is not None and biz is None))
+    return ErrorMarks(tech, biz, refused=tech is None or (business is not None and biz is None), cap=cap)
+
+
+def _by_trace_fields(gl: Graylog, values: Sequence[str], fields: Sequence[str] | None = None) -> str:
+    """The query for messages whose trace field, whichever one a service logs, holds one of ``values``."""
+    any_of = values[0] if len(values) == 1 else None
+    wanted = phrase(any_of) if any_of is not None else f"({' OR '.join(phrase(v) for v in values)})"
+    return " OR ".join(f"{escape_field(f)}:{wanted}" for f in fields or gl.cfg.trace_fields)
 
 
 async def summarise(
-    app: App, gl: Graylog, trace_field: str, ids: list[str], tr: TimeRange, streams: tuple[str, ...]
+    app: App, gl: Graylog, trace_fields: Sequence[str], ids: list[str], tr: TimeRange, streams: tuple[str, ...]
 ) -> dict[str, dict[str, Any]]:
     """Per trace id: its messages, the services it crossed, its errors (by level) and when it began and ended.
-    One request for all the ids."""
-    query = f"{escape_field(trace_field)}:({' OR '.join(phrase(i) for i in ids)})"
-    names = tuple(dict.fromkeys((trace_field, "timestamp", "level", "message", *gl.cfg.service_fields)))
+    One request for all the ids, which reads at most ``max_limit`` messages: an id may be missing from the result."""
+    query = _by_trace_fields(gl, ids, trace_fields)
+    wanted = set(ids)
+    names = tuple(dict.fromkeys((*trace_fields, "timestamp", "level", "message", *gl.cfg.service_fields)))
     page = await gl.search(
         MessageQuery(
             query=query,
@@ -100,9 +122,8 @@ async def summarise(
     found: dict[str, dict[str, Any]] = {}
     for raw in page.messages:
         ts = parse_graylog_ts(raw.fields.get("timestamp"))
-        entry = found.setdefault(
-            str(raw.fields.get(trace_field, "")), {"messages": 0, "services": [], "errors": 0, "first": ts, "last": ts}
-        )
+        tid = next((v for f in trace_fields if (v := str(raw.fields.get(f, ""))) in wanted), "")
+        entry = found.setdefault(tid, {"messages": 0, "services": [], "errors": 0, "first": ts, "last": ts})
         service = _service(app, raw.fields, gl.cfg.service_fields)
         if service not in entry["services"]:
             entry["services"].append(service)
@@ -126,49 +147,57 @@ def richest(summaries: dict[str, dict[str, Any]]) -> str | None:
 class CodeTraces:
     """The requests a business code went through, found from the messages that hold the code."""
 
-    field: str  # the trace field most of those messages carry
+    ids: list[str]  # the listed trace ids, raw, in the order the code met them
+    fields: dict[str, str]  # the trace field each id was read from: its name decides how the id is redacted
     shown: str  # the trace the result details
-    summaries: dict[str, dict[str, Any]]  # by raw trace id, in the order the code met them
+    summaries: dict[str, dict[str, Any]]  # by raw trace id; an id is missing when the summary could not read it
     omitted: int  # traces beyond MAX_CODE_TRACES
     unlinked: list[RawMessage]  # messages that hold the code and no trace id
 
+    def shown_as(self, app: App, tid: str) -> Any:
+        return app.redact_key(self.fields[tid], tid)
+
     def listing(self, app: App, gl: Graylog) -> list[dict[str, Any]]:
-        return [
-            {
-                "trace_id": app.redact_key(self.field, tid),
-                "first": format_ts(s["first"], gl.cfg.tz) if s["first"] else None,
-                "last": format_ts(s["last"], gl.cfg.tz) if s["last"] else None,
-                "messages": s["messages"],
-                "services": s["services"],
-                "errors": s["errors"],
-            }
-            for tid, s in self.summaries.items()
-        ]
+        out = []
+        for tid in self.ids:
+            entry: dict[str, Any] = {"trace_id": self.shown_as(app, tid)}
+            if s := self.summaries.get(tid):
+                entry |= {
+                    "first": format_ts(s["first"], gl.cfg.tz) if s["first"] else None,
+                    "last": format_ts(s["last"], gl.cfg.tz) if s["last"] else None,
+                    "messages": s["messages"],
+                    "services": s["services"],
+                    "errors": s["errors"],
+                }
+            out.append(entry)
+        return out
 
 
 async def _code_traces(
     app: App, gl: Graylog, hits: list[RawMessage], tr: TimeRange, streams: tuple[str, ...]
 ) -> CodeTraces | None:
     """The traces of the messages a full-text search found, or None when none of them carries a trace id."""
-    refs: list[tuple[str, str]] = []
+    fields: dict[str, str] = {}
     unlinked: list[RawMessage] = []
     for m in hits:
         ref = next(((f, str(m.fields[f])) for f in gl.cfg.trace_fields if m.fields.get(f) not in (None, "")), None)
         if ref is None:
             unlinked.append(m)
         else:
-            refs.append(ref)
-    if not refs:
+            fields.setdefault(ref[1], ref[0])
+    if not fields:
         return None
-    field = Counter(f for f, _ in refs).most_common(1)[0][0]
-    ids = list(dict.fromkeys(tid for f, tid in refs if f == field))
-    summaries = await summarise(app, gl, field, ids[:MAX_CODE_TRACES], tr, streams)
+    ids = list(fields)[:MAX_CODE_TRACES]
+    summaries = await summarise(app, gl, gl.cfg.trace_fields, ids, tr, streams)
     shown = richest(summaries) or ids[0]
-    return CodeTraces(field, shown, summaries, max(0, len(ids) - MAX_CODE_TRACES), unlinked[:UNLINKED_LINES])
+    return CodeTraces(ids, fields, shown, summaries, len(fields) - len(ids), unlinked[:UNLINKED_LINES])
 
 
-async def _further_back(gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...]) -> dict[str, Any] | None:
-    """What ``query`` matches in the next wider range, for a trace the asked range does not hold.
+async def _further_back(
+    gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...], ends_now: bool
+) -> dict[str, Any] | None:
+    """What ``query`` matches in the next wider range, for a trace the asked range does not hold. The wider range
+    ends where the asked one does: named as a relative range only when that is now.
 
     recover.recover() is not used: it records its suggestions as offered, and nothing here reports one as used, so
     they would only lose weight for search_logs."""
@@ -183,8 +212,15 @@ async def _further_back(gl: Graylog, query: str, tr: TimeRange, streams: tuple[s
     except GraylogError:
         return None
     last_seen = format_ts(newest.messages[0].fields.get("timestamp"), gl.cfg.tz) if newest.messages else None
-    label = wider.label.replace("last ", "")
-    return {"range": label, "count": count, "last_seen": last_seen, "why": "found further back"}
+    where: dict[str, Any] = (
+        {"range": wider.label.replace("last ", "")}
+        if ends_now
+        else {
+            "from_time": wider.start.astimezone(gl.cfg.tz).isoformat(timespec="seconds"),
+            "to_time": wider.end.astimezone(gl.cfg.tz).isoformat(timespec="seconds"),
+        }
+    )
+    return {**where, "count": count, "last_seen": last_seen, "why": "found further back"}
 
 
 async def trace_request(
@@ -205,9 +241,11 @@ async def trace_request(
     stream_ids = await gl.resolve_streams(streams)
     limit = app.limit(limit)
     trace_fields = gl.cfg.trace_fields
-    field_query = " OR ".join(f"{escape_field(f)}:{phrase(trace_id)}" for f in trace_fields)
+    field_query = _by_trace_fields(gl, [trace_id])
     strategy, base, followed = "trace_fields", field_query, trace_id
     code: CodeTraces | None = None
+    link_to: str | None = trace_id
+    notes = []
 
     def search(query: str) -> Awaitable[MessagePage]:
         return gl.search(MessageQuery(query=query, timerange=tr, streams=stream_ids, sort_order="asc", limit=limit))
@@ -218,13 +256,20 @@ async def trace_request(
         page = await search(base)
         code = await _code_traces(app, gl, page.messages, tr, stream_ids)
         if code is not None:
+            if _has_more(page, limit):
+                notes.append(
+                    f"more requests may hold this code: the search for it stopped at {limit} messages; "
+                    "narrow the range or raise limit"
+                )
             # the id is a business code: the request it names is followed, not only the lines that hold the code
             strategy, followed = "business_code", code.shown
-            base = f"{escape_field(code.field)}:{phrase(code.shown)}"
+            # unlike a trace id the caller typed, this one comes from a log field: out of the link when masked
+            link_to = code.shown if code.shown_as(app, code.shown) == code.shown else None
+            base = _by_trace_fields(gl, [code.shown])
             page = await search(base)
     out = _header(gl, tr, trace_id=trace_id, strategy=strategy, total=page.total)
     if code is not None:
-        out["shown_trace"] = app.redact_key(code.field, code.shown)
+        out["shown_trace"] = code.shown_as(app, code.shown)
         out["traces"] = code.listing(app, gl)
         if code.omitted:
             out["traces_omitted"] = code.omitted
@@ -235,20 +280,24 @@ async def trace_request(
         )
         out["timeline"] = []
         anywhere = f"({field_query}) OR {phrase(trace_id)}"
-        if found := await _further_back(gl, anywhere, tr, stream_ids):
+        if found := await _further_back(gl, anywhere, tr, stream_ids, ends_now=to_time is None):
             out["suggestions"] = [found]
+            if "range" in found:
+                where, again = f"in the last {found['range']}", f"range='{found['range']}'"
+            else:
+                where = f"between {found['from_time']} and {found['to_time']}"
+                again = f"from_time='{found['from_time']}', to_time='{found['to_time']}'"
             out["hint"] = (
-                f"nothing in this range; {found['count']} matches in the last {found['range']}, the newest at "
-                f"{found['last_seen']}: call again with range='{found['range']}'"
+                f"nothing in this range; {found['count']} matches {where}, the newest at {found['last_seen']}: "
+                f"call again with {again}"
             )
         return out
 
     names = await gl.field_names()
     status_field = next((f for f in gl.cfg.status_fields if f in names), None)
     business, technical = error_queries(gl.cfg, status_field)
-    marks = await _error_marks(gl, base, technical, business, tr, stream_ids)
+    marks = await _error_marks(gl, base, technical, business, tr, stream_ids, limit)
     out["error_queries"] = {"technical": technical} | ({"business": business} if business else {})
-    notes = []
     if marks.refused:
         notes.append("an error query was refused by Graylog; errors are marked by level only")
 
@@ -308,7 +357,7 @@ async def trace_request(
     if BUSINESS in first:
         out["first_business_error"] = first[BUSINESS]
     budget = app.budget()
-    _link(app, budget, out, gl, "traces", tr, streams=streams, trace=followed)
+    _link(app, budget, out, gl, "traces", tr, streams=streams, trace=link_to)
     budget.take({k: v for k, v in out.items() if k != "ui"})
     out["steps"] = budget.fit(steps)
     out["timeline"] = keep_by_priority(timeline, budget)
@@ -322,12 +371,20 @@ async def trace_request(
         out["hidden"] = page.total - shown
     if cut:
         some = f"{shown} of {page.total} messages" if page.total is not None else f"{shown} messages and more exist"
+        errors = f"the earliest {marks.cap} error lines of each kind" if marks.capped else "every error line"
         notes.append(
-            f"showing {some}: every error line, the earliest {limit} and the last one; narrow the range or raise limit"
+            f"showing {some}: {errors}, the earliest {limit} and the last one; narrow the range or raise limit"
         )
     if notes:
         out["note"] = "; ".join(notes)
     return out
+
+
+def _has_more(page: MessagePage, limit: int) -> bool:
+    """Whether a search holds more than its page; the Scripting API reports no total, so a full page counts."""
+    if page.total is None:
+        return len(page.messages) >= limit
+    return page.total > len(page.messages)
 
 
 async def _beyond_the_limit(
@@ -341,10 +398,7 @@ async def _beyond_the_limit(
 ) -> tuple[list[RawMessage], bool]:
     """The page's messages and whether the trace has more. A longer trace also gets its error lines and its last
     line, in time order: what went wrong often lies after the earliest ``limit`` messages."""
-    if page.total is None:  # the Scripting API reports no total
-        if len(page.messages) < limit:
-            return page.messages, False
-    elif page.total <= len(page.messages):
+    if not _has_more(page, limit):
         return page.messages, False
     last = await gl.search(MessageQuery(query=base, timerange=tr, streams=streams, sort_order="desc", limit=1))
     seen = {m.id for m in page.messages}

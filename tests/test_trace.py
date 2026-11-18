@@ -166,3 +166,77 @@ async def test_a_trace_id_the_redactor_changes_is_shown_masked(make_app):
     res = await trace.trace_request(app, "ORD-1001", range="1h")
     assert "0912345678" not in dumps(res) and res["strategy"] == "business_code"
     assert res["ui"].startswith("http://127.0.0.1:18742/admin/logs/traces?") and "trace=" not in res["ui"]
+
+
+async def test_a_trace_id_from_a_sensitive_field_stays_out_of_the_link(make_app):
+    app, fake = make_app(investigation={"trace_fields": ["session_id"]})
+    ui_links.record("127.0.0.1", 18742, "/admin/")
+    fake.messages = []
+    _add(fake, 100, session_id="abcd-ef01-2345", service="gateway", message="ORD-1001 received")
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert res["shown_trace"] == "[REDACTED]" and "abcd-ef01-2345" not in dumps(res)
+
+
+async def test_a_request_logged_under_two_trace_fields_is_followed_whole(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, 300, trace_id="abc-1", service="gateway", message="ORD-1001 received")
+    _add(fake, 299, traceId="abc-1", service="payment", level=3, message="charge refused")
+    _add(fake, 298, request_id="abc-1", service="notify", message="ORD-1001 mail queued")
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert [m["message"] for m in res["timeline"]] == ["ORD-1001 received", "charge refused", "ORD-1001 mail queued"]
+    assert res["first_error"]["message"] == "charge refused" and len(res["traces"]) == 1 and "unlinked" not in res
+
+
+async def test_every_error_line_within_the_limit_is_counted(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    for i in range(80):
+        _add(fake, 600 - i, trace_id="T-err", service="gateway", level=3, message=f"failure {i}")
+    res = await trace.trace_request(app, "T-err", range="1h", limit=200)
+    assert res["services"][0]["errors"] == 80 and all(m["error"] == "technical" for m in res["timeline"])
+
+
+async def test_a_cut_trace_with_more_errors_than_it_reads_does_not_claim_every_one(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    for i in range(300):
+        _add(fake, 600 - i, trace_id="T-err", service="gateway", level=3, message=f"failure {i}")
+    res = await trace.trace_request(app, "T-err", range="1h", limit=50)
+    assert "every error line" not in res["note"] and "earliest 50 error lines" in res["note"]
+
+
+async def test_a_trace_the_summary_could_not_read_is_still_listed(make_app):
+    app, fake = make_app(limits={"max_limit": 60, "default_limit": 50})
+    fake.messages = []
+    for t in range(3):
+        for i in range(40):
+            _add(
+                fake,
+                900 - t * 100 - i,
+                trace_id=f"req-{t}",
+                service="gateway",
+                message="ORD-1001" if i == 0 else "work",
+            )
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert [t["trace_id"] for t in res["traces"]] == ["req-0", "req-1", "req-2"]
+    assert "messages" in res["traces"][0] and "messages" not in res["traces"][2]
+
+
+async def test_a_code_search_cut_at_the_limit_says_more_requests_may_exist(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    for i in range(30):
+        _add(fake, 400 - i, trace_id=f"req-{i:03d}", service="gateway", message="ORD-1001 seen")
+    res = await trace.trace_request(app, "ORD-1001", range="1h", limit=20)
+    assert len(res["traces"]) == 10 and res["traces_omitted"] == 10 and "more requests" in res["note"]
+
+
+async def test_an_empty_absolute_range_suggests_absolute_times(make_app):
+    app, _ = make_app()
+    now = datetime.now(UTC)
+    start, end = (now - timedelta(seconds=120)).isoformat(), (now - timedelta(seconds=60)).isoformat()
+    res = await trace.trace_request(app, "req-7f3a9c", range=None, from_time=start, to_time=end)
+    (found,) = res["suggestions"]
+    assert "range" not in found and found["count"] == 6 and {"from_time", "to_time"} <= set(found)
+    assert "from_time=" in res["hint"] and "range=" not in res["hint"]

@@ -69,4 +69,5 @@ async def richest_trace(app: App, gl: Graylog, group: ErrorGroup, tr: TimeRange)
         return None
     trace_field = Counter(f for f, _ in group.traces).most_common(1)[0][0]
     ids = sorted({t for f, t in group.traces if f == trace_field})
-    return richest(await summarise(app, gl, trace_field, ids, TimeRange(tr.start - TRACE_MARGIN, tr.end, tr.label), ()))
+    since = TimeRange(tr.start - TRACE_MARGIN, tr.end, tr.label)
+    return richest(await summarise(app, gl, [trace_field], ids, since, ()))

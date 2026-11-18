@@ -284,3 +284,21 @@ async def test_three_long_traces_stay_under_the_size_cap(make_ask_app):
             _add(fake, 900 - i, service="gateway", level=6, message=f"{code} step {i} " + "x" * 400)
     res = await ask(app, "show ORD-1, ORD-2 and ORD-3")
     assert len(res["traces"]) == 3 and len(dumps(res)) <= app.config.limits.max_output_chars
+
+
+async def test_traces_with_unlinked_lines_stay_under_the_size_cap(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"ORD-\d+"]})
+    fake.messages = []
+    for n, code in enumerate(("ORD-1", "ORD-2", "ORD-3")):
+        _add(fake, 900, trace_id=f"req-{n}", service="gateway", message=f"{code} received")
+        for i in range(20):
+            _add(fake, 800 - i, service="batch", message=f"{code} export {i} " + "x" * 900)
+    res = await ask(app, "show ORD-1, ORD-2 and ORD-3")
+    assert len(res["traces"]) == 3 and len(dumps(res)) <= app.config.limits.max_output_chars
+
+
+async def test_a_masked_code_is_not_echoed_by_its_trace(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="trace_code"), dataset="basic", ask={"code_patterns": [r"\d{16}"]})
+    res = await ask(app, "what happened to transaction 4111111111111111?")
+    assert "4111111111111111" not in dumps(res) and res["traces"][0]["trace_id"] == "[CARD]"

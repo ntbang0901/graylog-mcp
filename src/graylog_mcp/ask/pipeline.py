@@ -94,19 +94,28 @@ async def _trace_codes(app: App, instance: str, typed: str, when: dict[str, Any]
     if not codes:
         return {"hint": render.say(lang, "no_code")}
     traces = [await trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
-    return {"codes": [app.redactor.text(c) for c in codes[:MAX_CODES]], "traces": _sharing_the_budget(app, traces)}
+    shown = [app.redactor.text(c) for c in codes[:MAX_CODES]]
+    for found, code in zip(traces, shown, strict=True):
+        found["trace_id"] = code  # trace_request repeats what it was asked for; here that is the unmasked code
+    return {"codes": shown, "traces": _sharing_the_budget(app, traces)}
 
 
 def _sharing_the_budget(app: App, traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Each trace fits the size cap on its own; together they share it, the longer ones giving up timeline lines."""
+    """Each trace fits the size cap on its own; together they share it, the longer ones giving up lines of their
+    lists, the timeline last."""
     share = app.budget().remaining // len(traces)
+    lists = ("traces", "steps", "timeline", "unlinked")
     for found in traces:
         if len(dumps(found)) <= share:
             continue
         budget = Budget(share, reserve=0)
-        budget.take({k: v for k, v in found.items() if k not in ("steps", "timeline")})
-        found["steps"] = budget.fit(found.get("steps") or [])
+        budget.take({k: v for k, v in found.items() if k not in lists})
+        for key in ("traces", "steps"):
+            if key in found:
+                found[key] = budget.fit(found[key])
         found["timeline"] = keep_by_priority(found.get("timeline") or [], budget)
+        if "unlinked" in found:
+            found["unlinked"] = budget.fit(found["unlinked"])
         found["truncated"] = True
         if isinstance(found.get("total"), int):
             found["hidden"] = found["total"] - len(found["timeline"])

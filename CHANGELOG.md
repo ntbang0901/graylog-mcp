@@ -16,12 +16,21 @@ All notable changes to this project are documented here. The format follows
 - When `trace_request` finds nothing, it looks once in a wider range and says how many messages match there and when
   the newest was logged (`suggestions`).
 
+### Changed
+- `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is
+  now the request they belong to (`strategy` is `business_code`) with the list of such requests, not every message
+  holding the text. Messages without any trace id are returned as before (`full_text`); `search_logs` remains the
+  tool for every line that holds a text.
+- In a trace, `errors` and `first_error` now follow the instance's technical error query (HTTP 5xx or `error_query`,
+  or `technical_error_query`) instead of the log level alone: a 5xx line logged at INFO counts, and the result names
+  the queries in `error_queries`.
+
 ### Fixed
 - `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
   is read from the question as typed, and only the redacted question is sent to TypeSafe.
 - An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.
-- A trace longer than `limit` no longer loses its errors: `trace_request` adds every error line and the last line to
-  the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
+- A trace longer than `limit` no longer loses its errors: `trace_request` adds its error lines (the earliest `limit`
+  of each kind, at least 50) and the last line to the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
   left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the
   rest.
 
