@@ -16,6 +16,7 @@ from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.ask.understand import Understanding, time_args, understand
 from graylog_mcp.client import requests_sent
 from graylog_mcp.tools import App, ToolInputError
+from graylog_mcp.trace import trace_request
 
 MAX_QUESTION_CHARS = 1000
 MAX_CODES = 3
@@ -86,7 +87,7 @@ async def _trace_codes(app: App, instance: str, question: str, when: dict[str, A
                 codes.append(code)
     if not codes:
         return {"hint": render.say(lang, "no_code")}
-    traces = [await tools.trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
+    traces = [await trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
     return {"codes": codes[:MAX_CODES], "traces": traces}
 
 
@@ -139,7 +140,7 @@ async def _follow_flow(app: App, jev: JevClient, instance: str, question: str, w
     trace_id = await richest_trace(app, gl, group, tr)
     if trace_id is None:
         return {"matches": matches, "hint": render.say(lang, "no_flow")}
-    trace = await tools.trace_request(
+    trace = await trace_request(
         app,
         trace_id,
         range=None,

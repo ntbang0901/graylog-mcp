@@ -12,6 +12,7 @@ from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import ToolInputError
 from graylog_mcp.toolspecs import TOOLS
+from graylog_mcp.trace import trace_request
 
 # Sensitive values planted in the fake dataset; none may appear in any output.
 LEAKS = [
@@ -48,7 +49,7 @@ async def run_all(app, fake) -> dict[str, dict]:
     out["search_raw"] = await tools.search_logs(app, query="*", range="2h", limit=30, dedup_lines=False)
     out["search_stream"] = await tools.search_logs(app, query="*", range="2h", streams=["Payments"])
     out["count"] = await tools.count_logs(app, query="level:3", range="2h")
-    out["trace"] = await tools.trace_request(app, "req-7f3a9c", range="1h")
+    out["trace"] = await trace_request(app, "req-7f3a9c", range="1h")
     ref = next((m["ref"] for m in out["trace"]["timeline"] if "ref" in m), None)
     if ref:
         out["get"] = await tools.get_message(app, ref)
@@ -154,7 +155,7 @@ async def test_stacktrace_compacted_in_output(make_app):
 
 async def test_trace_falls_back_to_full_text(make_app):
     app, _ = make_app()
-    res = await tools.trace_request(app, "/api/pay", range="1h")
+    res = await trace_request(app, "/api/pay", range="1h")
     assert res["strategy"] == "full_text" and res["timeline"]
 
 
@@ -233,7 +234,7 @@ async def test_forced_apis(make_app, message_api, aggregation_api):
             }
         },
     )
-    trace = await tools.trace_request(app, "req-7f3a9c", range="1h")
+    trace = await trace_request(app, "req-7f3a9c", range="1h")
     assert [s["service"] for s in trace["steps"]] == ["gateway", "payment", "notify", "gateway"]
     ref = trace["first_error"]["ref"]
     msg = await tools.get_message(app, ref)

@@ -910,6 +910,7 @@ src/graylog_mcp/
   redact.py     core rules, country packs, Luhn / IBAN checks
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
+  trace.py      following one request or one business code across services
   rca.py        root cause analysis: onsets, change detection, service map, ranking
   ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name

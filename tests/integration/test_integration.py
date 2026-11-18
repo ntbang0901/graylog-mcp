@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from graylog_mcp import scan, tools
+from graylog_mcp import trace as tracing
 from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.config import parse_config
 from graylog_mcp.tools import App
@@ -83,7 +84,7 @@ async def test_every_tool(app):
     assert search["messages"]
     assert_clean(search)
 
-    trace = await tools.trace_request(app, "req-7f3a9c", range="1d")
+    trace = await tracing.trace_request(app, "req-7f3a9c", range="1d")
     assert trace["strategy"] == "trace_fields", trace
     assert [s["service"] for s in trace["steps"]] == ["gateway", "payment", "notify", "gateway"]
     assert trace["first_error"]["message"] == "payment failed"
