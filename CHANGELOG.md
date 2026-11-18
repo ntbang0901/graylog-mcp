@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-18
+
 ### Added
 - Each tool call is now recorded when it starts and when it ends, with who called it (the conversation: a Codex
   session, the HTTP session, else the server process; the client's tool call id; the client), the Graylog requests it
