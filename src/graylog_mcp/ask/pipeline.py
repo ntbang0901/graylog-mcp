@@ -15,8 +15,9 @@ from graylog_mcp.ask.flow import TRACE_MARGIN, ErrorGroup, error_groups, richest
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.ask.understand import Understanding, time_args, understand
 from graylog_mcp.client import requests_sent
+from graylog_mcp.shaping import Budget, dumps
 from graylog_mcp.tools import App, ToolInputError
-from graylog_mcp.trace import trace_request
+from graylog_mcp.trace import keep_by_priority, trace_request
 
 MAX_QUESTION_CHARS = 1000
 MAX_CODES = 3
@@ -29,8 +30,9 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         raise ToolInputError(
             "ask is off: set TYPESAFE_API_KEY in the environment or in secrets.toml and restart the server"
         )
+    typed = question.strip()[:MAX_QUESTION_CHARS]
     # a pasted log line or token must not reach TypeSafe unredacted
-    question = app.redactor.text(question.strip()[:MAX_QUESTION_CHARS])
+    question = app.redactor.text(typed)
     if not question:
         raise ToolInputError("question is required")
     sent = requests_sent.get()
@@ -50,7 +52,7 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
     if u.confidence < app.config.ask.min_confidence:
         out["clarify"] = render.say(lang, "clarify")
     else:
-        answer = await _answer(app, jev, u, gl.cfg.name, question)
+        answer = await _answer(app, jev, u, gl.cfg.name, question, typed)
         if extra := answer.pop("summary_extra", None):
             out["summary"] += "\n" + extra
         out.update(answer)
@@ -58,13 +60,16 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
     return out
 
 
-async def _answer(app: App, jev: JevClient, u: Understanding, instance: str, question: str) -> dict[str, Any]:
+async def _answer(
+    app: App, jev: JevClient, u: Understanding, instance: str, question: str, typed: str
+) -> dict[str, Any]:
+    """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the codes in it."""
     gl = app.gl(instance)
     when = time_args(u.time, gl.cfg.tz)
     if u.intent == "follow_flow":
         return await _follow_flow(app, jev, instance, question, when)
     if u.intent == "trace_code":
-        return await _trace_codes(app, instance, question, when)
+        return await _trace_codes(app, instance, typed, when)
     if u.intent == "error_summary":
         return {"result": await tools.error_summary(app, instance=instance, **when)}
     if u.intent == "count":
@@ -77,18 +82,35 @@ async def _answer(app: App, jev: JevClient, u: Understanding, instance: str, que
     return {"result": await tools.compare_periods(app, split_at=split, window=window, instance=instance)}
 
 
-async def _trace_codes(app: App, instance: str, question: str, when: dict[str, Any]) -> dict[str, Any]:
+async def _trace_codes(app: App, instance: str, typed: str, when: dict[str, Any]) -> dict[str, Any]:
+    """The codes are read from the question as typed: the redactor masks one shaped like a card or phone number."""
     lang = app.config.ask.language
     codes: list[str] = []
     for pattern in app.config.ask.code_patterns:
-        for m in re.finditer(pattern, question):
+        for m in re.finditer(pattern, typed):
             code = m.group(0)
             if code not in codes:
                 codes.append(code)
     if not codes:
         return {"hint": render.say(lang, "no_code")}
     traces = [await trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
-    return {"codes": codes[:MAX_CODES], "traces": traces}
+    return {"codes": [app.redactor.text(c) for c in codes[:MAX_CODES]], "traces": _sharing_the_budget(app, traces)}
+
+
+def _sharing_the_budget(app: App, traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each trace fits the size cap on its own; together they share it, the longer ones giving up timeline lines."""
+    share = app.budget().remaining // len(traces)
+    for found in traces:
+        if len(dumps(found)) <= share:
+            continue
+        budget = Budget(share, reserve=0)
+        budget.take({k: v for k, v in found.items() if k not in ("steps", "timeline")})
+        found["steps"] = budget.fit(found.get("steps") or [])
+        found["timeline"] = keep_by_priority(found.get("timeline") or [], budget)
+        found["truncated"] = True
+        if isinstance(found.get("total"), int):
+            found["hidden"] = found["total"] - len(found["timeline"])
+    return traces
 
 
 async def _score(jev: JevClient, question: str, groups: list[ErrorGroup]) -> list[float]:

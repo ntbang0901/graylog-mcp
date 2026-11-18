@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
   the newest was logged (`suggestions`).
 
 ### Fixed
+- `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
+  is read from the question as typed, and only the redacted question is sent to TypeSafe.
+- An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.
 - A trace longer than `limit` no longer loses its errors: `trace_request` adds every error line and the last line to
   the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
   left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the

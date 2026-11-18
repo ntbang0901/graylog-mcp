@@ -9,10 +9,12 @@ from graylog_mcp.ask.pipeline import ask
 from graylog_mcp.ask.understand import time_args
 from graylog_mcp.config import ConfigError, parse_config
 from graylog_mcp.server import build_server
+from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import App, ToolInputError
 from tests.conftest import make_config
 from tests.fake_graylog import PAY, FakeGraylog
 from tests.fake_jev import FakeJev
+from tests.test_trace import _add
 from tests.test_tools_contract import LEAKS, assert_read_only
 
 
@@ -262,3 +264,23 @@ def test_login_ask_saves_nothing_when_the_key_is_refused(monkeypatch, capsys):
     assert main(["login", "--ask"]) == 1
     assert secrets.get("TYPESAFE_API_KEY") is None
     assert main(["login", "--ask", "--base-url", "http://x.test"]) == 2
+
+
+async def test_a_code_that_looks_like_a_card_number_is_still_looked_up(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"\d{16}"]})
+    res = await ask(app, "what happened to transaction 4111111111111111?")
+    searched = " ".join(str(r.url) + r.content.decode() for r in fake.requests)
+    assert "4111111111111111" in searched
+    assert "4111111111111111" not in json.dumps(jev.bodies) and "4111111111111111" not in json.dumps(res["codes"])
+
+
+async def test_three_long_traces_stay_under_the_size_cap(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"ORD-\d+"]})
+    fake.messages = []
+    for code in ("ORD-1", "ORD-2", "ORD-3"):
+        for i in range(200):
+            _add(fake, 900 - i, service="gateway", level=6, message=f"{code} step {i} " + "x" * 400)
+    res = await ask(app, "show ORD-1, ORD-2 and ORD-3")
+    assert len(res["traces"]) == 3 and len(dumps(res)) <= app.config.limits.max_output_chars
