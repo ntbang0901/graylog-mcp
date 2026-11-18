@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import ANY
 
 import pytest
 
-from graylog_mcp import trace
+from graylog_mcp import recover, trace
 from graylog_mcp.shaping import Budget
 
 
@@ -91,3 +92,18 @@ def test_keep_by_priority_keeps_errors_and_step_edges_first():
 def test_keep_by_priority_keeps_everything_that_fits():
     entries = [{"service": "a", "message": "x", "n": i} for i in range(5)]
     assert trace.keep_by_priority(entries, Budget(10_000)) == entries
+
+
+async def test_an_empty_trace_says_where_the_id_was_last_seen(make_app, monkeypatch):
+    monkeypatch.setattr(recover.LEARNED, "offer", lambda *a, **k: pytest.fail("trace must not teach recover"))
+    app, _ = make_app()
+    res = await trace.trace_request(app, "req-7f3a9c", range="1m")
+    assert res["timeline"] == []
+    assert res["suggestions"] == [{"range": "1h", "count": 6, "last_seen": ANY, "why": "found further back"}]
+    assert "range='1h'" in res["hint"]
+
+
+async def test_an_id_found_nowhere_keeps_the_plain_hint(make_app):
+    app, _ = make_app()
+    res = await trace.trace_request(app, "no-such-id", range="1m")
+    assert "suggestions" not in res and "trace_fields" in res["hint"]

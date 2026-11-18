@@ -425,7 +425,7 @@ class Candidate:
         return out
 
 
-def _wider(tr: TimeRange) -> TimeRange | None:
+def wider_range(tr: TimeRange) -> TimeRange | None:
     seconds = tr.seconds
     steps = [(3600, "1h"), (6 * 3600, "6h"), (86400, "24h"), (7 * 86400, "7d")]
     nxt = next(((s, label) for s, label in steps if s >= seconds * 4), None)
@@ -488,7 +488,7 @@ def candidates(
     if focused:
         add(query or "*", "outside this repository's service (focus): every stream", "focus", "focus", "off",
             every_stream=True)  # fmt: skip
-    wider = _wider(tr)
+    wider = wider_range(tr)
     if wider is not None:
         add(effective, f"over the {wider.label}", "range", timerange=wider)
     seen, unique = set(), []
@@ -676,7 +676,7 @@ async def diagnose(gl: Any, effective: str, tr: TimeRange, streams: tuple[str, .
         elif not seen:
             entry["problem"] = f"no message in this range has field {name!r}"
         out.setdefault("values", []).append(entry)
-    wider = _wider(tr)
+    wider = wider_range(tr)
     if wider is not None and len(clauses) > 1 and dead:
         found = await asyncio.gather(*(count(c, wider) for c in dead[:MAX_VALUE_LOOKUPS]))
         further = [{"clause": c, "count": n} for c, n in zip(dead, found, strict=False) if n]

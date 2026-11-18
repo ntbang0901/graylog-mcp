@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 - `trace_request` marks business errors (`business_error_query`, by default HTTP 4xx) apart from technical ones,
   with the same definitions as the admin page's Logs screen: `error` on each such line, `business_errors` per
   service and step, and `first_business_error`. `error_queries` names the queries used.
+- When `trace_request` finds nothing, it looks once in a wider range and says how many messages match there and when
+  the newest was logged (`suggestions`).
 
 ### Fixed
 - A trace longer than `limit` no longer loses its errors: `trace_request` adds every error line and the last line to

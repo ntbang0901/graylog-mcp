@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from graylog_mcp import recover
 from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import MessagePage, MessageQuery, RawMessage
 from graylog_mcp.client import GraylogError
@@ -77,6 +78,26 @@ async def _error_marks(
     return ErrorMarks(tech, biz, refused=tech is None or (business is not None and biz is None))
 
 
+async def _further_back(gl: Graylog, query: str, tr: TimeRange, streams: tuple[str, ...]) -> dict[str, Any] | None:
+    """What ``query`` matches in the next wider range, for a trace the asked range does not hold.
+
+    recover.recover() is not used: it records its suggestions as offered, and nothing here reports one as used, so
+    they would only lose weight for search_logs."""
+    wider = recover.wider_range(tr)
+    if wider is None:
+        return None
+    try:
+        count = await gl.count(query, wider, streams)
+        if not count:
+            return None
+        newest = await gl.search(MessageQuery(query=query, timerange=wider, streams=streams, limit=1))
+    except GraylogError:
+        return None
+    last_seen = format_ts(newest.messages[0].fields.get("timestamp"), gl.cfg.tz) if newest.messages else None
+    label = wider.label.replace("last ", "")
+    return {"range": label, "count": count, "last_seen": last_seen, "why": "found further back"}
+
+
 async def trace_request(
     app: App,
     trace_id: str,
@@ -112,6 +133,13 @@ async def trace_request(
             "or configure trace_fields for this instance"
         )
         out["timeline"] = []
+        anywhere = f"({field_query}) OR {phrase(trace_id)}"
+        if found := await _further_back(gl, anywhere, tr, stream_ids):
+            out["suggestions"] = [found]
+            out["hint"] = (
+                f"nothing in this range; {found['count']} matches in the last {found['range']}, the newest at "
+                f"{found['last_seen']}: call again with range='{found['range']}'"
+            )
         return out
 
     base = field_query if strategy == "trace_fields" else phrase(trace_id)
