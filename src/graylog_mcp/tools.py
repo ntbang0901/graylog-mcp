@@ -268,6 +268,18 @@ def _is_error(fields: dict[str, Any]) -> bool:
     return bool(_EXCEPTION_HINT.search(str(fields.get("message", ""))[:500]))
 
 
+def error_queries(cfg: InstanceConfig, status_field: str | None) -> tuple[str | None, str]:
+    """The business and the technical error query of an instance; ``status_field`` is the HTTP status field its
+    logs have, if any. Without a configured query, business errors are status 4xx (None without a status field)
+    and technical ones status 5xx or the error query."""
+    status = escape_field(status_field) if status_field else None
+    business = cfg.business_error_query or (f"{status}:[400 TO 499]" if status else None)
+    technical = cfg.technical_error_query or (
+        f"{status}:[500 TO 599] OR ({cfg.error_query})" if status else cfg.error_query
+    )
+    return business, technical
+
+
 def _ms(a: datetime | None, b: datetime | None) -> int | None:
     if a is None or b is None:
         return None

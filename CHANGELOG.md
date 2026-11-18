@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `trace_request` marks business errors (`business_error_query`, by default HTTP 4xx) apart from technical ones,
+  with the same definitions as the admin page's Logs screen: `error` on each such line, `business_errors` per
+  service and step, and `first_business_error`. `error_queries` names the queries used.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
