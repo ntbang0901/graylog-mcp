@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A documented concept for persistent agent investigations, including strategy branches, saved evidence,
+  command proposals, complex-case walkthroughs, and UI images. This is a design proposal with no runtime changes.
+
 ## [0.4.0] - 2026-11-17
 
 ### Changed

@@ -816,6 +816,13 @@ graylog-mcp installed, the remote written by `connect` applies. Registered for e
 runs in (`${PWD}`), so list repositories by name in `repos`, or use `connect --project` for the ones listed by
 remote.
 
+## Feature concepts
+
+The [agent investigation concept](docs/concepts/agent-investigations/README.md) proposes a persistent workspace
+for following an agent's investigation, comparing explanations, inspecting saved evidence, and resuming from
+a checkpoint. It includes command examples, complex-case walkthroughs, and UI concept images. New commands
+and integrations in that document are proposals, not available features.
+
 ## Testing
 
 ```bash
