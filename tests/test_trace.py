@@ -7,8 +7,8 @@ from unittest.mock import ANY
 
 import pytest
 
-from graylog_mcp import recover, trace
-from graylog_mcp.shaping import Budget
+from graylog_mcp import recover, tools, trace, ui_links
+from graylog_mcp.shaping import Budget, dumps
 
 
 def _add(fake, seconds_ago=5, **fields):
@@ -107,3 +107,62 @@ async def test_an_id_found_nowhere_keeps_the_plain_hint(make_app):
     app, _ = make_app()
     res = await trace.trace_request(app, "no-such-id", range="1m")
     assert "suggestions" not in res and "trace_fields" in res["hint"]
+
+
+def _order(fake):
+    fake.messages = []
+    _add(fake, 300, trace_id="req-aaa111", service="gateway", level=6, message="POST /orders ORD-1001 received")
+    _add(fake, 299, trace_id="req-aaa111", service="payment", level=3, message="charge refused")
+    _add(fake, 200, trace_id="req-bbb222", service="gateway", level=6, message="GET /orders/ORD-1001 200")
+    _add(fake, 100, service="batch", level=6, message="nightly export of ORD-1001")
+
+
+async def test_a_business_code_leads_to_its_traces(make_app):
+    app, fake = make_app()
+    _order(fake)
+    await tools.count_logs(app, query="*", range="1h")  # version detection is not part of the count below
+    before = len(fake.requests)
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert res["strategy"] == "business_code" and res["shown_trace"] == "req-aaa111"
+    assert [t["trace_id"] for t in res["traces"]] == ["req-aaa111", "req-bbb222"]
+    assert res["traces"][0]["errors"] == 1 and res["traces"][0]["services"] == ["gateway", "payment"]
+    assert [m["message"] for m in res["timeline"]] == ["POST /orders ORD-1001 received", "charge refused"]
+    assert res["first_error"]["message"] == "charge refused" and res["total"] == 2
+    assert [m["message"] for m in res["unlinked"]] == ["nightly export of ORD-1001"]
+    assert len(fake.requests) - before <= 9
+
+
+async def test_a_code_without_any_trace_id_stays_a_full_text_search(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, 100, service="batch", level=6, message="nightly export of ORD-1001")
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert res["strategy"] == "full_text" and "traces" not in res and len(res["timeline"]) == 1
+
+
+async def test_more_traces_than_the_cap_are_counted_not_listed(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    for i in range(13):
+        _add(fake, 400 - i, trace_id=f"req-{i:03d}", service="gateway", level=6, message="ORD-1001 seen")
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert len(res["traces"]) == 10 and res["traces_omitted"] == 3
+
+
+@pytest.mark.parametrize("code", ["ORD/2026:15", 'say "hi"', "a AND (b"])
+async def test_a_code_with_query_syntax_is_searched_as_text(make_app, code):
+    app, fake = make_app()
+    fake.messages = []
+    _add(fake, 100, trace_id="req-aaa111", service="gateway", level=6, message=f"order {code} received")
+    res = await trace.trace_request(app, code, range="1h")
+    assert res["strategy"] == "business_code" and res["shown_trace"] == "req-aaa111"
+
+
+async def test_a_trace_id_the_redactor_changes_is_shown_masked(make_app):
+    app, fake = make_app()
+    ui_links.record("127.0.0.1", 18742, "/admin/")
+    fake.messages = []
+    _add(fake, 100, trace_id="0912345678", service="gateway", level=6, message="ORD-1001 received")
+    res = await trace.trace_request(app, "ORD-1001", range="1h")
+    assert "0912345678" not in dumps(res) and res["strategy"] == "business_code"
+    assert res["ui"].startswith("http://127.0.0.1:18742/admin/logs/traces?") and "trace=" not in res["ui"]

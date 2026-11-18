@@ -153,10 +153,11 @@ async def test_stacktrace_compacted_in_output(make_app):
     assert "alice@example.com" not in full
 
 
-async def test_trace_falls_back_to_full_text(make_app):
+async def test_text_found_in_a_request_leads_to_that_request(make_app):
     app, _ = make_app()
     res = await trace_request(app, "/api/pay", range="1h")
-    assert res["strategy"] == "full_text" and res["timeline"]
+    assert res["strategy"] == "business_code" and res["shown_trace"] == "req-7f3a9c"
+    assert len(res["timeline"]) == 6  # the whole request, not only its two lines naming the path
 
 
 async def test_bad_query_is_reported_with_position(make_app, version):

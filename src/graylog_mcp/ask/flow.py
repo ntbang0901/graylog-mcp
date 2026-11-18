@@ -11,7 +11,8 @@ from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import MessageQuery
 from graylog_mcp.shaping import group_key
 from graylog_mcp.timerange import TimeRange
-from graylog_mcp.tools import App, _is_error, _service, and_queries, apply_focus, escape_field, phrase
+from graylog_mcp.tools import App, apply_focus
+from graylog_mcp.trace import richest, summarise
 
 MAX_TRACES_PER_GROUP = 50
 # a request starts before its first error
@@ -68,24 +69,4 @@ async def richest_trace(app: App, gl: Graylog, group: ErrorGroup, tr: TimeRange)
         return None
     trace_field = Counter(f for f, _ in group.traces).most_common(1)[0][0]
     ids = sorted({t for f, t in group.traces if f == trace_field})
-    query = and_queries(f"{escape_field(trace_field)}:({' OR '.join(phrase(i) for i in ids)})")
-    names = tuple(dict.fromkeys((trace_field, "level", "message", *gl.cfg.service_fields)))
-    page = await gl.search(
-        MessageQuery(
-            query=query,
-            timerange=TimeRange(tr.start - TRACE_MARGIN, tr.end, tr.label),
-            fields=names,
-            sort_order="asc",
-            limit=app.config.limits.max_limit,
-        )
-    )
-    seen: dict[str, dict[str, Any]] = {}
-    for raw in page.messages:
-        tid = str(raw.fields.get(trace_field, ""))
-        entry = seen.setdefault(tid, {"services": set(), "messages": 0, "error": False})
-        entry["services"].add(_service(app, raw.fields, gl.cfg.service_fields))
-        entry["messages"] += 1
-        entry["error"] = entry["error"] or _is_error(raw.fields)
-    if not seen:
-        return None
-    return max(seen, key=lambda t: (seen[t]["error"], len(seen[t]["services"]), seen[t]["messages"]))
+    return richest(await summarise(app, gl, trace_field, ids, TimeRange(tr.start - TRACE_MARGIN, tr.end, tr.label), ()))

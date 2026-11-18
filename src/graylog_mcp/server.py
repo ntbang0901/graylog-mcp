@@ -93,7 +93,8 @@ Suggested investigation flow:
 2. Group it: aggregate kind='errors' (exact counts per exception/logger/source, first/last seen, one sample).
 3. Before/after a deploy or incident start: compare_periods with split_at.
 4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.
-5. Follow one request across services: trace_request with a trace/correlation/request id.
+5. Follow one request across services: trace_request with a trace/correlation/request id, or with an order or
+   transaction number.
 6. See what happened around one message: get_message with its 'ref' and context_seconds.
 Counts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the
 returned page.

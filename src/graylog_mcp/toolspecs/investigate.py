@@ -12,7 +12,10 @@ from graylog_mcp.toolspecs.spec import FromTime, Instance, Range, Streams, ToolS
 
 
 class TraceRequestArgs(BaseModel):
-    trace_id: Annotated[str, Field(description="Correlation / request / trace id to follow")]
+    trace_id: Annotated[
+        str,
+        Field(description="Correlation / request / trace id to follow, or a business code (order, transaction number)"),
+    ]
     range: Range = "24h"
     from_time: FromTime = None
     to_time: ToTime = None
@@ -24,9 +27,11 @@ class TraceRequestArgs(BaseModel):
 TRACE_REQUEST = ToolSpec(
     "trace_request",
     "Trace request",
-    "Follow one request across services: searches the configured trace fields (falls back to full "
-    "text) on all streams and returns a chronological timeline, per-service steps with durations, "
-    "and the first error.",
+    "Follow one request across services, by its correlation / request / trace id or by a business code such as "
+    "an order or transaction number: searches the configured trace fields (falls back to full text) on all "
+    "streams and returns a chronological timeline, per-service steps with durations, and the first error. A "
+    "code found in several requests lists them in 'traces' and details the one in 'shown_trace'; call again "
+    "with another trace id to see it.",
     TraceRequestArgs,
     single("trace_request"),
 )

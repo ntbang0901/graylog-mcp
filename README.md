@@ -132,6 +132,16 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
   streams (falls back to full text); returns a cross-service timeline, per-service steps with durations
   and the first error.
+  - A business code (an order or transaction number) works too: when the messages holding it carry a trace id,
+    the result lists the requests the code went through (`traces`, at most 10), details the one with an error or
+    the most services (`shown_trace`) and adds the messages that hold the code without a trace id (`unlinked`).
+  - Business errors (`business_error_query`, by default HTTP 4xx) are marked apart from technical ones, with the
+    same definitions as the Logs screen: `error` on the line, `business_errors` per service and step,
+    `first_business_error`.
+  - A trace longer than `limit` keeps every error line and its last line next to the earliest messages; `hidden`
+    counts what is left out.
+  - When nothing is found, one look in a wider range says how many messages match there and when the newest was
+    logged (`suggestions`).
 - `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
   disappeared or shrank, normalised per hour.
 

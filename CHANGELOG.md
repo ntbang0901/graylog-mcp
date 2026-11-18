@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
+  id, it lists the requests the code went through (`traces`), details the one with an error or the most services
+  (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).
 - `trace_request` marks business errors (`business_error_query`, by default HTTP 4xx) apart from technical ones,
   with the same definitions as the admin page's Logs screen: `error` on each such line, `business_errors` per
   service and step, and `first_business_error`. `error_queries` names the queries used.
