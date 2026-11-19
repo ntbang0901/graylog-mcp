@@ -341,27 +341,22 @@ ask("Thanh toán bị lỗi timeout trên prod trong 1 giờ qua, đi qua nhữn
 ask("How many errors were there yesterday?")
 ```
 
-It is **off by default**. Bring your own key: run `graylog-mcp login --ask` (it asks for the key without echoing
-it, tests it with one request and saves it in `~/.config/graylog-mcp/secrets.toml`), or set `TYPESAFE_API_KEY` in the
-environment, then restart the server. Without a key the tool is not even listed and nothing leaves the machine.
-`--model NAME` and `--base-url https://...` on the same command save your choice of model and endpoint (a key for
-another account or a proxy of your own); the environment variables `GRAYLOG_MCP_ASK_MODEL` and
-`GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model` in a config file wins over both. The endpoint must speak
-TypeSafe's System One API (`POST /v1/systemone`). `graylog-mcp logout --ask` forgets the saved key, model and
-endpoint.
-The default model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
-from the existing tools and fixed sentences, and starts with what was understood, so the asker can correct it:
+It **needs no model and no key**: the question is read by rule, and with no provider configured nothing leaves
+the machine but the read-only requests to Graylog. A model is an option you add (see [Providers](#providers)); it
+is then asked only for what the rules could not read. Either way the answer is built from the existing tools and
+fixed sentences, and starts with what was understood, so the asker can correct it:
 
 ```
 Understood: prod, "trong 15 phút qua" (2026-11-19 10:15 to 10:30), technical and business errors.
 "thanh toán" is understood as payment service, filtered by service:payment.
 ```
 
-**What is read by rule, without the model.** Four things are read from the question itself; Jev is asked only for
-what is left (what the question wants, and which environment when several are configured):
+**What is read by rule.** Six things are read from the question itself:
 
 | Read by rule | Examples | Set in |
 |---|---|---|
+| What is asked | "how many", "bao nhiêu": a count; "so với", "what changed": a comparison; "nguyên nhân", "which service broke first": the root cause; "các lỗi chính", "top errors": a summary; "xem log", "show me": log lines; a code: its history | `[ask.intent_words]` |
+| The environment | "ở prod", "on production", "shop dev", an alias such as "môi trường thật" | instance names, groups, `aliases` |
 | Time, as an exact range in the instance's timezone | "15 phút qua", "last 2 hours", "sáng nay", "yesterday afternoon", "tuần trước", "từ 9h đến 11h", "lúc 9h tối qua", "since 9am", "ngày 12/11", "từ 12/11 đến 15/11", "ngày 12 tháng 11" | `[ask.time]` |
 | Kind of error | "lỗi" or "error" alone: technical and business; "timeout", "exception", "sập": technical; "bị từ chối", "declined", "invalid": business | `[glossary.error_words]` |
 | The team's terms | "thanh toán" as `service:payment` | `[glossary.terms]` |
@@ -373,8 +368,28 @@ qua" the last 7 days; a single clock time ("lúc 9h") is half an hour either sid
 of the day is the hour of that part ("9h tối" is 21:00); a day without a year is the last such day. A phrase that
 is only half understood is not read at all, because a wrong period is searched in silence: "vài ngày qua" (how
 many?), a date that does not exist, or "12/11" with nothing saying it is a day (write "ngày 12/11", or add the
-year; alone it is as much a share as "3/4"). A question whose time is not read is passed to Jev, which picks one
-of five periods as before.
+year; alone it is as much a share as "3/4"). A question that names no period covers the last 24 hours, and the
+first line says so; one whose words of time the rules cannot place ("tuần rồi", "5m ago") is passed to a provider
+when there is one, which picks one of five periods.
+
+**Sure, guessed, or asked back.** Words that name what is asked ("how many", "so với", "nguyên nhân") are read for
+sure, and no provider is asked about them. A question with only an error word ("thanh toán bị timeout") is most
+likely about following that error, and one with only a term of the team ("thanh toán hôm nay") about its log
+lines: those readings are **guesses**. With a provider the guess is checked with it. Without one the question is
+answered as guessed, `guessed` in the result names the reading and the others it could be, and the summary says
+how to ask for those ("Read as a request to follow one error across services; that is a guess. If you meant
+something else, ask for it in words: list the main errors ("what are the main errors of …"); …"). A question
+nothing can be read from ("Is the system ok?") is asked back: `clarify`, with up to three `readings`.
+
+The environment: named by the caller, else read from the question, else the default one. A word that fits several
+instances ("prod" when two groups have one and none is the default group) is not guessed: `clarify` lists them in
+`options`. `aliases = ["production", "môi trường thật"]` on an instance, a group or `[environments.prod]` adds
+words for it; "production", "development" and "stg" are known for environments named `prod`, `dev` and `staging`.
+
+On 90 questions written by another hand than the rules', without sight of them
+(`tests/data/held_questions.py`), the rules read what is asked right in 86%; the 66 they read for sure are all
+right, the guesses about half. The environment is read right in all of them. These are sample questions with
+neutral names, not questions collected from users.
 
 Technical and business errors are the instance's own definitions (`technical_error_query`, `business_error_query`;
 by default the error query or HTTP 5xx, and HTTP 4xx). The kind is applied to counts, searches and the search for
@@ -384,22 +399,26 @@ and the comparison look at the instance's `error_query` alone: when the question
 summary says they are not part of that answer.
 
 `understood` in the result holds the same reading as data, with where each part came from (`sources`: `rules`,
-`jev`, `caller` or `default`), and `ran` is the Graylog query that ran.
+`guess`, `caller`, `default`, or the name of the provider that chose it), and `ran` is the Graylog query that ran.
 
-**What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
-`max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
-Never raw logs, field values the redactor masks, or anything from the Graylog token. Graylog itself is still only
-read (GET and the read-only searches).
+**Which error is meant.** Without a provider that may see the logs, the error groups of the period are matched by
+the words of the question: a group that holds one of them is a match, its score the share of the words it holds
+(`scored_by: "rules"`). Words that only carry the sentence, or that were read as the time, the environment or what
+is asked, are not looked for; a term's `keywords` are. When no group holds a word, which is usual for a question
+in Vietnamese about logs in English, the most frequent errors of the period are listed and the summary says the
+words were not found: give the terms your team uses English `keywords` in the glossary, or add a provider. With a
+provider that may score, it judges each group against the question (`scored_by` names it); when nothing in the
+period matches it says so with the best score. Either way, two errors that match about equally are listed, not
+picked between. A question about "errors" also gets each kind counted apart (`by_kind`).
 
-When the question is too vague ("Is the system ok?") `ask` returns a `clarify` text instead of guessing; when
-nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
 An error without a trace id cannot be followed across services: `around` then holds the lines of the same source
 within 30 seconds of it, and the hint says they are near in time, not one request. `cost` in the result counts the
-requests made, next to the cap (`graylog_cap`, from `[limits] max_requests`, 20). A question that would go past
-the cap is answered in part and says what it left out: "Checked 2 of 3 codes; 1 not checked: 15/20 Graylog
-requests used."
+requests made, next to the cap (`graylog_cap`, from `[limits] max_requests`, 20), and what each provider was sent
+(`provider_requests`, and `providers` with the requests and bytes sent to each). A question that would go past the
+cap is answered in part and says what it left out: "Checked 2 of 3 codes; 1 not checked: 15/20 Graylog requests
+used."
 
-`ask` reads the [glossary](#glossary-your-teams-words) itself, without TypeSafe: the `query` of a term named in the
+`ask` reads the [glossary](#glossary-your-teams-words) itself, and hands nothing of it to a provider: the `query` of a term named in the
 question is ANDed into the search, `understood.topics` lists the term, and the summary says how it was read
 ("thanh toán" is understood as payment service, filtered by service:payment). A term without a `query` is named
 too, with the note that it does not narrow the search. Two terms with a `query` narrow together (only lines
@@ -409,12 +428,14 @@ because a code's history crosses services.
 
 ```toml
 [ask]
-# api_key_env = "TYPESAFE_API_KEY"   # name of the variable, never the key
 # language = "en"                    # "en" or "vi": the language of the summary text
-# min_confidence = 0.6               # below this, ask asks back
-# relevance = 0.5                    # an error group scoring lower is "not what you described"
+# min_confidence = 0.6               # a provider's choice below this is asked back
+# relevance = 0.5                    # an error group a provider scores lower is "not what you described"
 # code_patterns = ['ORD-\d+']        # older name of [glossary.codes]: lets "what happened to order ORD-123?" find the code
-# model, base_url, max_candidates, send_chars
+# max_candidates, send_chars         # error groups looked at, and characters of each a provider may see
+
+[ask.intent_words]                   # a key given here replaces the built-in list of that key
+# count = ["bao nhiêu", "how many"]  # also compare, root_cause, error_summary, follow_flow, search, trace_code
 
 [ask.time]
 # morning = [6, 12]                  # hours of "sáng" / "morning"; also noon [11, 14], afternoon [12, 18],
@@ -436,8 +457,109 @@ exception, whatever their message). The count of a match itself is exact when ev
 scaled from the sample, marked `estimated` and written with a "~" in the summary. Set that field to what your logs
 use (`graylog-mcp detect` suggests it). At most half of the size cap goes to the matches (`matches_omitted` counts
 the rest). The traces of one error are looked up in one query of at most 500
-messages. The trace and service fields are the instance's (`trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
-`api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
+messages. The trace and service fields are the instance's (`trace_fields`, `service_fields`).
+
+### Providers
+
+A provider is a model `ask` may ask for what its rules left open. None is needed, none is built in as a
+requirement, and you can list several. It can be given two tasks (`can`):
+
+- **understand**: choose what a question asks for, its period and its environment from lists the server gives,
+  and give English words for the error it describes;
+- **score**: judge which of the error groups of the period the question describes. This is the task that sees
+  text from the logs.
+
+A provider only chooses. Whatever it replies, `ask` keeps a choice only when it is one of those offered, a
+probability only from 0 to 1, and words only when they are plain words: nothing a model writes becomes a field,
+a filter or a query.
+
+| `kind` | What it is | Settings |
+|---|---|---|
+| `jev` | TypeSafe's System One API (`POST /v1/systemone`) | `api_key_env`, `model`, `base_url` (https) |
+| `openai` | Any OpenAI-compatible Chat Completions endpoint: a gateway, a model served on this machine, a hosted API | `base_url` (https, or http on `127.0.0.1` / `localhost`), `model`, `api_key_env` (optional) |
+| `command` | A program on this machine, for instance a command-line client you are signed in to | `command` (the program and its arguments, as a list), `timeout` |
+
+```toml
+[ask]
+provider_order = ["local", "jev"]     # who is asked first; [] turns every provider off
+
+[ask.providers.local]
+kind = "openai"
+base_url = "http://127.0.0.1:4000/v1"
+model = "acme-default"
+# api_key_env = "ACME_GATEWAY_KEY"    # the name of the variable; leave out for an endpoint without a key
+can = ["understand", "score"]         # the default
+
+[ask.providers.jev]
+kind = "jev"
+can = ["score"]
+
+[ask.providers.cli]
+kind = "command"
+command = ["acme-llm", "--json"]
+can = ["understand"]
+# timeout = 60                        # seconds; 30 for the two HTTP kinds
+```
+
+| `provider_order` | What happens |
+|---|---|
+| absent, and no `[ask.providers]` | As before this option existed: with a TypeSafe key saved, Jev is the one provider, for both tasks; without a key, the rules alone |
+| `[]` | The rules alone, also when a key is still saved |
+| a list | Those providers, in that order, each for what it `can`. A name that `[ask.providers]` does not declare is a configuration error, and so is `[ask.providers]` without a `provider_order` |
+
+The first provider that can do a task is asked. The next one is asked **only when the one before failed**: it
+could not be reached, answered an error, or replied nothing `ask` could read. A valid but unsure answer is not
+taken to a second provider; `ask` asks back instead. So the text of one question reaches one place, unless that
+place is down. A provider that fails never fails the question: the rules answer, `provider_failures` names the
+provider and why, and the summary says so. A provider whose key is missing is such a failure, not a server that
+does not start.
+
+**The TypeSafe key.** `graylog-mcp login --ask` asks for the key without echoing it, tests it with one request
+and saves it in `~/.config/graylog-mcp/secrets.toml` (or set `TYPESAFE_API_KEY` in the environment), then restart
+the server. `--model NAME` and `--base-url https://...` on the same command save your choice of model and
+endpoint; `GRAYLOG_MCP_ASK_MODEL` and `GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model`, `base_url` and
+`api_key_env` in a config file win over both. A provider of kind `jev` starts from these settings.
+`graylog-mcp logout --ask` forgets the saved key, model and endpoint.
+
+**What a provider is handed**, and what each environment allows. `provider_data` on an instance (or on a group,
+or on `[environments.prod]` for every group's prod) says what of a question about it may be handed over:
+
+| `provider_data` | Handed to a provider |
+|---|---|
+| `"none"` | Nothing. The rules and the glossary still answer |
+| `"question_only"` | The redacted question and the lists to choose from (the kinds of question, five periods, the names and descriptions of your instances). Enough to understand; scoring is then done by rule, with the English words a provider gives for the error |
+| `"question_and_logs"` (default) | Also up to `max_candidates` (30) error groups, each as service, exception and message, redacted like every other output and cut to `send_chars` (250) characters |
+
+Never raw logs, field values the redactor masks, anything from the glossary, or anything from the Graylog token.
+Graylog itself is still only read (GET and the read-only searches). Until the environment of a question is known
+(named by the caller or read from the question), the strictest setting of all your instances applies: when that
+is `"none"` and a provider would have been needed, `ask` asks you to name the environment rather than pick one.
+`cost.providers` in every answer says how many requests and bytes went to each provider.
+
+**A command as a provider.** The program is started for each request, without a shell. It reads one JSON document
+on standard input and writes one on standard output; what it writes to standard error is dropped. It is stopped
+after `timeout` seconds, and its reply may be at most 1 MB.
+
+```
+stdin   {"version": 1,
+         "state": "thanh toán bị gì",                       # or {"request": "...", "candidates": ["...", ...]}
+         "questions": {"intent": {"type": "choice", "instructions": "What does the request ask for?",
+                                  "criteria": {"count": "The user asks how many ...", "search": "..."}},
+                       "c0": {"type": "noul", "instructions": "Is candidates[0] directly related to ...?"},
+                       "keywords": {"type": "words", "instructions": "Which words would a log line ...?", "max": 8}}}
+stdout  {"answers": {"intent": {"choice": "search", "confidence": 0.8},
+                     "c0": {"noul": 0.9},
+                     "keywords": {"words": ["payment", "declined"]}}}
+```
+
+A `choice` answers with one key of `criteria`, a `noul` with the probability that the statement holds, `words`
+with at most `max` plain words. An `openai` endpoint is told the same in one message and must reply with the same
+JSON; text around it (a code fence, a sentence, a `<think>` block) is skipped. The `openai` kind has been tested
+against a stand-in that speaks the Chat Completions format, not yet against a served model.
+
+A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url`, `api_key_env`,
+`providers` or `provider_order`, which decide where the key and the questions go and which program runs: set
+those in your user or a central config.
 
 ## Root cause analysis
 
@@ -1037,7 +1159,8 @@ src/graylog_mcp/
   trace.py      following one request or one business code across services
   glossary.py   the team's business terms and code shapes, matched in a question
   rca.py        root cause analysis: onsets, change detection, service map, ranking
-  ask/          the optional `ask` tool: time phrases, what was understood, error candidates and flow, Jev client, fixed texts
+  ask/          the `ask` tool: the rules that read a question (time, intent, environment), what was understood,
+                error candidates and flow, the optional providers (Jev, OpenAI-compatible, a command), fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name
   toolspecs/    the tools a model sees, each declared once: its arguments and the operations it runs
   server.py     model instructions, and the MCP tools built from those declarations

@@ -7,6 +7,28 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `ask` needs no model and no key. Rules read what a question asks for ("how many", "so với", "nguyên nhân", "xem
+  log", a code), and which environment it names ("ở prod", "on production", an instance's `aliases`), beside the
+  time, the kind of error, the glossary's terms and codes. Words that name what is asked are read for sure; an
+  error word or a term alone is a guess, answered as such with the other readings and how to ask for them
+  (`guessed`); a question nothing can be read from is asked back with up to three `readings`; a word that fits
+  several environments is asked back with them (`options`). `[ask.intent_words]` replaces any of the built-in
+  word lists.
+- Without a provider that may see the logs, `ask` matches the described error by the words of the question
+  (`scored_by: "rules"`); when no error holds a word, it lists the most frequent ones and says so.
+- Providers of `ask` are configured, optional and ordered: `[ask.providers.<name>]` with `kind` `jev` (TypeSafe
+  System One), `openai` (any OpenAI-compatible Chat Completions endpoint, https or http on this machine) or
+  `command` (a program on this machine: JSON on stdin, JSON on stdout), `can` (`understand`, `score`) and
+  `provider_order`. A provider is asked only for what the rules left open; the next one only when the one before
+  failed; a failed provider is named in `provider_failures` and the rules answer. Whatever a provider replies, only
+  a choice it was offered, a probability or plain words are kept. A repository's own config file may not declare
+  or order providers.
+- `provider_data` on an instance, a group or `[environments.<e>]` says what of a question may be handed to a
+  provider: `none`, `question_only` or `question_and_logs` (the default). Until the environment of a question is
+  known the strictest setting applies, and `ask` asks for the environment rather than pick one.
+- `cost.provider_requests` and `cost.providers` in an `ask` answer count the requests and the bytes sent to each
+  provider.
+- A followed error also gets each kind of error counted apart (`by_kind`) when the question said only "errors".
 - `ask` reads time phrases itself, in Vietnamese (with or without accents) and English, as an exact range in the
   instance's timezone: a length of time back ("15 phút qua", "last 2 hours"), a day, a part of a day ("sáng nay",
   "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "lúc 9h tối qua", "since 9am") and dates
@@ -56,6 +78,16 @@ All notable changes to this project are documented here. The format follows
   the newest was logged (`suggestions`).
 
 ### Changed
+- `ask` is always declared; it was listed only with a TypeSafe key. With a key saved and no `provider_order`, Jev
+  is still the provider for both tasks, but it is no longer asked what the rules read for sure: "how many errors?"
+  sends it nothing, and a question that names no period covers the last 24 hours instead of the period Jev picked.
+  `provider_order = []` turns it off while the key stays saved.
+- A provider that cannot be reached, refuses the key or replies nothing readable no longer fails `ask`: the rules
+  answer and the summary names the provider.
+- `cost.jev_requests` is replaced by `cost.provider_requests`, and `understood.sources` names the provider that
+  chose a part (`jev` for the built-in one) or `guess` for a reading the rules only guessed.
+- The split of "errors" by kind costs one Graylog request a kind; it went through the search for why a count is
+  zero.
 - `ask`'s `understood` has a new shape: `errors` (`any`, `technical`, `business`, `both`) replaces `errors_only`,
   `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
   `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.

@@ -73,6 +73,9 @@ ca_bundle = "/etc/ssl/certs/internal-ca.pem"
 timeout = 30
 max_concurrency = 16                 # requests in flight to this Graylog, across every call and session
 retries = 2                          # after connection errors, 429 and 502/503/504
+# aliases = ["môi trường thật"]      # other words for it in a question to ask ("production" is known for "prod")
+# provider_data = "none"             # what ask may hand to a provider about this instance: "none",
+#                                    # "question_only" or "question_and_logs" (default); README: Providers
 
 [instances.staging]
 url = "https://graylog-staging.example.com"
@@ -127,6 +130,31 @@ fields = ["order_id"]                # searched before the text: a number alone 
 # morning = [6, 12]                  # also noon, afternoon, evening, night
 # week_start = "monday"              # or "sunday"
 # date_order = "DMY"                 # "MDY": 11/12 is 12 November
+
+# Words that say what a question asks for. A key given here replaces the built-in list of that key:
+# count, compare, root_cause, error_summary, follow_flow, search, trace_code.
+# [ask.intent_words]
+# count = ["bao nhiêu", "how many", "số lượng"]
+
+# ask needs no model. A provider is asked only for what the rules could not read (README: Providers). These keys
+# belong in your own or a central config: a repository's own file may not set them.
+# [ask]
+# provider_order = ["local", "jev"]  # who is asked first; [] turns every provider off, also with a key saved
+#
+# [ask.providers.local]              # any OpenAI-compatible endpoint
+# kind = "openai"
+# base_url = "http://127.0.0.1:4000/v1"   # https, or http on this machine
+# model = "acme-default"
+# api_key_env = "ACME_GATEWAY_KEY"   # the NAME of the variable; leave out for an endpoint without a key
+#
+# [ask.providers.jev]                # TypeSafe System One; the key comes from graylog-mcp login --ask
+# kind = "jev"
+# can = ["score"]                    # "understand" and/or "score"; both when left out
+#
+# [ask.providers.cli]                # a program on this machine: JSON on stdin, JSON on stdout
+# kind = "command"
+# command = ["acme-llm", "--json"]
+# can = ["understand"]
 
 # Scan rules (README: Scan rules). Built-in rules: crash, resource_exhaustion, error_spike, new_error_types,
 # http_5xx, connectivity, database, auth_failures.
