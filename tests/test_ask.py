@@ -55,7 +55,7 @@ async def test_follows_the_flow_of_the_described_error(make_ask_app):
     assert out["flow"]["first_error"]["service"] == "payment"
     assert "gateway" in out["summary"] and "payment" in out["summary"]
     assert out["cost"]["jev_requests"] == 2
-    assert out["cost"]["graylog_requests"] <= 8
+    assert out["cost"]["graylog_requests"] <= 12  # the candidates (count, aggregation, one read), then the trace
     assert_read_only(fake)
 
 

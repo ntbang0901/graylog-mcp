@@ -10,7 +10,8 @@ from typing import Any
 
 from graylog_mcp import rca, tools
 from graylog_mcp.ask import render
-from graylog_mcp.ask.flow import TRACE_MARGIN, ErrorGroup, error_groups, richest_trace
+from graylog_mcp.ask.candidates import Candidate, Candidates, error_candidates
+from graylog_mcp.ask.flow import TRACE_MARGIN, richest_trace
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.ask.understand import Understanding, time_args, understand
 from graylog_mcp.client import QueryError, requests_sent
@@ -149,7 +150,7 @@ def _sharing_the_budget(app: App, traces: list[dict[str, Any]]) -> list[dict[str
     return traces
 
 
-async def _score(jev: JevClient, question: str, groups: list[ErrorGroup]) -> list[float]:
+async def _score(jev: JevClient, question: str, groups: list[Candidate]) -> list[float]:
     """Relevance of each group to the question, in one request."""
     questions = {
         f"c{i}": {
@@ -162,13 +163,13 @@ async def _score(jev: JevClient, question: str, groups: list[ErrorGroup]) -> lis
     return [float(got[f"c{i}"].get("noul") or 0.0) for i in range(len(groups))]
 
 
-def _match(score: float, group: ErrorGroup) -> dict[str, Any]:
+def _match(score: float, group: Candidate, found: Candidates) -> dict[str, Any]:
     return {
         "score": round(score, 2),
-        "count": group.count,
+        "count": found.estimate(group),
         "first": group.first,
         "last": group.last,
-        "sample": group.text,
+        "sample": group.message or group.text,
         "ref": group.sample.get("ref"),
     }
 
@@ -180,14 +181,16 @@ async def _follow_flow(
     lang = cfg.language
     gl = app.gl(instance)
     tr = tools._range(gl, when.get("range"), when.get("from_time"), when.get("to_time"), "24h")
-    groups = await error_groups(app, gl, tr, cfg.send_chars, cfg.max_candidates, topic)
+    query = and_queries(gl.cfg.error_query, topic)
+    found = await error_candidates(app, gl, tr, query, (), cfg.send_chars, cfg.max_candidates)
+    groups = found.groups
     scores = await _score(jev, question, groups) if groups else []
     ranked = sorted(zip(scores, groups, strict=True), key=lambda p: p[0], reverse=True)
     kept = [p for p in ranked if p[0] >= cfg.relevance]
     if not kept:
         best = ranked[0][0] if ranked else 0.0
         return {"matches": [], "summary_extra": render.say(lang, "no_match", score=best)}
-    matches = [_match(s, g) for s, g in kept]
+    matches = [_match(s, g, found) for s, g in kept]
     if len(kept) > 1 and kept[0][0] - kept[1][0] < CLOSE_SCORES:
         lines = [render.say(lang, "match", n=m["count"], first=m["first"], last=m["last"], sample=m["sample"])
                  for m in matches[:5]]  # fmt: skip
@@ -217,7 +220,7 @@ async def _follow_flow(
         "first_error": first_error or None,
     }
     path = " → ".join(s["service"] for s in steps)
-    summary = render.say(lang, "flow", sample=group.text, n=group.count, services=path)
+    summary = render.say(lang, "flow", sample=matches[0]["sample"], n=matches[0]["count"], services=path)
     if first_error.get("service"):
         summary += " " + render.say(lang, "first_error", service=first_error["service"])
     return {"matches": matches, "flow": flow, "summary_extra": summary}
