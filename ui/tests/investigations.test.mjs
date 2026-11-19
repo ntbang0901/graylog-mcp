@@ -316,3 +316,141 @@ test("a branch with a request waiting is blocked, a received one is not", () => 
     );
     assert.deepEqual([...blocked], ["b1"]);
 });
+
+const stp = (check, state, evidence = []) => ({
+    check,
+    state,
+    evidence,
+    requested: {},
+});
+
+test("a check is done when a step gave evidence, failed when every step ended without", () => {
+    assert.equal(m.checkState([]), "not_run");
+    assert.equal(m.checkState([stp("c", "running")]), "running");
+    assert.equal(
+        m.checkState([stp("c", "failed"), stp("c", "succeeded")]),
+        "done",
+    );
+    assert.equal(
+        m.checkState([stp("c", "failed"), stp("c", "cancelled")]),
+        "failed",
+    );
+    assert.equal(
+        m.checkState([stp("c", "failed"), stp("c", "running")]),
+        "running",
+    );
+});
+
+test("evidence of a check's steps is listed once", () => {
+    assert.deepEqual(
+        m.evidenceOfSteps([
+            stp("c", "succeeded", ["e1", "e2"]),
+            stp("c", "succeeded", ["e2"]),
+        ]),
+        ["e1", "e2"],
+    );
+});
+
+test("an evidence record says what cites it: supports, contradicts, or only looked at it", () => {
+    const snap = {
+        items: [
+            item("assessment", "a1", {
+                assessment: "supported",
+                evidence: ["e1"],
+            }),
+            item("assessment", "a2", {
+                assessment: "contradicted_in_scope",
+                contradicting: ["e1"],
+            }),
+            item("assessment", "a3", {
+                assessment: "undetermined",
+                evidence: ["e1"],
+            }),
+            item("assessment", "a4", {
+                assessment: "supported",
+                supporting: ["e9"],
+            }),
+        ],
+    };
+    const got = m.citedBy(snap, "e1");
+    assert.deepEqual(
+        got.supports.map((a) => a.id),
+        ["a1"],
+    );
+    assert.deepEqual(
+        got.contradicts.map((a) => a.id),
+        ["a2"],
+    );
+    assert.deepEqual(
+        got.noted.map((a) => a.id),
+        ["a3"],
+    );
+    assert.deepEqual(
+        m.citingAssessments(snap, ["e9"]).map((a) => a.id),
+        ["a4"],
+    );
+});
+
+test("the next thing is the user's question first, else the first check that has not run", () => {
+    const base = {
+        steps: [stp("c1", "succeeded")],
+        items: [
+            item("check", "c1", { purpose: "first" }),
+            item("check", "c2", { purpose: "second" }),
+        ],
+    };
+    assert.deepEqual(m.nextCheck(base), { kind: "check", text: "second" });
+    const asked = {
+        ...base,
+        items: [
+            ...base.items,
+            item("evidence_request", "r1", {
+                question: "Which deploy?",
+                status: "requested",
+            }),
+        ],
+    };
+    assert.deepEqual(m.nextCheck(asked), {
+        kind: "blocked",
+        text: "Which deploy?",
+    });
+    assert.equal(
+        m.nextCheck({
+            steps: [stp("c1", "succeeded")],
+            items: [base.items[0]],
+        }),
+        null,
+    );
+});
+
+test("results are the sentences written for one check", () => {
+    const snap = {
+        items: [
+            item("check_result", "r1", { check: "c1", result: "a" }),
+            item("check_result", "r2", { check: "c2", result: "b" }),
+        ],
+    };
+    assert.deepEqual(
+        m.resultsOf(snap, "c2").map((r) => r.id),
+        ["r2"],
+    );
+});
+
+test("a report is findings, limits and next checks, or a sentence", () => {
+    assert.deepEqual(
+        m.reportOf({
+            outcome: "cause_undetermined",
+            report: { findings: ["a", "b"], limits: ["l"], next_checks: ["n"] },
+        }),
+        {
+            outcome: "cause_undetermined",
+            findings: ["a", "b"],
+            limits: ["l"],
+            next: ["n"],
+            text: "",
+        },
+    );
+    assert.equal(m.reportOf({ outcome: "x", report: "plain" }).text, "plain");
+    assert.equal(m.reportOf({ report: { summary: "s" } }).text, "s");
+    assert.deepEqual(m.reportOf({}).findings, []);
+});

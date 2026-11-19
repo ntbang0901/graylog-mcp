@@ -260,3 +260,22 @@ def test_the_export_holds_nothing_the_redactor_masks(svc):
     inv = start(svc, question="Why did card 4111 1111 1111 1111 fail for fake@example.test?")
     md = exported(svc, inv)
     assert "4111 1111 1111 1111" not in md
+
+
+def test_a_report_with_findings_limits_and_next_checks_exports_as_lists(svc):
+    inv = start(svc)
+    ran(svc, inv, count=3)
+    done = finish(
+        svc,
+        inv,
+        outcome="cause_undetermined",
+        report={
+            "findings": ["errors are spread over ten sources"],
+            "limits": ["one environment"],
+            "next_checks": ["group by route"],
+        },
+    )
+    md = exported(svc, done)
+    assert "**Findings**\n\n- errors are spread over ten sources" in md
+    assert "**Limits**\n\n- one environment" in md and "**Next checks**\n\n- group by route" in md
+    assert "{'findings'" not in md and "Outcome: cause_undetermined" in md

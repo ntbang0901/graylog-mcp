@@ -1,6 +1,7 @@
 // What the Investigations screen derives from the records, with no page, store or network in it: the stream's frames
 // and cursor, the words for a state, and how steps and checks sit under branches. Tested in Node (tests/).
 import type {
+    Fields,
     InvEvent,
     InvEvidence,
     InvItem,
@@ -185,6 +186,96 @@ export function workspaceOf(snap: InvSnapshot): Workspace {
         adHoc: snap.steps.filter((s) => !s.check || !known.has(s.check)),
         assessments: itemsOf(snap, "assessment"),
         hypotheses: itemsOf(snap, "hypothesis"),
+    };
+}
+// ------------------------------------------------------------------ checks, results and what cites what
+export type CheckState = "not_run" | "running" | "failed" | "done";
+export const CHECK_WORD: Record<CheckState, string> = {
+    not_run: "Not run",
+    running: "Running",
+    failed: "Failed",
+    done: "Done",
+};
+export const CHECK_CLASS: Record<CheckState, string> = {
+    not_run: "",
+    running: "info",
+    failed: "fail",
+    done: "ok",
+};
+// one word for a check from its steps: it is done when a step gave evidence, failed when every step ended without
+export function checkState(steps: InvStep[]): CheckState {
+    if (!steps.length) return "not_run";
+    if (steps.some((s) => s.state === "running")) return "running";
+    return steps.some((s) => s.state === "succeeded") ? "done" : "failed";
+}
+export const evidenceOfSteps = (steps: InvStep[]): string[] => [
+    ...new Set(steps.flatMap((s) => s.evidence)),
+];
+// what the agent wrote down as the result of one check
+export const resultsOf = (snap: InvSnapshot, check: string): InvItem[] =>
+    itemsOf(snap, "check_result").filter((r) => r.data.check === check);
+// assessments that rest on any of these evidence ids
+export const citingAssessments = (
+    snap: InvSnapshot,
+    ids: string[],
+): InvItem[] =>
+    itemsOf(snap, "assessment").filter((a) =>
+        citesOf(a).some((c) => ids.includes(c)),
+    );
+export interface CitedBy {
+    supports: InvItem[];
+    contradicts: InvItem[];
+    noted: InvItem[]; // undetermined: looked at it, concluded nothing from it
+}
+export function citedBy(snap: InvSnapshot, evidence: string): CitedBy {
+    const out: CitedBy = { supports: [], contradicts: [], noted: [] };
+    for (const a of itemsOf(snap, "assessment")) {
+        if (!citesOf(a).includes(evidence)) continue;
+        const against = Array.isArray(a.data.contradicting)
+            ? (a.data.contradicting as string[])
+            : [];
+        if (against.includes(evidence)) out.contradicts.push(a);
+        else if (a.data.assessment === "undetermined") out.noted.push(a);
+        else out.supports.push(a);
+    }
+    return out;
+}
+// what is still to do: a question the user must answer first, else the first check that has not run
+export function nextCheck(
+    snap: InvSnapshot,
+): { kind: "blocked" | "check"; text: string } | null {
+    const ask = itemsOf(snap, "evidence_request").find(
+        (r) => r.data.status === "requested",
+    );
+    if (ask) return { kind: "blocked", text: bodyText(ask, "question") };
+    const ran = new Set(snap.steps.map((s) => s.check));
+    const next = itemsOf(snap, "check").find((c) => !ran.has(c.id));
+    return next ? { kind: "check", text: bodyText(next, "purpose") } : null;
+}
+// a finished report: the agent's `report` is an object (findings, limits, next_checks) or a sentence
+const lines = (v: unknown): string[] =>
+    Array.isArray(v)
+        ? v.filter((x): x is string => typeof x === "string")
+        : typeof v === "string" && v
+          ? [v]
+          : [];
+export function reportOf(r: Fields) {
+    const body: Fields =
+        r.report && typeof r.report === "object" && !Array.isArray(r.report)
+            ? (r.report as Fields)
+            : {};
+    const text =
+        typeof r.report === "string"
+            ? r.report
+            : typeof body.summary === "string"
+              ? body.summary
+              : "";
+    return {
+        outcome: typeof r.outcome === "string" ? r.outcome : "",
+        findings: lines(body.findings),
+        limits: lines(body.limits),
+        next: lines(body.next_checks),
+        text,
     };
 }
 // branches whose question has no assessment yet, and the checks that have not run: the overview's "still open"

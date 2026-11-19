@@ -120,7 +120,18 @@ def markdown(con: sqlite3.Connection, row: sqlite3.Row, scope: dict[str, Any]) -
             if a["checkpoint"]:
                 out.append(f"  - Checkpoint: {_line(a['checkpoint'])}")
     for r in snap["reports"]:
-        out += ["", "## Report", "", str(r.get("summary") or r.get("report") or r.get("findings") or ""), ""]
+        out += ["", "## Report", ""]
+        body = r.get("report")
+        if isinstance(body, dict):
+            for key, title in (("findings", "Findings"), ("limits", "Limits"), ("next_checks", "Next checks")):
+                value = body.get(key)
+                for_key = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+                if for_key:
+                    out += [f"**{title}**", ""] + [f"- {_line(v)}" for v in for_key] + [""]
+            if isinstance(body.get("summary"), str):
+                out += [_line(body["summary"]), ""]
+        else:
+            out += [str(body or r.get("summary") or ""), ""]
         if r.get("outcome"):
             out.append(f"Outcome: {r['outcome']}")
     return "\n".join(out).rstrip() + "\n"

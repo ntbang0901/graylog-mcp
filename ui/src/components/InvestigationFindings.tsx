@@ -39,18 +39,83 @@ function Cites({ item, snap }: { item: InvItem; snap: InvSnapshot }) {
                         }
                     >
                         {kind}
-                        {shared.has(id) && " ·shared"}
                     </button>
                 );
             })}
         </span>
     );
 }
-// what the agent concluded, apart from what ran: assessments, how identities are linked, what was asked of the
-// user, and the counts that were compared
-export function Findings({ snap }: { snap: InvSnapshot }) {
-    const assessments = itemsOf(snap, "assessment"),
-        results = itemsOf(snap, "check_result"),
+export function Verdict({ a }: { a: InvItem }) {
+    const word = String(a.data.assessment);
+    return (
+        <span class={`badge ${ASSESSMENT_CLASS[word] ?? ""}`}>
+            {ASSESSMENT_WORD[word] ?? word}
+        </span>
+    );
+}
+// what the agent currently believes: each explanation with where it stands and the evidence it rests on
+function Explained({ snap }: { snap: InvSnapshot }) {
+    const list = itemsOf(snap, "assessment"),
+        hypotheses = itemsOf(snap, "hypothesis");
+    if (!list.length && !hypotheses.length)
+        return (
+            <p class="inv-muted">The agent has not concluded anything yet.</p>
+        );
+    return (
+        <ul class="inv-explained">
+            {list.map((a) => (
+                <li
+                    class={`inv-explain ${ASSESSMENT_CLASS[String(a.data.assessment)] ?? ""}`}
+                >
+                    <Verdict a={a} />
+                    <span>{bodyText(a, "claim")}</span>
+                    <Cites item={a} snap={snap} />
+                </li>
+            ))}
+            {hypotheses.map((h) => (
+                <li class="inv-explain">
+                    <span class="badge">Open</span>
+                    <span>{bodyText(h, "statement")}</span>
+                </li>
+            ))}
+        </ul>
+    );
+}
+// the claims that rest on one piece of evidence, under Supports, Contradicts or Looked at
+export function CitedList({
+    title,
+    cls,
+    items,
+}: {
+    title: string;
+    cls: string;
+    items: InvItem[];
+}) {
+    return (
+        <div class={`inv-cited ${cls}`}>
+            <h4>{title}</h4>
+            <ul class="inv-bullets">
+                {items.map((a) => (
+                    <li>{bodyText(a, "claim")}</li>
+                ))}
+            </ul>
+        </div>
+    );
+}
+// how identities are linked, what was asked of the user and the counts that were compared; with `extras` the
+// assessments and check results (shown on their own) are left out
+export function Findings({
+    snap,
+    extras,
+    explanations,
+}: {
+    snap: InvSnapshot;
+    extras?: boolean;
+    explanations?: boolean;
+}) {
+    if (explanations) return <Explained snap={snap} />;
+    const assessments = extras ? [] : itemsOf(snap, "assessment"),
+        results = extras ? [] : itemsOf(snap, "check_result"),
         identities = itemsOf(snap, "identity"),
         links = itemsOf(snap, "relationship"),
         requests = itemsOf(snap, "evidence_request"),

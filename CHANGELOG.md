@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The Investigations page follows the journey prototype: a task flow (each check with its tool, result, status and
+  evidence) beside the agent's working explanations, which give way to the evidence inspector (query, saved window,
+  what it supports or contradicts, gaps), and a handoff row (observed, probable explanation, still unverified, a
+  prompt to resume). The Markdown export lists an object report's findings, limits and next checks.
 - Investigations keep what an agent concludes, not only what ran: records are refused when they claim more than they
   carry (an assessment of "supported" with nothing cited, an identity whose value is a redaction placeholder, a link
   called observed without evidence, a rate over an unknown denominator, a check result with only a step that ran), and
