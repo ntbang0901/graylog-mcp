@@ -8,6 +8,7 @@ or "prose" (the answer inside a sentence).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 
@@ -15,6 +16,8 @@ import time
 def main() -> int:
     record, mode = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
     if mode == "hang":
+        with open(f"{record}.pid", "w", encoding="utf-8") as fh:  # so a test can see whether it was stopped
+            fh.write(str(os.getpid()))
         time.sleep(30)
     asked = json.loads(sys.stdin.read())
     with open(record, "a", encoding="utf-8") as fh:

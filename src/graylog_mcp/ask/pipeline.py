@@ -18,7 +18,7 @@ from graylog_mcp.ask import render, understand
 from graylog_mcp.ask.candidates import Candidate, Candidates, error_candidates, keywords_of, read_lines
 from graylog_mcp.ask.flow import TRACE_MARGIN, richest_trace
 from graylog_mcp.ask.intent import read_instance, read_intent
-from graylog_mcp.ask.providers import SCORE, UNDERSTAND
+from graylog_mcp.ask.providers import SCORE, UNDERSTAND, handed_over
 from graylog_mcp.ask.understood import Compiled, Slot, Understood, compile_query
 from graylog_mcp.ask.when import TimeSpan, mentions_time, read_time
 from graylog_mcp.backends import Graylog
@@ -45,24 +45,29 @@ def _now() -> datetime:
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
+    # what this question hands to providers is counted for it alone, also while another one is being answered
+    handed: dict[str, list[int]] = {}
+    counting = handed_over.set(handed)
     sent = requests_sent.get()
-    if sent is not None:
-        return await _ask(app, question, instance, sent)
-    # outside the MCP server (the admin page) nobody counts the requests: count here, for this question alone
-    token = requests_sent.set([0])
+    # outside the MCP server (the admin page) nobody counts the Graylog requests: count here, for this question
+    token = requests_sent.set([0]) if sent is None else None
     try:
-        return await _ask(app, question, instance, requests_sent.get() or [0])
+        return await _ask(app, question, instance, requests_sent.get() or [0], handed)
     finally:
-        requests_sent.reset(token)
+        handed_over.reset(counting)
+        if token is not None:
+            requests_sent.reset(token)
 
 
-async def _ask(app: App, question: str, instance: str | None, sent: list[int]) -> dict[str, Any]:
+async def _ask(
+    app: App, question: str, instance: str | None, sent: list[int], handed: dict[str, list[int]]
+) -> dict[str, Any]:
     typed = question.strip()[:MAX_QUESTION_CHARS]
     # a pasted log line or token must not reach a provider unredacted
     question = app.redactor.text(typed)
     if not question:
         raise ToolInputError("question is required")
-    graylog_before, asked_before = sent[0], app.providers.usage()
+    graylog_before = sent[0]
     failed: Failures = []
 
     app.gl(instance)  # an unknown instance fails before anything is handed to a provider
@@ -82,11 +87,15 @@ async def _ask(app: App, question: str, instance: str | None, sent: list[int]) -
             if words
             else render.say(lang, "clarify_where", options=options)
         )
-    elif u.unsure(app.config.ask.min_confidence):
+    elif (unsure := u.unsure_of(app.config.ask.min_confidence)) == "intent":
         chosen = [u.intent.value] if u.intent.value else []
         out["readings"] = render.readings(lang, list(dict.fromkeys((*chosen, *u.others)))[:3])
         out["clarify"] = render.say(lang, "clarify_intent", readings=render.reading_list(lang, out["readings"]))
+    elif unsure == "time":
+        out["clarify"] = render.say(lang, "clarify_period")
     else:
+        if u.period_unread:
+            out["summary"] += "\n" + render.say(lang, "period_not_read")
         if u.intent.source == "guess":
             out["guessed"] = {"intent": u.intent.value, "others": list(u.others)}
             reading = render.say(lang, f"intent_{u.intent.value}")
@@ -119,11 +128,7 @@ async def _ask(app: App, question: str, instance: str | None, sent: list[int]) -
         out["summary"] += "\n" + said
     if failed:
         out["provider_failures"] = failed
-    asked = {
-        name: {"requests": requests - asked_before[name][0], "bytes_sent": sent_bytes - asked_before[name][1]}
-        for name, (requests, sent_bytes) in app.providers.usage().items()
-        if requests > asked_before[name][0]
-    }
+    asked = {name: {"requests": requests, "bytes_sent": size} for name, (requests, size) in handed.items()}
     out["cost"] = {
         "graylog_requests": sent[0] - graylog_before,
         "graylog_cap": app.config.limits.max_requests,
@@ -165,33 +170,36 @@ async def _understand(app: App, question: str, typed: str, instance: str | None,
     )
 
     # A provider is asked only when the rules left open what decides the answer. Once it is asked, everything
-    # they did not read for sure rides along in the same request.
+    # they did not read for sure rides along in the same request. It is asked for the environment only among
+    # the ones the question's words fit: with nothing to go on it would still pick one.
     known = where.source in ("caller", "rules") or not several
+    policies = [i.provider_data for i in cfg.instances.values()]
+    # The default instance is where the search runs, not what the asker said: until the environment is known,
+    # the strictest of them all decides what of the question may leave.
+    policy = inst.provider_data if known else min(policies, key=PROVIDER_DATA.index)
+    time_words = named is None and mentions_time(question)
     wanted = set()
     if not what.sure:
         wanted.add("intent")
     if options:
         wanted.add("instance")
-    if named is None and mentions_time(question):
+    if time_words:
         wanted.add("time")
     chosen = None
     if wanted:
         wanted |= {"time"} if named is None else set()
         wanted |= {"errors_only"} if kind is None else set()
-        wanted |= {"instance"} if not known else set()
-        policies = [i.provider_data for i in cfg.instances.values()]
-        # until the environment is known, the strictest of them decides what may leave
-        policy = inst.provider_data if known else min(policies, key=PROVIDER_DATA.index)
-        asked = understand.questions(cfg, wanted)
+        asked = understand.questions(cfg, wanted, options)
         if policy == "none" and not known and app.providers.may_ask(UNDERSTAND, max(policies, key=PROVIDER_DATA.index)):
             # named, an environment that allows it lets a provider help; picking one here would decide that for
             # the asker
-            where, options = Slot(first.name, "unread", 0.0, where.text), tuple(sorted(cfg.instances))
+            where, options = Slot(first.name, "unread", 0.0, where.text), options or tuple(sorted(cfg.instances))
         elif answered := await app.providers.ask(UNDERSTAND, policy, question, asked, failed):
             chosen = understand.read(answered)
 
     if chosen and chosen.instance and chosen.instance[1] >= cfg.ask.min_confidence:
         where, options = Slot(chosen.instance[0], chosen.provider, chosen.instance[1]), ()
+        policy = app.gl(where.value).cfg.provider_data  # known now: its own setting decides from here on
     inst = app.gl(where.value).cfg
     span = read_time(question, inst.tz, now, cfg.ask.time)
     if span is not None:
@@ -230,6 +238,8 @@ async def _understand(app: App, question: str, typed: str, instance: str | None,
         codes=tuple(find_codes(cfg.glossary, inst, typed)),
         others=others,
         options=options,
+        policy=policy,
+        period_unread=time_words and time.source == "default",
     )
 
 
@@ -462,7 +472,7 @@ async def _follow_flow(
 ) -> dict[str, Any]:
     cfg = app.config.ask
     lang = cfg.language
-    instance, policy = gl.cfg.name, gl.cfg.provider_data
+    instance, policy = gl.cfg.name, u.policy
     tr = tools._range(gl, when.get("range"), when.get("from_time"), when.get("to_time"), "24h")
     # a described problem is looked for among the errors, also when the question did not say the word
     query = compiled.query if u.errors.value != "any" else and_queries(compiled.technical, compiled.topic)

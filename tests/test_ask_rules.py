@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from datetime import datetime
@@ -265,18 +266,69 @@ async def test_an_unsure_provider_is_asked_back_with_its_reading_first(make_app,
     assert "clarify" in out and searches(fake) == []
 
 
-async def test_the_provider_chooses_the_environment_only_when_it_is_sure(make_app, key):
-    instances = {"prod": server("prod"), "dev": server("dev")}
-    unsure = FakeJev(intent="count", instance="prod", instance_confidence=0.3)
-    app, _ = make_app(providers=routed(jev=unsure), instances=instances)
+async def test_a_provider_is_not_asked_for_an_environment_the_question_does_not_name(make_app, key):
+    """It would have to pick one: the asker then gets another environment's numbers."""
+    jev = FakeJev(intent="count", instance="prod")
+    app, _ = make_app(providers=routed(jev=jev), instances={"prod": server("prod"), "dev": server("dev")})
     out = await ask(app, "bank call failed")
-    assert "instance" in unsure.bodies[0]["questions"] and "clarify" not in out
+    assert set(jev.bodies[0]["questions"]) == {"intent", "time"}
     assert (out["understood"]["instance"], out["understood"]["sources"]["instance"]) == ("main", "default")
 
-    sure = FakeJev(intent="count", instance="prod")
-    app, _ = make_app(providers=routed(jev=sure), instances=instances)
-    out = await ask(app, "bank call failed")
-    assert (out["understood"]["instance"], out["understood"]["sources"]["instance"]) == ("prod", "jev")
+
+def two_groups(fake: FakeGraylog, providers: httpx.MockTransport) -> App:
+    env = {"url": "https://graylog.test", "token_env": "TEST_GRAYLOG_TOKEN"}
+    groups = {name: {"environments": {"prod": dict(env), "dev": dict(env)}} for name in ("shop", "bank")}
+    config = parse_config({"groups": groups, "default_instance": "shop/dev"}, source="test")
+    return App.create(config, fake.transport, provider_transport=providers)
+
+
+async def test_a_provider_chooses_only_among_the_environments_the_words_fit(make_app, key):
+    fake = FakeGraylog(dataset="incident")
+    jev = FakeJev(intent="count", instance="bank/prod")
+    out = await ask(two_groups(fake, routed(jev=jev)), "errors on prod")  # a guess, and "prod" is in two groups
+    assert set(jev.bodies[0]["questions"]["instance"]["criteria"]) == {"bank/prod", "shop/prod"}
+    assert (out["understood"]["instance"], out["understood"]["sources"]["instance"]) == ("bank/prod", "jev")
+
+    for elsewhere in (FakeJev(instance="shop/dev"), FakeJev(instance="bank/prod", instance_confidence=0.3)):
+        out = await ask(two_groups(fake, routed(jev=elsewhere)), "errors on prod")
+        # an environment the question did not name, or an unsure pick, is not taken: the asker chooses
+        assert out["options"] == ["bank/prod", "shop/prod"] and "result" not in out and "matches" not in out
+
+
+async def test_an_unsure_period_is_asked_back_as_a_period(make_app, key):
+    app, fake = make_app(providers=routed(jev=FakeJev(time="last_7_days", confidence=0.3)))
+    out = await ask(app, "how many errors tuần rồi")
+    assert "result" not in out and "readings" not in out and searches(fake) == []
+    assert "which period" in out["clarify"] and "tuần rồi" not in out["clarify"]  # the rules could not point at it
+
+
+async def test_a_period_named_but_not_read_is_said_when_nobody_can_be_asked(make_app):
+    app, _ = make_app()
+    out = await ask(app, "how many errors tuần rồi")
+    assert out["understood"]["sources"]["time"] == "default" and out["result"]["count"] >= 0
+    assert "seems to name a period" in out["summary"] and "last 24 hours" in out["summary"]
+    assert "seems to name a period" not in (await ask(app, "how many errors"))["summary"]
+
+
+async def test_two_questions_at_once_each_count_what_they_sent(make_app, key):
+    jev = FakeJev(intent="count")
+    both_asked = asyncio.Event()
+
+    async def held(request: httpx.Request) -> httpx.Response:
+        """Answers only once both questions have sent theirs: each is still being answered when the other asks."""
+        reply = jev.handle(request)
+        if len(jev.bodies) == 2:
+            both_asked.set()
+        await both_asked.wait()
+        return reply
+
+    app, _ = make_app(providers=httpx.MockTransport(held))
+    one, two, none = await asyncio.gather(
+        ask(app, "bank call failed"), ask(app, "bank call failed"), ask(app, "how many errors in the last hour")
+    )
+    assert one["cost"]["provider_requests"] == two["cost"]["provider_requests"] == 1
+    assert one["cost"]["providers"]["jev"]["bytes_sent"] == len(json.dumps(jev.bodies[0]))
+    assert none["cost"]["provider_requests"] == 0 and "providers" not in none["cost"]
 
 
 async def test_an_environment_the_rules_read_is_not_asked_of_the_provider(make_app, key):
@@ -333,6 +385,24 @@ async def test_before_the_environment_is_known_the_strictest_instance_decides(ma
     assert len(jev.bodies) == bodies and out["scored_by"] == "rules"
     # and a question the rules read needs nobody
     assert (await ask(app, "how many errors in the last hour"))["result"]["count"] >= 0
+
+
+@pytest.mark.parametrize("allowed", ["question_and_logs", "question_only"])
+async def test_nothing_is_handed_over_for_scoring_either_before_the_environment_is_known(make_app, key, allowed):
+    """The default instance is where the search runs, not what the asker said: the question may be about the
+    instance that forbids it."""
+    jev, gw = FakeJev(relevant=("bank call failed",)), FakeOpenAI(key=None)
+    instances = {"main": server("graylog", provider_data=allowed), "prod": server("prod", provider_data="none")}
+    declared = {"provider_order": ["gw", "jev"], "providers": {"gw": GATEWAY, "jev": {"kind": "jev"}}}
+    app, _ = make_app(providers=routed(jev=jev, gw=gw), instances=instances, ask=declared)
+
+    out = await ask(app, "where does the bank call go wrong in the last hour")  # what is asked is read for sure
+
+    assert jev.bodies == [] and gw.bodies == []
+    assert out["scored_by"] == "rules" and out["understood"]["sources"]["instance"] == "default"
+    # named, the instance's own setting decides again
+    await ask(app, "where does the bank call go wrong on main in the last hour")
+    assert len(gw.bodies) == 1 and ("candidates" in gw.sent[0].decode()) is (allowed == "question_and_logs")
 
 
 # ------------------------------------------------------------------ a provider that fails

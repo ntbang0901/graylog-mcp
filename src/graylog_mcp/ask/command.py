@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import signal
 from asyncio.subprocess import DEVNULL, PIPE, Process
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from graylog_mcp.config import ProviderConfig
 
 MAX_REPLY_BYTES = 1024 * 1024
 REAP_SECONDS = 2.0
+_GROUPS = hasattr(os, "killpg")  # not on Windows: there only the program itself is stopped
 
 
 class _TooLong(Exception):
@@ -42,7 +45,10 @@ class CommandClient:
             self.bytes_sent += len(sent)
             span["bytes_sent"] = len(sent)
             try:
-                proc = await asyncio.create_subprocess_exec(*self.cfg.command, stdin=PIPE, stdout=PIPE, stderr=DEVNULL)
+                # its own process group where there are such: a wrapper script's children are stopped with it
+                proc = await asyncio.create_subprocess_exec(
+                    *self.cfg.command, stdin=PIPE, stdout=PIPE, stderr=DEVNULL, start_new_session=_GROUPS
+                )
             except OSError as exc:
                 span["status"] = "missing"
                 raise ProviderError(f"cannot run {program} ({type(exc).__name__}); is it installed?") from None
@@ -73,10 +79,14 @@ class CommandClient:
 
 
 async def _stop(proc: Process) -> None:
-    """Kill the program and reap it. asyncio reports the exit only once its output was read to the end, so what
-    it still wrote is read and dropped; a child of its own that keeps the pipe open is not waited for."""
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
+    """Kill the program, with whatever it started, and reap it. asyncio reports the exit only once its output
+    was read to the end, so what it still wrote is read and dropped; a process that left the group and keeps the
+    pipe open is not waited for."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if _GROUPS:
+            os.killpg(proc.pid, signal.SIGKILL)  # the session it leads has its own pid as group id
+        else:
+            proc.kill()
 
     async def reap() -> None:
         assert proc.stdout is not None

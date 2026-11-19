@@ -14,6 +14,7 @@ import json
 import re
 import time
 from collections.abc import Iterator, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -25,6 +26,11 @@ UNDERSTAND, SCORE = "understand", "score"
 _NEEDS = {UNDERSTAND: ("question_only", "question_and_logs"), SCORE: ("question_and_logs",)}
 _WORD = re.compile(r"[a-z0-9][a-z0-9._-]{1,39}")
 _THOUGHTS = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+# Requests and bytes sent to each provider for the question being answered: provider -> [requests, bytes]. Set
+# by ask for one question, like client.requests_sent, so two questions at once each count their own.
+handed_over: ContextVar[dict[str, list[int]] | None] = ContextVar("handed_over", default=None)
 
 
 class ProviderError(GraylogError):
@@ -42,6 +48,10 @@ def recorded(provider: str, method: str, path: str) -> Iterator[dict[str, Any]]:
         span["status"] = "cancelled"
         raise
     finally:
+        if (tally := handed_over.get()) is not None:
+            used = tally.setdefault(provider, [0, 0])
+            used[0] += int(span.get("attempts", 1))
+            used[1] += int(span.get("bytes_sent", 0))
         if spans is not None:
             span.update(start_ms=spans.ms_since_start(began), ms=int((time.monotonic() - began) * 1000))
             spans.add(span)
@@ -99,6 +109,12 @@ class Providers:
                     raise ProviderError("none of its answers was one of the choices it was given")
             except ProviderError as exc:
                 failed.append({"provider": cfg.name, "task": task, "reason": str(exc)})
+                continue
+            except Exception as exc:
+                # Whatever a reply is built to break (nesting too deep to parse, a number too large to be one),
+                # it breaks this provider only. The exception's own text may quote the reply: its type is said.
+                reason = f"its reply could not be read ({type(exc).__name__})"
+                failed.append({"provider": cfg.name, "task": task, "reason": reason})
                 continue
             return Answered(cfg.name, believed)
         return None

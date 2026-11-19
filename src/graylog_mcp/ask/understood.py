@@ -14,21 +14,17 @@ from typing import Any
 from graylog_mcp.ask.understand import time_args
 from graylog_mcp.ask.when import TimeSpan
 from graylog_mcp.backends import Graylog
+from graylog_mcp.config import ASK_OWN_SOURCES
 from graylog_mcp.glossary import CodeMatch, TermMatch, Unclear
 from graylog_mcp.tools import App, and_queries, error_queries
 
 ERRORS = ("any", "technical", "business", "both")
 
 
-# where a slot's value came from when no provider gave it: read by rule, a rule's guess, given by the caller,
-# the default, or named in the question but not placed
-OWN_SOURCES = ("rules", "guess", "caller", "default", "unread")
-
-
 @dataclass(frozen=True)
 class Slot:
     value: Any
-    source: str  # one of OWN_SOURCES, or the name of the provider that chose it
+    source: str  # one of ASK_OWN_SOURCES, or the name of the provider that chose it
     confidence: float = 1.0
     text: str | None = None  # the words of the question it was read from
 
@@ -44,11 +40,19 @@ class Understood:
     codes: tuple[CodeMatch, ...] = ()
     others: tuple[str, ...] = ()  # intents the question could also mean
     options: tuple[str, ...] = ()  # instances to choose from, when ``instance`` is "unread"
+    policy: str = "question_and_logs"  # of config.PROVIDER_DATA: what of this question a provider may be handed
+    period_unread: bool = False  # the question has words of time nobody placed; the default period stands in
 
-    def unsure(self, floor: float) -> bool:
-        """Nobody could tell what is asked, or a provider chose it or the period with less than ``floor``."""
-        chosen = [slot for slot in (self.intent, self.time) if slot.source not in OWN_SOURCES]
-        return self.intent.value is None or any(slot.confidence < floor for slot in chosen)
+    def unsure_of(self, floor: float) -> str | None:
+        """What is too unsure to act on: "intent" when nobody could tell what is asked or a provider chose it
+        with less than ``floor``, "time" when a provider chose the period with less; None when neither."""
+
+        def weak(slot: Slot) -> bool:
+            return slot.source not in ASK_OWN_SOURCES and slot.confidence < floor
+
+        if self.intent.value is None or weak(self.intent):
+            return "intent"
+        return "time" if weak(self.time) else None
 
     def when(self, tz: tzinfo) -> dict[str, Any]:
         """``range``, or ``from_time`` and ``to_time``, as the tools take them."""

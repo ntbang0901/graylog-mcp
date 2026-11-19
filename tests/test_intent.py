@@ -185,6 +185,33 @@ def test_a_plain_instance_name_is_read():
     assert read_instance(cfg, "errors today") is None
 
 
+def _aliased() -> object:
+    """Two groups; "môi trường thật" set once for every group's prod, "cửa hàng" for the group shop."""
+    env = {"url": "https://graylog.test", "token_env": "TEST_GRAYLOG_TOKEN"}
+    groups = {
+        "shop": {"aliases": ["cửa hàng"], "environments": {"dev": dict(env), "prod": dict(env)}},
+        "bank": {"environments": {"dev": dict(env), "prod": dict(env)}},
+    }
+    data = {"environments": {"prod": {"aliases": ["môi trường thật"]}}, "groups": groups}
+    return parse_config({**data, "default_instance": "bank/dev"}, source="test")
+
+
+@pytest.mark.parametrize("question", ["lỗi ở môi trường thật", "loi o moi truong that"])
+def test_an_alias_several_instances_share_is_not_decided_for_the_asker(question):
+    read = read_instance(_aliased(), question)
+    assert read is not None and read.name is None
+    assert read.options == ("bank/prod", "shop/prod")
+
+
+def test_an_alias_of_a_group_reads_like_the_group():
+    cfg = _aliased()
+    assert read_instance(cfg, "lỗi cửa hàng prod").name == "shop/prod"
+    assert read_instance(cfg, "lỗi cửa hàng ở môi trường thật").name == "shop/prod"
+    alone, named = read_instance(cfg, "lỗi cửa hàng hôm nay"), read_instance(cfg, "lỗi shop hôm nay")
+    # the group has no default environment: its alias is no more decided than its name
+    assert alone.name is None and alone.options == named.options == ("shop/dev", "shop/prod")
+
+
 def test_aliases_must_be_a_list_of_words():
     with pytest.raises(ConfigError, match="aliases"):
         make_config(instances={"main": {"url": "https://graylog.test", "token_env": "T", "aliases": 5}})

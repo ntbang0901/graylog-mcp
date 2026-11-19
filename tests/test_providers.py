@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -14,7 +17,7 @@ import pytest
 from graylog_mcp.ask.command import CommandClient
 from graylog_mcp.ask.openai import OpenAIClient
 from graylog_mcp.ask.providers import SCORE, UNDERSTAND, ProviderError, Providers, json_object
-from graylog_mcp.config import ConfigError, ProviderConfig, parse_config
+from graylog_mcp.config import ConfigError, ProviderConfig, load_config, parse_config
 from tests.conftest import make_config
 from tests.fake_openai import FakeOpenAI
 
@@ -98,13 +101,65 @@ def test_a_provider_the_config_does_not_describe_is_refused(ask, message):
         make_config(ask=ask)
 
 
-def test_a_repository_file_cannot_declare_or_order_providers(tmp_path):
-    own = tmp_path / ".graylog-mcp.toml"
-    own.write_text("", encoding="utf-8")
-    for ask in ({"providers": {"gw": GATEWAY}, "provider_order": ["gw"]}, {"provider_order": []}):
+INSTANCE = '[instances.main]\nurl = "https://graylog.test"\ntoken_env = "TEST_GRAYLOG_TOKEN"\n'
+DECLARED = (
+    '[ask]\nprovider_order = ["gw"]\n[ask.providers.gw]\nkind = "openai"\n'
+    'base_url = "http://127.0.0.1:4000/v1"\nmodel = "acme-default"\n'
+)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    root = tmp_path / "acme-app"
+    (root / ".git").mkdir(parents=True)
+    return root
+
+
+def test_a_repository_file_cannot_declare_or_order_providers(repo, key):
+    own = repo / ".graylog-mcp.toml"
+    for said in (DECLARED, '[ask]\nprovider_order = ["jev"]\n[ask.providers.jev]\nkind = "jev"\n'):
+        own.write_text(INSTANCE + said, encoding="utf-8")
         with pytest.raises(ConfigError, match="repository's own config"):
-            parse_config({**MAIN, "ask": ask}, source=str(own))
-    assert parse_config({**MAIN, "ask": {"language": "vi"}}, source=str(own)).ask.language == "vi"
+            load_config(own, repo_dir=repo)
+    own.write_text(INSTANCE + '[ask]\nlanguage = "vi"\n', encoding="utf-8")
+    assert load_config(own, repo_dir=repo).ask.language == "vi"
+
+
+def test_a_repository_file_may_turn_every_provider_off(repo, key):
+    """Turning them off only keeps things on the machine: a repository may ask for that."""
+    own = repo / ".graylog-mcp.toml"
+    own.write_text(INSTANCE, encoding="utf-8")
+    assert [p.name for p in load_config(own, repo_dir=repo).ask.providers] == ["jev"]
+    own.write_text(INSTANCE + "[ask]\nprovider_order = []\n", encoding="utf-8")
+    assert load_config(own, repo_dir=repo).ask.providers == ()
+
+
+def test_providers_of_a_central_file_reach_a_repository_that_includes_it(repo, tmp_path, key):
+    central = tmp_path / "platform" / "graylog-org.toml"
+    central.parent.mkdir()
+    own = repo / ".graylog-mcp.toml"
+    own.write_text('include = "../platform/graylog-org.toml"\n' + INSTANCE, encoding="utf-8")
+
+    central.write_text(DECLARED, encoding="utf-8")
+    assert [p.name for p in load_config(own, repo_dir=repo).ask.providers] == ["gw"]
+    central.write_text("[ask]\nprovider_order = []\n", encoding="utf-8")
+    assert load_config(own, repo_dir=repo).ask.providers == ()
+    central.write_text('[ask]\nbase_url = "https://proxy.example.com"\n', encoding="utf-8")
+    assert load_config(own, repo_dir=repo).ask.base_url == "https://proxy.example.com"
+
+
+def test_a_file_the_repository_includes_from_inside_itself_is_the_repository_s_too(repo, key):
+    (repo / "more.toml").write_text(DECLARED, encoding="utf-8")
+    own = repo / ".graylog-mcp.toml"
+    own.write_text('include = "more.toml"\n' + INSTANCE, encoding="utf-8")
+    with pytest.raises(ConfigError, match="repository's own config"):
+        load_config(own, repo_dir=repo)
+
+
+@pytest.mark.parametrize("name", ["default", "rules", "guess", "caller", "unread"])
+def test_a_provider_cannot_take_the_name_of_a_built_in_source(name):
+    with pytest.raises(ConfigError, match="reserved"):
+        make_config(ask={"provider_order": [name], "providers": {name: GATEWAY}})
 
 
 def test_a_provider_without_its_key_stays_listed():
@@ -453,6 +508,53 @@ async def test_a_command_that_fails_is_a_provider_error_without_its_output(tmp_p
     assert "secret" not in str(failure.value)
     if mode == "flood":  # stopped while it was still writing, and reaped
         assert client.last_exit is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are how a wrapper's children are reached")
+async def test_a_program_started_by_the_command_does_not_outlive_its_time_limit(tmp_path):
+    """Command-line clients are often a wrapper that starts the real program: both are stopped."""
+    record = tmp_path / "asked.jsonl"
+    wrapper = f"import subprocess, sys; subprocess.run([sys.executable, {FAKE_COMMAND!r}, {str(record)!r}, 'hang'])"
+    cfg = ProviderConfig(name="cli", kind="command", command=(sys.executable, "-c", wrapper), timeout=1)
+    client = CommandClient(cfg)
+    with pytest.raises(ProviderError, match="did not answer within 1s"):
+        await client.answers("q", INTENT)
+    started = int(Path(f"{record}.pid").read_text())
+    for _ in range(40):  # the kill is sent before answers() returns; the system may need a moment to reap
+        try:
+            os.kill(started, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        os.kill(started, signal.SIGKILL)
+        pytest.fail("the program the wrapper started was still running")
+
+
+@pytest.mark.parametrize("error", [RecursionError("deep"), OverflowError("big"), KeyError("x")])
+async def test_whatever_a_provider_breaks_on_it_only_fails_itself(error):
+    class Broken(Stub):
+        async def answers(self, state, questions):
+            self.requests += 1
+            raise error
+
+    providers = Providers([(_named("a"), Broken()), (_named("b"), Stub(COUNT))])
+    failed: list[dict[str, str]] = []
+    got = await providers.ask(UNDERSTAND, "question_only", "a secret question", INTENT, failed)
+    assert got.provider == "b"
+    assert failed[0]["provider"] == "a" and type(error).__name__ in failed[0]["reason"]
+    assert "secret" not in failed[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "reply", ['{"a":' * 100_000, '{"intent": {"choice": "count", "confidence": 1' + "0" * 400 + "}}"]
+)
+async def test_a_reply_built_to_break_the_reader_is_only_a_failed_provider(reply):
+    providers = Providers([(_named("gw"), _gateway(FakeOpenAI([reply]))), (_named("b"), Stub(COUNT))])
+    failed: list[dict[str, str]] = []
+    got = await providers.ask(UNDERSTAND, "question_only", "q", INTENT, failed)
+    # the huge confidence is a number beyond what counts as one: either way nothing here may raise
+    assert got is not None and (got.provider == "b" or got.answers["intent"]["choice"] == "count")
 
 
 def test_each_kind_of_provider_gets_its_own_client(tmp_path):

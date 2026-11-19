@@ -14,7 +14,7 @@ import difflib
 import os
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -354,6 +354,9 @@ ENVIRONMENT_WORDS = (("prod", "production"), ("dev", "development"), ("staging",
 # what of a question on an instance may be handed to a provider of ask, the strictest first
 PROVIDER_DATA = ("none", "question_only", "question_and_logs")
 PROVIDER_TASKS = ("understand", "score")
+# where a part of ask's reading came from when no provider gave it: read by rule, a rule's guess, given by the
+# caller, the default, or named in the question but not placed
+ASK_OWN_SOURCES = ("rules", "guess", "caller", "default", "unread")
 
 
 @dataclass(frozen=True)
@@ -1191,19 +1194,57 @@ def _unit_float(where: str, value: Any) -> float:
     return float(value)
 
 
-def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
-    """``from_repo``: the table comes from a repository's own file, which must not choose where the key and the
-    error text are sent, nor which environment variable is sent as the key."""
+def _ask_tables_of_repo_files(source: Path, root: Path | None) -> list[dict[str, Any]]:
+    """The ``[ask]`` tables written in a repository's own files: the config file when it is one, and what it
+    includes from inside the repository. A user or central file it includes from outside is not the
+    repository's, and neither is a file outside that includes one."""
+    source = source.resolve()
+    root = root.resolve() if root is not None else None
+    # outside any git repository (an unpacked archive) a project config still speaks for the folder it lies in
+    folder = source.parent if source.name in PROJECT_CONFIG_NAMES else None
+
+    def owned(path: Path) -> bool:
+        inside = [base for base in (root, folder) if base is not None]
+        return path.name in PROJECT_CONFIG_NAMES or any(path.is_relative_to(base) for base in inside)
+
+    tables: list[dict[str, Any]] = []
+    pending, seen = [source], {source}
+    while pending:
+        path = pending.pop()
+        try:
+            with path.open("rb") as fh:
+                data = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+            continue  # read_config_file has already said what is wrong with it
+        if owned(path) and isinstance(data.get("ask"), dict):
+            tables.append(data["ask"])
+        includes = data.get("include", [])
+        for item in [includes] if isinstance(includes, str) else includes if isinstance(includes, list) else []:
+            try:
+                inner = (path.parent / Path(item).expanduser()).resolve()
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            if inner not in seen and inner.is_file():
+                seen.add(inner)
+                pending.append(inner)
+    return tables
+
+
+def _parse_ask(data: Any, repo_tables: Sequence[dict[str, Any]] = ()) -> AskConfig:
+    """``repo_tables``: the ``[ask]`` tables of a repository's own files, which must not choose where the key
+    and the questions are sent, which environment variable is sent as the key, or which program runs. Turning
+    every provider off is theirs to ask for: it only keeps things on the machine."""
     if not isinstance(data, dict):
         raise ConfigError("ask: expected a table")
     _check_keys("ask", data, _ASK_KEYS)
-    for name in ("base_url", "api_key_env", "providers", "provider_order") if from_repo else ():
-        if name in data:
-            raise ConfigError(
-                f"ask.{name}: not allowed in a repository's own config file (it would decide where the API key "
-                "and the questions go, or which program runs); set it in your user config or a central config "
-                "instead"
-            )
+    for table in repo_tables:
+        for name in ("base_url", "api_key_env", "providers", "provider_order"):
+            if name in table and not (name == "provider_order" and table[name] == []):
+                raise ConfigError(
+                    f"ask.{name}: not allowed in a repository's own config file (it would decide where the API "
+                    "key and the questions go, or which program runs); set it in your user config or a central "
+                    "config instead"
+                )
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
@@ -1277,6 +1318,9 @@ def _parse_provider(name: str, data: Any, jev: ProviderConfig) -> ProviderConfig
     where = f"ask.providers.{name}"
     if not re.fullmatch(_LABEL, name):
         raise ConfigError(f"{where}: a provider's name may only contain letters, digits, '_', '-', '.'")
+    if name in ASK_OWN_SOURCES:
+        # an answer says where each part of its reading came from: a provider so named would pass for the rules
+        raise ConfigError(f"{where}: the name {name!r} is reserved; choose another, e.g. 'gateway'")
     if not isinstance(data, dict):
         raise ConfigError(f"{where}: expected a table")
     kind = data.get("kind")
@@ -1405,7 +1449,16 @@ def _with_env_defaults(inst: dict[str, Any], env_defaults: dict[str, dict[str, A
     merged = {**shared, **inst}
     if isinstance(shared.get("group_fields"), dict) and isinstance(inst.get("group_fields"), dict):
         merged["group_fields"] = {**shared["group_fields"], **inst["group_fields"]}
+    _add_aliases(merged, shared, inst)
     return merged
+
+
+def _add_aliases(merged: dict[str, Any], *levels: dict[str, Any]) -> None:
+    """Words for an environment, for a group and for one instance are all words for that instance: unlike the
+    other settings, a narrower level adds to them instead of replacing them."""
+    said = [level["aliases"] for level in levels if isinstance(level.get("aliases"), list)]
+    if len(said) > 1:
+        merged["aliases"] = list(dict.fromkeys(word for words in said for word in words))
 
 
 def _expand_groups(
@@ -1445,6 +1498,7 @@ def _expand_groups(
             merged = {**shared, **edata}
             if isinstance(shared.get("group_fields"), dict) and isinstance(edata.get("group_fields"), dict):
                 merged["group_fields"] = {**shared["group_fields"], **edata["group_fields"]}
+            _add_aliases(merged, shared, edata)
             merged = _with_env_defaults(merged, env_defaults, env)
             env_label = str((env_defaults.get(env) or {}).get("description") or env)
             merged.setdefault("description", f"{desc} ({env_label})" if desc else f"{group} {env_label}")
@@ -1864,10 +1918,8 @@ def parse_config(
         if inst.group and inst.group not in groups:
             groups[inst.group] = GroupInfo(inst.group)
     presets = _parse_presets(data.get("presets", {}))
-    # a project config by name too: outside any git repository (an unpacked archive) own_file is false
-    ask = _parse_ask(
-        data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
-    )
+    repo_root = repo.root if repo is not None else None
+    ask = _parse_ask(data.get("ask", {}), _ask_tables_of_repo_files(Path(source), repo_root) if from_file else ())
     glossary = _parse_glossary(data.get("glossary", {}), presets, ask.code_patterns)
     _check_aliases(glossary, instances)  # before the scope narrows them: a clash is a mistake wherever it runs
 

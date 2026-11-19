@@ -6,11 +6,12 @@ only suggests one: that reading is a guess, said as one, with the other readings
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from graylog_mcp.config import ENVIRONMENT_WORDS, Config, ConfigError, ErrorWords, InstanceConfig
-from graylog_mcp.glossary import error_kind, match_words
+from graylog_mcp.config import ENVIRONMENT_WORDS, Config, ConfigError, ErrorWords
+from graylog_mcp.glossary import alias_key, error_kind, match_words
 
 # where two intents are named the first of these is meant: "how many more than yesterday" compares
 ORDER = ("compare", "count", "root_cause", "error_summary", "follow_flow", "search")
@@ -60,44 +61,54 @@ class InstanceRead:
 
 
 def read_instance(config: Config, text: str) -> InstanceRead | None:
-    """The instance ``text`` names: by an alias, its name, its environment or its group. None when it names none."""
+    """The instance ``text`` names: by an alias, its name, its environment or its group. None when it names none.
+
+    Each word stands for the instances it may mean: an alias for every instance that carries it, an environment
+    or a group for its members. Several words narrow each other ("shop prod"); words that exclude each other
+    ("prod and dev"), or one that still fits several, are left to the asker."""
     instances = list(config.instances.values())
-    words: dict[str, list[str]] = {}
+    meant: dict[str, set[str]] = {}  # a word, folded -> the instances it may mean
+    spelled: dict[str, str] = {}
+
+    def means(word: str, names: list[str]) -> None:
+        key = alias_key(word)
+        spelled.setdefault(key, word)
+        meant.setdefault(key, set()).update(names)
+
     for inst in instances:
-        words[f"i:{inst.name}"] = [inst.name, *inst.aliases]
+        # an instance without a group is known by its name alone: "staging" is also "stg"
+        own = [inst.name, *inst.aliases, *([] if inst.group else _other_words(inst.name))]
+        for word in own:
+            means(word, [inst.name])
     for env in {i.environment for i in instances if i.environment}:
-        words[f"e:{env}"] = _with_other_words(env)
-    for inst in instances:  # an instance without a group is known by its name alone: "staging" is also "stg"
-        if not inst.group:
-            words[f"i:{inst.name}"] += _with_other_words(inst.name)[1:]
+        for word in (env, *_other_words(env)):
+            means(word, [i.name for i in instances if i.environment == env])
     for group in {i.group for i in instances if i.group}:
-        words[f"g:{group}"] = [group]
-    found = match_words(words, text)
+        means(group, [i.name for i in instances if i.group == group])
+
+    found = match_words({key: [word] for key, word in spelled.items()}, text)
     if not found:
         return None
     said = " ".join(dict.fromkeys(written for _, written, *_ in found))
-    keys = {key for key, *_ in found}
-    groups = {key[2:] for key in keys if key.startswith("g:")}
-    named = [i for i in instances if f"i:{i.name}" in keys or (i.environment and f"e:{i.environment}" in keys)]
-    if not named:  # a group alone: its default environment
-        return _one(config, [i for i in instances if i.group in groups], said, alone=" ".join(sorted(groups)))
-    pool = [i for i in named if i.group in groups] or named
+    sets = [meant[key] for key, *_ in found]
+    pool = set.intersection(*sets)
+    if not pool:  # the words exclude each other: every instance one of them names is a choice
+        return InstanceRead(None, said, tuple(sorted(set.union(*sets))))
     if len(pool) > 1 and config.default_group:
-        pool = [i for i in pool if i.group == config.default_group] or pool
-    return _one(config, pool, said)
-
-
-def _with_other_words(name: str) -> list[str]:
-    known = next((words for words in ENVIRONMENT_WORDS if name.lower() in words), ())
-    return [name, *(w for w in known if w != name.lower())]
-
-
-def _one(config: Config, pool: list[InstanceConfig], said: str, alone: str | None = None) -> InstanceRead:
+        pool = {name for name in pool if config.instances[name].group == config.default_group} or pool
     if len(pool) == 1:
-        return InstanceRead(pool[0].name, said)
-    if alone:
-        try:
-            return InstanceRead(config.instance(alone).name, said)
-        except ConfigError:  # several groups, or a group whose environments have no default
-            pass
-    return InstanceRead(None, said, tuple(sorted(i.name for i in pool)))
+        return InstanceRead(next(iter(pool)), said)
+    groups = {config.instances[name].group for name in pool}
+    if len(groups) == 1 and (only := next(iter(groups))):
+        chosen: str | None = None
+        with contextlib.suppress(ConfigError):
+            # one group, whichever word named it: its default environment, as its name alone means elsewhere
+            chosen = config.instance(only).name
+        if chosen in pool:
+            return InstanceRead(chosen, said)
+    return InstanceRead(None, said, tuple(sorted(pool)))
+
+
+def _other_words(name: str) -> list[str]:
+    known = next((words for words in ENVIRONMENT_WORDS if name.lower() in words), ())
+    return [w for w in known if w != name.lower()]

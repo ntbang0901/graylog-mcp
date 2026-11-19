@@ -369,8 +369,9 @@ of the day is the hour of that part ("9h tối" is 21:00); a day without a year 
 is only half understood is not read at all, because a wrong period is searched in silence: "vài ngày qua" (how
 many?), a date that does not exist, or "12/11" with nothing saying it is a day (write "ngày 12/11", or add the
 year; alone it is as much a share as "3/4"). A question that names no period covers the last 24 hours, and the
-first line says so; one whose words of time the rules cannot place ("tuần rồi", "5m ago") is passed to a provider
-when there is one, which picks one of five periods.
+first line says so. One whose words of time the rules cannot place ("tuần rồi", "5m ago") is passed to a provider
+when there is one, which picks one of five periods (asked back when it is unsure); without one the last 24 hours
+are searched and the summary says a period was named but not read.
 
 **Sure, guessed, or asked back.** Words that name what is asked ("how many", "so với", "nguyên nhân") are read for
 sure, and no provider is asked about them. A question with only an error word ("thanh toán bị timeout") is most
@@ -381,10 +382,13 @@ how to ask for those ("Read as a request to follow one error across services; th
 something else, ask for it in words: list the main errors ("what are the main errors of …"); …"). A question
 nothing can be read from ("Is the system ok?") is asked back: `clarify`, with up to three `readings`.
 
-The environment: named by the caller, else read from the question, else the default one. A word that fits several
-instances ("prod" when two groups have one and none is the default group) is not guessed: `clarify` lists them in
-`options`. `aliases = ["production", "môi trường thật"]` on an instance, a group or `[environments.prod]` adds
-words for it; "production", "development" and "stg" are known for environments named `prod`, `dev` and `staging`.
+The environment: named by the caller, else read from the question, else the default one. Words narrow each other
+("shop prod"). A word that still fits several instances ("prod" when two groups have one and none is the default
+group), or words that exclude each other ("prod and dev"), are not guessed: `clarify` lists the instances in
+`options`. A provider, when there is one, is asked to choose only among those; it is never asked for an
+environment the question does not name. `aliases = ["môi trường thật"]` adds words for an instance; set on a
+group or on `[environments.prod]` they are words for all of its instances, and the levels add up. "production",
+"development" and "stg" are known for environments named `prod`, `dev` and `staging`.
 
 On 90 questions written by another hand than the rules', without sight of them
 (`tests/data/held_questions.py`), the rules read what is asked right in 86%; the 66 they read for sure are all
@@ -527,18 +531,24 @@ or on `[environments.prod]` for every group's prod) says what of a question abou
 | `provider_data` | Handed to a provider |
 |---|---|
 | `"none"` | Nothing. The rules and the glossary still answer |
-| `"question_only"` | The redacted question and the lists to choose from (the kinds of question, five periods, the names and descriptions of your instances). Enough to understand; scoring is then done by rule, with the English words a provider gives for the error |
+| `"question_only"` | The redacted question and the lists to choose from (the kinds of question, five periods, and the names and descriptions of the instances a word of the question fits). Enough to understand; scoring is then done by rule, with the English words an `openai` or `command` provider gives for the error (Jev chooses and scores, it gives no words) |
 | `"question_and_logs"` (default) | Also up to `max_candidates` (30) error groups, each as service, exception and message, redacted like every other output and cut to `send_chars` (250) characters |
 
 Never raw logs, field values the redactor masks, anything from the glossary, or anything from the Graylog token.
 Graylog itself is still only read (GET and the read-only searches). Until the environment of a question is known
-(named by the caller or read from the question), the strictest setting of all your instances applies: when that
-is `"none"` and a provider would have been needed, `ask` asks you to name the environment rather than pick one.
-`cost.providers` in every answer says how many requests and bytes went to each provider.
+(named by the caller, read from the question, or chosen by a provider among the instances its words fit), the
+strictest setting of all your instances applies to everything the question hands over, the scoring too: the
+default instance is where the search runs, not what the asker said. When that strictest setting is `"none"` and a
+provider would have been needed to understand the question, `ask` asks you to name the environment rather than
+pick one. `cost.providers` in every answer says how many requests and bytes went to each provider for that
+question. A provider cannot be named `rules`, `guess`, `caller`, `default` or `unread`: those are what
+`understood.sources` calls the parts no provider chose.
 
-**A command as a provider.** The program is started for each request, without a shell. It reads one JSON document
-on standard input and writes one on standard output; what it writes to standard error is dropped. It is stopped
-after `timeout` seconds, and its reply may be at most 1 MB.
+**A command as a provider.** The program is started for each request, without a shell, with the environment of
+the server (so it finds its own login; it also sees what the server sees). It reads one JSON document on standard
+input and writes one on standard output; what it writes to standard error is dropped. After `timeout` seconds it
+is stopped together with whatever it started (on Windows only the program itself), and its reply may be at most
+1 MB.
 
 ```
 stdin   {"version": 1,
@@ -557,9 +567,12 @@ with at most `max` plain words. An `openai` endpoint is told the same in one mes
 JSON; text around it (a code fence, a sentence, a `<think>` block) is skipped. The `openai` kind has been tested
 against a stand-in that speaks the Chat Completions format, not yet against a served model.
 
-A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url`, `api_key_env`,
-`providers` or `provider_order`, which decide where the key and the questions go and which program runs: set
-those in your user or a central config.
+A repository's own `.graylog-mcp.toml`, and what it includes from inside the repository, may set the other `[ask]`
+keys but not `base_url`, `api_key_env`, `providers` or a `provider_order` that names one, which decide where the
+key and the questions go and which program runs: set those in your user config, or in a central file the
+repository's file includes from outside it. `provider_order = []` is the exception: a repository may turn every
+provider off. It can also set `provider_data`, `send_chars` and `max_candidates`, which decide how much your own
+provider is handed, like the other settings of a file you [trust](#one-repository-several-environments).
 
 ## Root cause analysis
 
@@ -704,7 +717,8 @@ in the repo gets the same setup. Tokens stay out of the file: each instance name
 **Only use this with repositories you trust.** The file is applied as it is, with no approval step, and with the
 shared server, opening a client in the repository is enough. Its `url`, `proxy`, `verify_tls` and `*_env` settings
 decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can switch masking
-off, `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
+off, `provider_data` and `[ask] send_chars` decide how much of the logs a provider you configured for `ask` is handed,
+`repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
 did not write before you run `start`, `init` or `install` there, or open a client in that repository.
 
 ```toml

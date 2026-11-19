@@ -21,11 +21,16 @@ All notable changes to this project are documented here. The format follows
   `command` (a program on this machine: JSON on stdin, JSON on stdout), `can` (`understand`, `score`) and
   `provider_order`. A provider is asked only for what the rules left open; the next one only when the one before
   failed; a failed provider is named in `provider_failures` and the rules answer. Whatever a provider replies, only
-  a choice it was offered, a probability or plain words are kept. A repository's own config file may not declare
-  or order providers.
+  a choice it was offered, a probability or plain words are kept, and the environment is chosen only among the
+  instances a word of the question fits. A repository's own config file, and what it includes from inside the
+  repository, may not declare or order providers, but may turn them all off (`provider_order = []`); a central
+  file it includes from outside may do either.
 - `provider_data` on an instance, a group or `[environments.<e>]` says what of a question may be handed to a
   provider: `none`, `question_only` or `question_and_logs` (the default). Until the environment of a question is
-  known the strictest setting applies, and `ask` asks for the environment rather than pick one.
+  known the strictest setting of all instances applies, to the scoring too, and when a provider would have been
+  needed `ask` asks for the environment rather than pick one.
+- `aliases` on an instance, a group or `[environments.<e>]` are other words for it in a question; the levels add
+  up, and a word that fits several instances is asked back.
 - `cost.provider_requests` and `cost.providers` in an `ask` answer count the requests and the bytes sent to each
   provider.
 - A followed error also gets each kind of error counted apart (`by_kind`) when the question said only "errors".

@@ -62,8 +62,9 @@ def time_args(time: str, tz: tzinfo, now: datetime | None = None) -> dict[str, A
     return {"range": "24h"}
 
 
-def questions(config: Config, wanted: Collection[str]) -> dict[str, dict[str, Any]]:
-    """The questions for the parts in ``wanted`` (of ``PARTS``): only what the rules left open is asked."""
+def questions(config: Config, wanted: Collection[str], instances: Collection[str] = ()) -> dict[str, dict[str, Any]]:
+    """The questions for the parts in ``wanted`` (of ``PARTS``): only what the rules left open is asked.
+    ``instances``: the ones the question's words fit, which are all the environment may be chosen from."""
     every: dict[str, dict[str, Any]] = {
         "intent": {"type": "choice", "instructions": "What does the request ask for?", "criteria": INTENTS},
         "time": {"type": "choice", "instructions": "Which period does the request refer to?", "criteria": TIMES},
@@ -74,10 +75,10 @@ def questions(config: Config, wanted: Collection[str]) -> dict[str, dict[str, An
         "instance": {
             "type": "choice",
             "instructions": "Which environment does the request refer to?",
-            "criteria": {name: inst.description or name for name, inst in config.instances.items()},
+            "criteria": {name: config.instances[name].description or name for name in instances},
         },
     }
-    return {name: every[name] for name in PARTS if name in wanted}
+    return {name: every[name] for name in PARTS if name in wanted and (name != "instance" or instances)}
 
 
 def read(answered: Answered) -> Understanding:

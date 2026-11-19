@@ -53,6 +53,11 @@ TEXT: dict[str, dict[str, str]] = {
         "words: {others}.",
         "clarify_intent": "I could not tell what you want to know. Ask for it in words: {readings}.",
         "clarify_instance": 'Which environment do you mean by "{words}"? Name one of: {options}.',
+        "clarify_period": "I could not tell which period you mean. Say it as a length of time back, a day or a "
+        'range, for example "in the last 2 hours", "yesterday afternoon" or "from 9h to 11h".',
+        "period_not_read": "The question seems to name a period that could not be read, so the last 24 hours "
+        'were searched. Say it as a length of time back, a day or a range, for example "in the last 2 hours" or '
+        '"yesterday afternoon".',
         "clarify_where": "Name the environment in the question, one of: {options}. Until it is known nothing of "
         "the question is handed to a provider, because one of them forbids it (provider_data).",
         "reading": '{what} ("{ask}")',
@@ -123,6 +128,11 @@ TEXT: dict[str, dict[str, str]] = {
         "guessed": "Tôi hiểu đây là yêu cầu {reading}; đó là phỏng đoán. Nếu ý bạn khác, hãy hỏi rõ: {others}.",
         "clarify_intent": "Tôi chưa rõ bạn muốn biết điều gì. Hãy hỏi rõ: {readings}.",
         "clarify_instance": 'Bạn muốn nói môi trường nào khi viết "{words}"? Hãy nêu một trong: {options}.',
+        "clarify_period": "Tôi chưa rõ bạn muốn nói khoảng thời gian nào. Hãy nêu một khoảng lùi về trước, một ngày "
+        'hoặc một khoảng, ví dụ "trong 2 giờ qua", "chiều hôm qua" hoặc "từ 9h đến 11h".',
+        "period_not_read": "Câu hỏi có vẻ nêu một khoảng thời gian mà tôi không đọc được, nên đã tìm trong 24 giờ "
+        'qua. Hãy nêu một khoảng lùi về trước, một ngày hoặc một khoảng, ví dụ "trong 2 giờ qua" hoặc "chiều hôm '
+        'qua".',
         "clarify_where": "Hãy nêu môi trường trong câu hỏi, một trong: {options}. Khi chưa biết môi trường thì không "
         "phần nào của câu hỏi được chuyển cho nhà cung cấp, vì có môi trường cấm điều đó (provider_data).",
         "reading": '{what} ("{ask}")',
