@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from graylog_mcp.glossary import fold
 from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
 
 
@@ -165,6 +166,56 @@ class InstanceConfig:
         return ZoneInfo(self.timezone)
 
 
+def _applies(instances: tuple[str, ...], inst: InstanceConfig) -> bool:
+    """``instances`` names instances, groups or environments; empty means everywhere."""
+    if not instances:
+        return True
+    names = {inst.name.lower(), (inst.group or "").lower(), (inst.environment or "").lower()} - {""}
+    return any(i.lower() in names for i in instances)
+
+
+@dataclass(frozen=True)
+class GlossaryTerm:
+    """A word of the team's own (see graylog_mcp.glossary) and what it stands for in the logs."""
+
+    name: str
+    aliases: tuple[str, ...]  # as written in the config
+    description: str = ""
+    query: str = ""  # Lucene filter ANDed into a search; empty: the term filters nothing
+    keywords: tuple[str, ...] = ()  # plain words to match log text with
+    preset: str | None = None
+    instances: tuple[str, ...] = ()  # only on these instances, groups or environments; empty: everywhere
+
+    def applies_to(self, inst: InstanceConfig) -> bool:
+        return _applies(self.instances, inst)
+
+
+@dataclass(frozen=True)
+class CodeKind:
+    """What one kind of business code (an order, a transaction) looks like."""
+
+    name: str
+    pattern: str
+    fields: tuple[str, ...] = ()  # fields holding the code, searched before full text
+    description: str = ""
+    instances: tuple[str, ...] = ()
+
+    def applies_to(self, inst: InstanceConfig) -> bool:
+        return _applies(self.instances, inst)
+
+
+@dataclass(frozen=True)
+class Glossary:
+    terms: dict[str, GlossaryTerm] = field(default_factory=dict)
+    codes: dict[str, CodeKind] = field(default_factory=dict)
+
+    def terms_for(self, inst: InstanceConfig) -> list[GlossaryTerm]:
+        return [t for t in self.terms.values() if t.applies_to(inst)]
+
+    def codes_for(self, inst: InstanceConfig) -> list[CodeKind]:
+        return [c for c in self.codes.values() if c.applies_to(inst)]
+
+
 @dataclass(frozen=True)
 class Preset:
     name: str
@@ -207,10 +258,7 @@ class ScanRule:
     builtin: bool = False
 
     def applies_to(self, inst: InstanceConfig) -> bool:
-        if not self.instances:
-            return True
-        names = {inst.name.lower(), (inst.group or "").lower(), (inst.environment or "").lower()} - {""}
-        return any(i.lower() in names for i in self.instances)
+        return _applies(self.instances, inst)
 
 
 @dataclass(frozen=True)
@@ -295,6 +343,7 @@ class Config:
     out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
     focus: Focus = Focus()
     ask: AskConfig = AskConfig()
+    glossary: Glossary = Glossary()
     scan: ScanConfig = field(default_factory=lambda: _parse_scan({}))
     ui_links: bool = True  # results link to the admin page's log explorer while one runs on this machine
 
@@ -389,6 +438,7 @@ _TOP_KEYS = {
     "scan",
     "http",
     "ask",
+    "glossary",
     "repos",
 }
 # what [repos."<repository>"] may set for one repository (a central config naming repositories it cannot read)
@@ -436,6 +486,9 @@ _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
+_GLOSSARY_KEYS = {"terms", "codes"}
+_TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instances"}
+_CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
     "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
     "code_patterns",
@@ -901,6 +954,82 @@ def parse_scan_rule(name: str, data: Any, base: dict[str, Any] | None = None, bu
             "otherwise it fires on all traffic"
         )
     return ScanRule(**out)
+
+
+def _tables(where: str, data: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
+        raise ConfigError(f"{where}: expected a table of [{where}.<name>]")
+    return data
+
+
+def _parse_glossary(data: Any, presets: dict[str, Preset], legacy_patterns: tuple[str, ...]) -> Glossary:
+    """``legacy_patterns``: ``ask.code_patterns``, the older place for the shapes of codes."""
+    if not isinstance(data, dict):
+        raise ConfigError("glossary: expected a table")
+    _check_keys("glossary", data, _GLOSSARY_KEYS)
+    terms = {}
+    for name, item in _tables("glossary.terms", data.get("terms", {})).items():
+        where = f"glossary.terms.{name}"
+        _check_keys(where, item, _TERM_KEYS)
+        aliases = _str_list(f"{where}.aliases", item.get("aliases", []))
+        if not aliases:
+            raise ConfigError(f"{where}.aliases: expected at least one alias")
+        for alias in aliases:
+            if not any(c.isalnum() for c in alias):
+                raise ConfigError(f"{where}.aliases: {alias!r} has no letter or digit")
+        query = _check_query(f"{where}.query", item["query"]) if "query" in item else ""
+        keywords = _str_list(f"{where}.keywords", item.get("keywords", []))
+        preset = item.get("preset")
+        if preset is not None and preset not in presets:
+            known = ", ".join(sorted(presets)) or "none configured"
+            raise ConfigError(f"{where}.preset: unknown preset {preset!r}; available: {known}")
+        if not (query or keywords or preset):
+            raise ConfigError(f"{where}: set query, keywords or preset (a term with none of them does nothing)")
+        terms[name] = GlossaryTerm(
+            name=name,
+            aliases=aliases,
+            description=str(item.get("description", "")),
+            query=query,
+            keywords=keywords,
+            preset=preset,
+            instances=_str_list(f"{where}.instances", item.get("instances", [])),
+        )
+    codes = {}
+    for name, item in _tables("glossary.codes", data.get("codes", {})).items():
+        where = f"glossary.codes.{name}"
+        _check_keys(where, item, _CODE_KEYS)
+        pattern = item.get("pattern")
+        try:
+            compiled = re.compile(pattern)
+        except (re.error, TypeError) as exc:
+            raise ConfigError(f"{where}.pattern: {pattern!r} is not a regular expression ({exc})") from None
+        if compiled.search(""):
+            raise ConfigError(f"{where}.pattern: {pattern!r} matches empty text")
+        codes[name] = CodeKind(
+            name=name,
+            pattern=pattern,
+            fields=_str_list(f"{where}.fields", item.get("fields", [])),
+            description=str(item.get("description", "")),
+            instances=_str_list(f"{where}.instances", item.get("instances", [])),
+        )
+    for n, pattern in enumerate(legacy_patterns, 1):
+        codes.setdefault(f"ask_code_{n}", CodeKind(name=f"ask_code_{n}", pattern=pattern))
+    return Glossary(terms=terms, codes=codes)
+
+
+def _check_aliases(glossary: Glossary, instances: dict[str, InstanceConfig]) -> None:
+    """One alias means one term wherever both apply: the same words must not read as two things."""
+    for inst in instances.values():
+        owner: dict[str, str] = {}
+        for term in glossary.terms_for(inst):
+            for alias in term.aliases:
+                key = " ".join(fold(alias).split())
+                other = owner.setdefault(key, term.name)
+                if other != term.name:
+                    raise ConfigError(
+                        f"glossary: alias {key!r} belongs to both terms {other!r} and {term.name!r} on instance "
+                        f"{inst.name!r}; give each alias to one term, or limit the terms with instances"
+                    )
 
 
 def _parse_scan(data: Any) -> ScanConfig:
@@ -1492,6 +1621,13 @@ def parse_config(
     for inst in instances.values():
         if inst.group and inst.group not in groups:
             groups[inst.group] = GroupInfo(inst.group)
+    presets = _parse_presets(data.get("presets", {}))
+    # a project config by name too: outside any git repository (an unpacked archive) own_file is false
+    ask = _parse_ask(
+        data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
+    )
+    glossary = _parse_glossary(data.get("glossary", {}), presets, ask.code_patterns)
+    _check_aliases(glossary, instances)  # before the scope narrows them: a clash is a mistake wherever it runs
 
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
@@ -1559,13 +1695,11 @@ def parse_config(
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),
-        presets=_parse_presets(data.get("presets", {})),
+        presets=presets,
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
-        # a project config by name too: outside any git repository (an unpacked archive) own_file is false
-        ask=_parse_ask(
-            data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
-        ),
+        ask=ask,
+        glossary=glossary,
         source=source,
         ui_links=_parse_ui_links(data.get("ui_links", "auto")),
     )
