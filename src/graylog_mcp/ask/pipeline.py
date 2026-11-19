@@ -23,13 +23,15 @@ from graylog_mcp.backends import Graylog
 from graylog_mcp.client import QueryError, requests_sent
 from graylog_mcp.glossary import error_kind, find_codes, match_terms, match_words
 from graylog_mcp.shaping import Budget, dumps
-from graylog_mcp.tools import App, ToolInputError, and_queries, phrase, requests_left
+from graylog_mcp.tools import App, ToolInputError, and_queries, phrase, requests_left, requests_used
 from graylog_mcp.trace import keep_by_priority, trace_request
 
 MAX_QUESTION_CHARS = 1000
 MAX_CODES = 3
 CLOSE_SCORES = 0.1  # the best two matches closer than this are not told apart
 AROUND_SECONDS = 30  # lines shown around an error that no trace id ties to a request
+# what following one code always reads: its trace fields, its text, its requests, the one shown, its errors, and one
+REQUESTS_FOR_A_CODE = 6
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
@@ -74,7 +76,11 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         if extra := answer.pop("summary_extra", None):
             out["summary"] += "\n" + extra
         out.update(answer)
-    out["cost"] = {"graylog_requests": sent[0] - graylog_before, "jev_requests": jev.requests - jev_before}
+    out["cost"] = {
+        "graylog_requests": sent[0] - graylog_before,
+        "graylog_cap": app.config.limits.max_requests,
+        "jev_requests": jev.requests - jev_before,
+    }
     return out
 
 
@@ -210,11 +216,24 @@ async def _trace_codes(app: App, instance: str, u: Understood, when: dict[str, A
     codes = [c.value for c in u.codes]
     if not codes:
         return {"hint": render.say(lang, "no_code")}
-    traces = [await trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
-    shown = [app.redactor.text(c) for c in codes[:MAX_CODES]]
-    for found, code in zip(traces, shown, strict=True):
+    wanted = codes[:MAX_CODES]
+    traces: list[dict[str, Any]] = []
+    for code in wanted:
+        # the question's requests are one budget: a code that could not be followed whole is left for another question
+        if traces and requests_left(app) < REQUESTS_FOR_A_CODE:
+            break
+        traces.append(await trace_request(app, code, instance=instance, **when))
+    shown = [app.redactor.text(c) for c in wanted]
+    for found, code in zip(traces, shown, strict=False):
         found["trace_id"] = code  # trace_request repeats what it was asked for; here that is the unmasked code
-    return {"codes": shown, "traces": _sharing_the_budget(app, traces)}
+    out: dict[str, Any] = {"codes": shown[: len(traces)], "traces": _sharing_the_budget(app, traces)}
+    if skipped := shown[len(traces) :]:
+        out["skipped_codes"] = skipped
+        used = requests_used(app)
+        out["summary_extra"] = render.say(
+            lang, "codes_skipped", done=len(traces), n=len(wanted), k=len(skipped), used=used
+        )
+    return out
 
 
 def _sharing_the_budget(app: App, traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -323,6 +342,9 @@ async def _follow_flow(
         around = await tools.context_around(app, ref, seconds=AROUND_SECONDS, scope="source", instance=instance)
         hint = render.say(lang, "no_trace_around", fields=fields, seconds=AROUND_SECONDS)
         return {"matches": matches, "ran": query, "around": around, "hint": hint}
+    if requests_left(app) < 3:
+        hint = render.say(lang, "flow_not_followed", used=requests_used(app))
+        return {"matches": matches, "ran": query, "hint": hint}
     trace_id = await richest_trace(app, gl, group, tr)
     if trace_id is None:
         return {"matches": matches, "ran": query, "hint": render.say(lang, "no_flow")}

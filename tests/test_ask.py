@@ -81,7 +81,7 @@ async def test_asks_back_instead_of_guessing(make_ask_app):
     out = await ask(app, "Is the system ok?")
 
     assert "clarify" in out and "matches" not in out
-    assert out["cost"] == {"graylog_requests": 0, "jev_requests": 1}
+    assert out["cost"] == {"graylog_requests": 0, "graylog_cap": 20, "jev_requests": 1}
     assert fake.requests == []
 
 
@@ -305,6 +305,41 @@ async def test_traces_with_unlinked_lines_stay_under_the_size_cap(make_ask_app):
             _add(fake, 800 - i, service="batch", message=f"{code} export {i} " + "x" * 900)
     res = await ask(app, "show ORD-1, ORD-2 and ORD-3")
     assert len(res["traces"]) == 3 and len(dumps(res)) <= app.config.limits.max_output_chars
+
+
+def _three_long_business_traces(fake):
+    """Three codes, each leading to a request of 300 lines with a business error: the costliest question there is."""
+    fake.messages = []
+    for n, code in enumerate(("ORD-1", "ORD-2", "ORD-3")):
+        for i in range(300):
+            said = f"{code} received" if i == 0 else f"step {i}"
+            status = {"http_status": 422} if i == 250 else {}
+            _add(fake, 3000 - n * 400 - i, trace_id=f"req-{n}", service="gateway", message=said, **status)
+
+
+async def test_three_costly_codes_stay_within_the_request_cap(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"ORD-\d+"]})
+    _three_long_business_traces(fake)
+    res = await ask(app, "show ORD-1, ORD-2 and ORD-3 in the last 2 hours")
+    assert res["cost"]["graylog_requests"] <= 20 and res["cost"]["graylog_cap"] == 20
+    assert res["codes"] == ["ORD-1", "ORD-2"] and res["skipped_codes"] == ["ORD-3"]
+    assert "Checked 2 of 3 codes; 1 not checked:" in res["summary"] and "Graylog requests used." in res["summary"]
+
+
+async def test_a_higher_cap_checks_every_code(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"ORD-\d+"]}, limits={"max_requests": 60})
+    _three_long_business_traces(fake)
+    res = await ask(app, "show ORD-1, ORD-2 and ORD-3 in the last 2 hours")
+    assert len(res["traces"]) == 3 and "skipped_codes" not in res and "not checked" not in res["summary"]
+    assert all(t["first_business_error"] for t in res["traces"])
+
+
+async def test_a_flow_is_not_followed_when_the_requests_are_spent(make_ask_app):
+    app, _ = make_ask_app(FakeJev(relevant=("bank call failed",)), limits={"max_requests": 6})
+    out = await ask(app, "why did checkout fail with a bank connection error in the last hour?")
+    assert out["matches"] and "flow" not in out and "Graylog requests used" in out["hint"]
 
 
 async def test_a_masked_code_is_not_echoed_by_its_trace(make_ask_app):

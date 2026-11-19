@@ -37,6 +37,9 @@ TEXT: dict[str, dict[str, str]] = {
         "term": '"{text}" is understood as {what}; this term does not narrow the search.',
         "term_filtered": '"{text}" is understood as {what}, filtered by {query}.',
         "terms_together": "These {n} terms narrow the search together: only lines that match all of them count.",
+        "codes_skipped": "Checked {done} of {n} codes; {k} not checked: {used} Graylog requests used.",
+        "flow_not_followed": "The trace of this error was not followed: {used} Graylog requests used. Ask about "
+        "this error alone, or raise limits.max_requests.",
         "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
     },
     "vi": {
@@ -71,6 +74,9 @@ TEXT: dict[str, dict[str, str]] = {
         "term": 'Đã hiểu "{text}" là {what}; thuật ngữ này không thu hẹp phép tìm.',
         "term_filtered": 'Đã hiểu "{text}" là {what}, lọc theo {query}.',
         "terms_together": "{n} thuật ngữ này cùng thu hẹp phép tìm: chỉ tính các dòng khớp tất cả.",
+        "codes_skipped": "Đã kiểm tra {done}/{n} mã; còn {k} mã chưa kiểm tra vì đã dùng {used} request Graylog.",
+        "flow_not_followed": "Chưa lần theo trace của lỗi này vì đã dùng {used} request Graylog. Hãy hỏi riêng về "
+        "lỗi này, hoặc tăng limits.max_requests.",
         "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',
     },
 }

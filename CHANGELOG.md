@@ -19,6 +19,10 @@ All notable changes to this project are documented here. The format follows
 - `ask` counts errors by kind when the question says only "errors" (`result.by_kind`), says so when the instance
   defines no business errors, answers "show me the lines about …" with a search (`intent` `search`), and for an
   error without a trace id returns the lines of the same source around it (`around`) instead of only a hint.
+- `ask` stays within `max_requests`: the codes of one question share the count, a code that could no longer be
+  followed whole is listed in `skipped_codes` and named in the summary ("Checked 2 of 3 codes; 1 not checked: 15/20
+  Graylog requests used."), an error's trace is not followed when fewer than three requests are left, and `cost`
+  carries `graylog_cap`.
 - A glossary term's query is checked with Graylog before anything runs: a broken one is named with its term and
   its config key.
 - `[limits] max_requests` (20) caps the Graylog requests of one `trace_request` or `ask` call. Close to it the
