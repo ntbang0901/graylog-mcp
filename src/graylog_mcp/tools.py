@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from graylog_mcp import recover, ui_links
-from graylog_mcp.ask.jev import JevClient
+from graylog_mcp.ask.providers import Providers
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
 from graylog_mcp.client import GraylogError, requests_sent
@@ -110,7 +110,7 @@ class App:
     instances: dict[str, Graylog]
     redactor: Redactor
     focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
-    jev: JevClient | None = None  # only with a TypeSafe key: the ask tool
+    providers: Providers = field(default_factory=lambda: Providers([]))  # whom ask may ask; none: its rules alone
 
     @classmethod
     def create(
@@ -118,7 +118,7 @@ class App:
         config: Config,
         transport: Any = None,
         graylog: Callable[[InstanceConfig], Graylog] | None = None,
-        jev_transport: Any = None,
+        provider_transport: Any = None,
     ) -> App:
         """``graylog`` supplies the client of each instance (the shared server reuses them across repositories)."""
         make = graylog or (lambda cfg: Graylog(cfg, transport))
@@ -126,7 +126,7 @@ class App:
             config=config,
             instances={name: make(cfg) for name, cfg in config.instances.items()},
             redactor=Redactor(config.redaction),
-            jev=JevClient(config.ask, jev_transport) if config.ask.enabled else None,
+            providers=Providers.create(config.ask.providers, provider_transport),
         )
 
     def gl(self, name: str | None) -> Graylog:
@@ -163,7 +163,7 @@ class App:
 
     async def close(self) -> None:
         closing = [gl.aclose() for gl in self.instances.values()]
-        await asyncio.gather(*closing, *([self.jev.aclose()] if self.jev else []), return_exceptions=True)
+        await asyncio.gather(*closing, self.providers.aclose(), return_exceptions=True)
 
 
 # --------------------------------------------------------------------------- focus

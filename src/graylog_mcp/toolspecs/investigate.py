@@ -108,7 +108,7 @@ class AskArgs(BaseModel):
 
 
 def _has_typesafe_key(app: App | None) -> bool:
-    return bool(app.jev if app is not None else secrets.get("TYPESAFE_API_KEY"))
+    return bool(app.providers.order if app is not None else secrets.get("TYPESAFE_API_KEY"))
 
 
 ASK = ToolSpec(

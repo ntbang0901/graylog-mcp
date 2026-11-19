@@ -15,7 +15,7 @@ import os
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -159,6 +159,7 @@ class InstanceConfig:
     slow_ms: tuple[int, ...] = DEFAULT_SLOW_MS
     latency_unit: str = "auto"  # "auto": ms, but seconds for a field named like request_time
     aliases: tuple[str, ...] = ()  # words of a question that mean this instance, beside its own names
+    provider_data: str = "question_and_logs"  # one of PROVIDER_DATA: what ask may hand to a provider here
 
     @property
     def api_base(self) -> str:
@@ -350,27 +351,46 @@ INTENT_WORDS: dict[str, tuple[str, ...]] = {
 ENVIRONMENT_WORDS = (("prod", "production"), ("dev", "development"), ("staging", "stg", "stage"))
 
 
+# what of a question on an instance may be handed to a provider of ask, the strictest first
+PROVIDER_DATA = ("none", "question_only", "question_and_logs")
+PROVIDER_TASKS = ("understand", "score")
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """A model ``ask`` may ask for what its rules could not read (see graylog_mcp.ask.providers)."""
+
+    name: str
+    kind: str  # "jev" (TypeSafe System One), "openai" (a compatible endpoint) or "command" (a program on this machine)
+    can: tuple[str, ...] = PROVIDER_TASKS
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    api_key: str | None = field(default=None, repr=False)
+    command: tuple[str, ...] = ()
+    timeout: float = 30.0  # seconds
+
+
 @dataclass(frozen=True)
 class AskConfig:
-    """The ``ask`` tool: a plain-language question answered with TypeSafe's Jev model choosing what to look at."""
+    """The ``ask`` tool: a plain-language question read by rule, and by the providers listed here for the rest.
 
-    api_key: str | None = field(default=None, repr=False)  # None: ask is off
+    ``api_key`` to ``base_url`` are the settings of the TypeSafe Jev provider, kept where they always were."""
+
+    api_key: str | None = field(default=None, repr=False)
     api_key_env: str = "TYPESAFE_API_KEY"
     model: str = "jev-latest"
     base_url: str = "https://api.typesafe.ai"
+    providers: tuple[ProviderConfig, ...] = ()  # in the order they are asked; none: the rules alone
     min_confidence: float = 0.6  # below this, ask returns a clarifying question instead of guessing
     relevance: float = 0.5  # an error group scoring lower than this is not what the user described
-    max_candidates: int = 30  # error groups scored in one Jev request
-    send_chars: int = 250  # characters of each group's sample sent to Jev
+    max_candidates: int = 30  # error groups scored in one request to a provider
+    send_chars: int = 250  # characters of each group's sample sent to a provider
     language: str = "en"  # "en" or "vi": the language of the summary text
     code_patterns: tuple[str, ...] = ()  # regexes finding order or transaction codes in a question
     time: TimeSettings = TimeSettings()
     # words of a question that say what it asks for, by intent (see graylog_mcp.ask.intent)
     intent_words: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: dict(INTENT_WORDS))
-
-    @property
-    def enabled(self) -> bool:
-        return self.api_key is not None
 
 
 @dataclass(frozen=True)
@@ -554,6 +574,7 @@ _INSTANCE_KEYS = {
     "message_api",
     "aggregation_api",
     "aliases",
+    "provider_data",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
 _REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
@@ -567,8 +588,14 @@ _TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instance
 _CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
     "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
-    "code_patterns", "time", "intent_words",
+    "code_patterns", "time", "intent_words", "providers", "provider_order",
 }  # fmt: skip
+_PROVIDER_KEYS = {
+    "jev": {"kind", "can", "base_url", "model", "api_key_env", "timeout"},
+    "openai": {"kind", "can", "base_url", "model", "api_key_env", "timeout"},
+    "command": {"kind", "can", "command", "timeout"},
+}
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
 _TIME_PARTS = ("morning", "noon", "afternoon", "evening", "night")
 _TIME_KEYS = {*_TIME_PARTS, "week_start", "date_order"}
 _WEEK_STARTS = {"monday": 0, "sunday": 6}
@@ -813,6 +840,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     if not isinstance(data.get("aliases", []), list):
         raise ConfigError(f"{where}.aliases: expected a list of words")
     aliases = _str_list(f"{where}.aliases", data.get("aliases", []))
+    provider_data = data.get("provider_data", InstanceConfig.provider_data)
+    if provider_data not in PROVIDER_DATA:
+        raise ConfigError(f"{where}.provider_data: expected one of {', '.join(PROVIDER_DATA)}")
     return InstanceConfig(
         name=name,
         url=url,
@@ -848,6 +878,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         slow_ms=inv["slow_ms"],
         latency_unit=inv["latency_unit"],
         aliases=aliases,
+        provider_data=provider_data,
         **apis,
     )
 
@@ -1166,11 +1197,12 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
     if not isinstance(data, dict):
         raise ConfigError("ask: expected a table")
     _check_keys("ask", data, _ASK_KEYS)
-    for name in ("base_url", "api_key_env") if from_repo else ():
+    for name in ("base_url", "api_key_env", "providers", "provider_order") if from_repo else ():
         if name in data:
             raise ConfigError(
                 f"ask.{name}: not allowed in a repository's own config file (it would decide where the API key "
-                "goes); set it in your user config or a central config instead"
+                "and the questions go, or which program runs); set it in your user config or a central config "
+                "instead"
             )
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
@@ -1191,11 +1223,13 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
     model = data["model"] if "model" in data else secrets.get(ASK_MODEL_VAR) or AskConfig.model
     if not isinstance(model, str) or not model:
         raise ConfigError("ask.model: expected a model name")
+    jev = ProviderConfig("jev", "jev", base_url=base_url.rstrip("/"), model=model, api_key_env=env)
     return AskConfig(
         api_key=secrets.get(env),
         api_key_env=env,
         model=model,
         base_url=base_url.rstrip("/"),
+        providers=_parse_providers(data, jev),
         min_confidence=_unit_float("ask.min_confidence", data.get("min_confidence", AskConfig.min_confidence)),
         relevance=_unit_float("ask.relevance", data.get("relevance", AskConfig.relevance)),
         max_candidates=_positive_int("ask.max_candidates", data.get("max_candidates", AskConfig.max_candidates)),
@@ -1204,6 +1238,82 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
         code_patterns=patterns,
         time=_parse_time(data.get("time", {})),
         intent_words=_parse_intent_words(data.get("intent_words", {})),
+    )
+
+
+def _parse_providers(ask: dict[str, Any], jev: ProviderConfig) -> tuple[ProviderConfig, ...]:
+    """The providers in the order they are asked. ``jev``: the TypeSafe settings of ``[ask]`` itself, which a
+    provider of kind "jev" starts from and which alone, with a key, are the provider when none is listed."""
+    from graylog_mcp import secrets
+
+    declared = ask.get("providers", {})
+    if not isinstance(declared, dict):
+        raise ConfigError("ask.providers: expected a table of [ask.providers.<name>]")
+    if "provider_order" not in ask:
+        if declared:
+            raise ConfigError(
+                f"ask.providers declares {', '.join(declared)} but ask.provider_order is missing: list the "
+                "providers to use in the order to ask them, or [] for none"
+            )
+        key = secrets.get(jev.api_key_env)
+        return (replace(jev, api_key=key),) if key else ()
+    order = ask["provider_order"]
+    if not isinstance(order, list) or not all(isinstance(name, str) for name in order):
+        raise ConfigError("ask.provider_order: expected a list of provider names, e.g. ['jev']")
+    providers = []
+    for name in order:
+        if order.count(name) > 1:
+            raise ConfigError(f"ask.provider_order: {name!r} is listed twice")
+        if name not in declared:
+            known = ", ".join(declared) or "none"
+            raise ConfigError(f"ask.provider_order: {name!r} is not declared in [ask.providers] (declared: {known})")
+        providers.append(_parse_provider(name, declared[name], jev))
+    return tuple(providers)
+
+
+def _parse_provider(name: str, data: Any, jev: ProviderConfig) -> ProviderConfig:
+    from graylog_mcp import secrets
+
+    where = f"ask.providers.{name}"
+    if not re.fullmatch(_LABEL, name):
+        raise ConfigError(f"{where}: a provider's name may only contain letters, digits, '_', '-', '.'")
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: expected a table")
+    kind = data.get("kind")
+    if kind not in _PROVIDER_KEYS:
+        raise ConfigError(f"{where}.kind: expected one of {', '.join(_PROVIDER_KEYS)}")
+    _check_keys(where, data, _PROVIDER_KEYS[kind])
+    can = data.get("can", list(PROVIDER_TASKS))
+    if not isinstance(can, list) or not can or not set(can) <= set(PROVIDER_TASKS):
+        raise ConfigError(f"{where}.can: expected a list of {' and/or '.join(PROVIDER_TASKS)}")
+    timeout = data.get("timeout", 60 if kind == "command" else 30)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 300:
+        raise ConfigError(f"{where}.timeout: expected seconds from 1 to 300")
+    common: dict[str, Any] = {"name": name, "kind": kind, "can": tuple(t for t in PROVIDER_TASKS if t in can)}
+    common["timeout"] = float(timeout)
+    if kind == "command":
+        command = data.get("command")
+        if not isinstance(command, list) or not command or not all(isinstance(a, str) and a for a in command):
+            raise ConfigError(
+                f"{where}.command: expected the program and its arguments as a list, e.g. ['acme-llm', '--json']"
+            )
+        return ProviderConfig(command=tuple(command), **common)
+    defaults = jev if kind == "jev" else ProviderConfig(name, kind)
+    base_url, model = data.get("base_url", defaults.base_url), data.get("model", defaults.model)
+    if not isinstance(base_url, str) or not base_url:
+        raise ConfigError(f"{where}.base_url: expected the URL of the endpoint, e.g. https://llm.example.com/v1")
+    url = urlparse(base_url)
+    local = kind == "openai" and url.scheme == "http" and url.hostname in _LOOPBACK
+    if url.scheme != "https" and not local:
+        allowed = "https://, or http:// on this machine (127.0.0.1, localhost)" if kind == "openai" else "https://"
+        raise ConfigError(f"{where}.base_url: must start with {allowed}")
+    if not isinstance(model, str) or not model:
+        raise ConfigError(f"{where}.model: expected a model name")
+    env = data.get("api_key_env", defaults.api_key_env)
+    if env:
+        env = check_env_name(env, f"{where}.api_key_env")
+    return ProviderConfig(
+        base_url=base_url.rstrip("/"), model=model, api_key_env=env, api_key=secrets.get(env) if env else None, **common
     )
 
 

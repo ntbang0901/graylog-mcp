@@ -429,7 +429,7 @@ def _login_ask(args: argparse.Namespace) -> int:
     from graylog_mcp import secrets
     from graylog_mcp.ask.jev import JevClient
     from graylog_mcp.client import GraylogError
-    from graylog_mcp.config import ASK_BASE_URL_VAR, ASK_MODEL_VAR, AskConfig
+    from graylog_mcp.config import ASK_BASE_URL_VAR, ASK_MODEL_VAR, AskConfig, ProviderConfig
 
     if args.base_url and not args.base_url.startswith("https://"):
         print("graylog-mcp login: --base-url must start with https://", file=sys.stderr)
@@ -447,7 +447,10 @@ def _login_ask(args: argparse.Namespace) -> int:
     if value and not args.no_test:
 
         async def probe() -> None:
-            jev = JevClient(dataclasses.replace(cfg, api_key=value))
+            tried = ProviderConfig(
+                "jev", "jev", base_url=cfg.base_url, model=cfg.model, api_key_env=cfg.api_key_env, api_key=value
+            )
+            jev = JevClient(tried)
             try:
                 await jev.answers("test", {"ok": {"type": "noul", "instructions": "Is this a test?"}})
             finally:

@@ -40,7 +40,7 @@ def _now() -> datetime:
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
-    jev = app.jev
+    jev: Any = app.providers.order[0][1] if app.providers.order else None
     if jev is None:
         raise ToolInputError(
             "ask is off: set TYPESAFE_API_KEY in the environment or in secrets.toml and restart the server"

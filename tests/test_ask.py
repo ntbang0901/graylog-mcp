@@ -35,7 +35,7 @@ def make_ask_app(key):
             for m in fake.messages:
                 if m["service"] == "payment":
                     m["streams"] = [PAY]
-        app = App.create(make_config(**overrides), transport=fake.transport, jev_transport=jev.transport)
+        app = App.create(make_config(**overrides), transport=fake.transport, provider_transport=jev.transport)
         apps.append(app)
         return app, fake
 
@@ -164,7 +164,7 @@ async def test_empty_question_and_missing_key(make_ask_app, monkeypatch):
         await ask(app, "   ")
     monkeypatch.delenv("TYPESAFE_API_KEY")
     bare = App.create(make_config())
-    assert bare.jev is None
+    assert bare.providers.order == []
     with pytest.raises(ToolInputError, match="ask is off"):
         await ask(bare, "hello")
 
@@ -189,7 +189,7 @@ def test_time_choices_become_tool_arguments():
 def test_ask_config_is_validated(key):
     base = {"instances": {"main": {"url": "https://graylog.test", "token_env": "TEST_GRAYLOG_TOKEN"}}}
     cfg = parse_config({**base, "ask": {"language": "vi", "relevance": 0.7}}, source="test").ask
-    assert cfg.enabled and cfg.language == "vi" and cfg.relevance == 0.7
+    assert cfg.providers and cfg.language == "vi" and cfg.relevance == 0.7
     assert "fake-typesafe-key" not in repr(cfg)
     for bad in ({"language": "fr"}, {"base_url": "http://x.test"}, {"relevance": 2}, {"code_patterns": ["("]},
                 {"api_key": "x"}, {"api_key_env": "fake-typesafe-key"}, {"base_url": ""}, {"model": ""}):  # fmt: skip
@@ -255,12 +255,13 @@ def test_login_ask_tests_and_saves_the_key_model_and_endpoint(monkeypatch, capsy
     assert jev.bodies[0]["model"] == "jev-preview"
     assert secrets.get("TYPESAFE_API_KEY") == "fake-typesafe-key"
     cfg = make_config().ask
-    assert (cfg.model, cfg.base_url, cfg.enabled) == ("jev-preview", "https://llm.example.com", True)
+    assert (cfg.model, cfg.base_url, len(cfg.providers)) == ("jev-preview", "https://llm.example.com", 1)
+    assert (cfg.providers[0].model, cfg.providers[0].base_url) == ("jev-preview", "https://llm.example.com")
 
     assert main(["logout", "--ask", "main"]) == 2
     assert main(["logout", "--ask"]) == 0
     cfg = make_config().ask
-    assert (cfg.model, cfg.base_url, cfg.enabled) == ("jev-latest", "https://api.typesafe.ai", False)
+    assert (cfg.model, cfg.base_url, cfg.providers) == ("jev-latest", "https://api.typesafe.ai", ())
 
 
 def test_login_ask_saves_nothing_when_the_key_is_refused(monkeypatch, capsys):
