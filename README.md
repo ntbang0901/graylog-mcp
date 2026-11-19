@@ -135,6 +135,9 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
   - A business code (an order or transaction number) works too: when the messages holding it carry a trace id,
     the result lists the requests the code went through (`traces`, at most 10), details the one with an error or
     the most services (`shown_trace`) and adds the messages that hold the code without a trace id (`unlinked`).
+    A code whose shape the [glossary](#glossary-your-teams-words) knows is looked up in the fields named there
+    before the text is searched, so a number that also appears in unrelated lines leads only to its own requests;
+    `code` names the kind of code and the fields that held it.
   - Business errors (`business_error_query`, by default HTTP 4xx) are marked apart from technical ones, with the
     same definitions as the Logs screen: `error` on the line, `business_errors` per service and step,
     `first_business_error`.

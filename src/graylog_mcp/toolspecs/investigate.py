@@ -28,7 +28,8 @@ TRACE_REQUEST = ToolSpec(
     "trace_request",
     "Trace request",
     "Follow one request across services, by its correlation / request / trace id or by a business code such as "
-    "an order or transaction number: searches the configured trace fields (falls back to full text) on all "
+    "an order or transaction number: searches the configured trace fields (then the fields the glossary names "
+    "for that kind of code, then full text) on all "
     "streams and returns a chronological timeline, per-service steps with durations, and the first error. A "
     "code found in several requests lists them in 'traces' and details the one in 'shown_trace'; call again "
     "with another trace id to see it.",

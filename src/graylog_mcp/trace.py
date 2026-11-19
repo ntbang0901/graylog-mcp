@@ -13,6 +13,7 @@ from graylog_mcp import recover
 from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import MessagePage, MessageQuery, RawMessage
 from graylog_mcp.client import GraylogError
+from graylog_mcp.glossary import code_kind
 from graylog_mcp.shaping import Budget
 from graylog_mcp.timerange import TimeRange, format_ts, parse_graylog_ts
 from graylog_mcp.tools import (
@@ -250,10 +251,23 @@ async def trace_request(
     def search(query: str) -> Awaitable[MessagePage]:
         return gl.search(MessageQuery(query=query, timerange=tr, streams=stream_ids, sort_order="asc", limit=limit))
 
+    kind = code_kind(app.config.glossary, gl.cfg, trace_id)
+    in_code_fields: str | None = None
+    held_in: list[str] = []
     page = await search(base)
     if not page.messages:
-        strategy, base = "full_text", phrase(trace_id)
-        page = await search(base)
+        if kind is not None and kind.fields:
+            names = await gl.field_names()
+            if present := [f for f in kind.fields if f in names]:
+                # the code's own fields first: as text, a number also matches lines that have nothing to do with it
+                in_code_fields = _by_trace_fields(gl, [trace_id], present)
+                page = await search(in_code_fields)
+                held_in = [f for f in present if any(str(m.fields.get(f, "")) == trace_id for m in page.messages)]
+        if page.messages and in_code_fields:
+            strategy, base = "code_field", in_code_fields
+        else:
+            strategy, base = "full_text", phrase(trace_id)
+            page = await search(base)
         code = await _code_traces(app, gl, page.messages, tr, stream_ids)
         if code is not None:
             if _has_more(page, limit):
@@ -268,6 +282,8 @@ async def trace_request(
             base = _by_trace_fields(gl, [code.shown])
             page = await search(base)
     out = _header(gl, tr, trace_id=trace_id, strategy=strategy, total=page.total)
+    if kind is not None:
+        out["code"] = {"kind": kind.name} | ({"fields": held_in} if held_in else {})
     if code is not None:
         out["shown_trace"] = code.shown_as(app, code.shown)
         out["traces"] = code.listing(app, gl)
@@ -279,7 +295,7 @@ async def trace_request(
             "or configure trace_fields for this instance"
         )
         out["timeline"] = []
-        anywhere = f"({field_query}) OR {phrase(trace_id)}"
+        anywhere = " OR ".join(f"({q})" for q in (field_query, in_code_fields, phrase(trace_id)) if q)
         if found := await _further_back(gl, anywhere, tr, stream_ids, ends_now=to_time is None):
             out["suggestions"] = [found]
             if "range" in found:

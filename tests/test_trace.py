@@ -242,6 +242,67 @@ async def test_an_empty_absolute_range_suggests_absolute_times(make_app):
     assert "from_time=" in res["hint"] and "range=" not in res["hint"]
 
 
+ORDER_CODES = {"codes": {"order": {"pattern": r"\d{6}", "fields": ["order_id", "orderId"]}}}
+
+
+def _numbered_order(fake):
+    fake.messages = []
+    _add(fake, 300, trace_id="req-aaa111", service="gateway", order_id="100200", message="order received")
+    _add(fake, 299, trace_id="req-aaa111", service="payment", level=3, message="charge refused")
+    _add(fake, 200, trace_id="req-zzz999", service="report", message="took 100200 ms")
+
+
+async def test_a_code_is_looked_up_in_its_field_before_full_text(make_app):
+    app, fake = make_app(glossary=ORDER_CODES)
+    _numbered_order(fake)
+    res = await trace.trace_request(app, "100200", range="1h")
+    assert res["strategy"] == "business_code" and res["code"] == {"kind": "order", "fields": ["order_id"]}
+    assert [t["trace_id"] for t in res["traces"]] == ["req-aaa111"]  # not the line that only holds the number
+    assert res["first_error"]["message"] == "charge refused"
+
+
+async def test_without_the_glossary_the_same_number_is_a_full_text_search(make_app):
+    app, fake = make_app()
+    _numbered_order(fake)
+    res = await trace.trace_request(app, "100200", range="1h")
+    assert "code" not in res and [t["trace_id"] for t in res["traces"]] == ["req-zzz999"]
+
+
+async def test_a_code_whose_field_holds_nothing_falls_back_to_full_text(make_app):
+    app, fake = make_app(glossary=ORDER_CODES)
+    fake.messages = []
+    _add(fake, 300, trace_id="req-aaa111", service="gateway", message="order 100200 received")
+    res = await trace.trace_request(app, "100200", range="1h")
+    assert res["strategy"] == "business_code" and res["code"] == {"kind": "order"}
+    assert res["shown_trace"] == "req-aaa111"
+
+
+async def test_a_code_found_in_its_field_without_a_trace_id(make_app):
+    app, fake = make_app(glossary=ORDER_CODES)
+    fake.messages = []
+    _add(fake, 300, service="batch", order_id="100200", message="exported")
+    _add(fake, 200, service="report", message="took 100200 ms")
+    res = await trace.trace_request(app, "100200", range="1h")
+    assert res["strategy"] == "code_field" and [m["message"] for m in res["timeline"]] == ["exported"]
+    assert res["code"] == {"kind": "order", "fields": ["order_id"]}
+
+
+async def test_a_trace_id_shaped_like_a_code_is_still_a_trace_id(make_app):
+    app, fake = make_app(glossary=ORDER_CODES)
+    fake.messages = []
+    _add(fake, 300, trace_id="100200", service="gateway", message="hello")
+    res = await trace.trace_request(app, "100200", range="1h")
+    assert res["strategy"] == "trace_fields" and res["code"] == {"kind": "order"}
+
+
+async def test_an_empty_range_looks_further_back_in_the_code_field_too(make_app):
+    app, fake = make_app(glossary=ORDER_CODES)
+    fake.messages = []
+    _add(fake, 600, trace_id="req-aaa111", service="gateway", order_id="100200", message="order received")
+    res = await trace.trace_request(app, "100200", range="1m")
+    assert res["suggestions"][0]["count"] == 1 and res["code"] == {"kind": "order"}
+
+
 def _wide_lines(fake, lines):
     fake.messages = []
     for i in range(lines):

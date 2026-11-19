@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
   the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
   terms of the same instance stops the load with both names.
 - `describe(what="glossary")` lists the glossary, for one instance when `instance` is given.
+- `trace_request` looks a code up in the fields its glossary entry names (`[glossary.codes.<name>] fields`) before
+  searching the text, so a number that also appears in unrelated lines leads only to its own requests; `code` in the
+  result names the kind of code and the fields that held it. A code found in its field on lines without any trace id
+  returns those lines (`strategy` is `code_field`).
 - `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
   id, it lists the requests the code went through (`traces`), details the one with an error or the most services
   (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).
