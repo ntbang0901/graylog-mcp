@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import sys
+import time
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
+from graylog_mcp.ask.command import CommandClient
+from graylog_mcp.ask.openai import OpenAIClient
 from graylog_mcp.ask.providers import SCORE, UNDERSTAND, ProviderError, Providers, json_object
 from graylog_mcp.config import ConfigError, ProviderConfig, parse_config
 from tests.conftest import make_config
+from tests.fake_openai import FakeOpenAI
 
 MAIN = {"instances": {"main": {"url": "https://graylog.test", "token_env": "TEST_GRAYLOG_TOKEN"}}}
 GATEWAY = {"kind": "openai", "base_url": "http://127.0.0.1:4000/v1", "model": "acme-default"}
@@ -288,3 +296,171 @@ def test_the_json_object_of_a_reply_is_found_in_what_surrounds_it(text):
 def test_a_reply_without_a_json_object_is_refused(text):
     with pytest.raises(ValueError):
         json_object(text)
+
+
+# ------------------------------------------------------------------ an OpenAI-compatible endpoint
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    monkeypatch.setattr("graylog_mcp.ask.openai.RETRY_SECONDS", 0)
+
+
+def _gateway(fake: FakeOpenAI, **settings) -> OpenAIClient:
+    cfg = ProviderConfig(
+        name="gw",
+        kind="openai",
+        base_url="http://127.0.0.1:4000/v1",
+        model="acme-default",
+        **{"api_key_env": "ACME_GATEWAY_KEY", "api_key": "fake-gateway-key", **settings},
+    )
+    return OpenAIClient(cfg, fake.transport)
+
+
+REPLY = '{"answers": {"intent": {"choice": "count", "confidence": 0.8}}}'
+
+
+@pytest.mark.parametrize(
+    "content",
+    [REPLY, f"```json\n{REPLY}\n```", f"<think>count or search?</think>\n{REPLY}", f"The answer is {REPLY}. Done."],
+)
+async def test_the_endpoint_is_asked_in_one_message_and_its_reply_read(content):
+    fake = FakeOpenAI([content])
+    client = _gateway(fake)
+
+    got = await client.answers("how many errors", INTENT)
+
+    assert got == {"intent": {"choice": "count", "confidence": 0.8}}
+    (body,) = fake.bodies
+    assert (body["model"], body["temperature"]) == ("acme-default", 0)
+    assert body["response_format"] == {"type": "json_object"}
+    system, user = body["messages"]
+    assert (system["role"], user["role"]) == ("system", "user")
+    assert json.loads(user["content"]) == {"state": "how many errors", "questions": INTENT}
+    assert "how many errors" not in system["content"]  # the instructions are fixed text
+    assert (client.requests, client.bytes_sent) == (1, len(fake.sent[0]))
+    await client.aclose()
+
+
+async def test_answers_without_the_wrapper_and_a_choice_without_a_confidence_are_read():
+    client = _gateway(FakeOpenAI(['{"intent": {"choice": "search"}, "c0": {"noul": 0.2}}']))
+    got = await client.answers("q", {**INTENT, **RELATED})
+    assert got == {"intent": {"choice": "search", "confidence": 0.7}, "c0": {"noul": 0.2}}
+
+
+async def test_an_endpoint_that_refuses_json_mode_is_asked_again_without_it():
+    fake = FakeOpenAI([400, REPLY, REPLY])
+    client = _gateway(fake)
+    assert await client.answers("q", INTENT)
+    assert "response_format" in fake.bodies[0] and "response_format" not in fake.bodies[1]
+    await client.answers("q", INTENT)
+    assert "response_format" not in fake.bodies[2]  # remembered: not refused again on every question
+    assert client.requests == 3
+
+
+@pytest.mark.parametrize(
+    ("replies", "message", "sent"),
+    [
+        ([500, 500], "HTTP 500", 2),
+        ([503, REPLY], None, 2),
+        ([401], "ACME_GATEWAY_KEY", 1),
+        ([404], "HTTP 404", 1),
+        (["I cannot answer that."], "cannot read", 1),
+        ([400, 400], "HTTP 400", 2),
+    ],
+)
+async def test_an_endpoint_that_fails_is_a_provider_error_without_what_was_sent(replies, message, sent):
+    fake = FakeOpenAI(replies)
+    client = _gateway(fake)
+    if message is None:
+        assert await client.answers("a secret question", INTENT)
+    else:
+        with pytest.raises(ProviderError, match=message) as failure:
+            await client.answers("a secret question", INTENT)
+        assert "secret" not in str(failure.value)
+    assert len(fake.bodies) == sent
+
+
+async def test_an_endpoint_that_cannot_be_reached_is_tried_twice():
+    calls = []
+
+    def refuse(request):
+        calls.append(request)
+        raise httpx.ConnectError("no route")
+
+    cfg = ProviderConfig(name="gw", kind="openai", base_url="https://llm.test/v1", model="m")
+    client = OpenAIClient(cfg, httpx.MockTransport(refuse))
+    with pytest.raises(ProviderError, match="cannot reach gw"):
+        await client.answers("q", INTENT)
+    assert len(calls) == 2
+
+
+async def test_an_endpoint_without_a_key_gets_no_authorization_header():
+    fake = FakeOpenAI([REPLY], key=None)
+    assert await _gateway(fake, api_key_env="", api_key=None).answers("q", INTENT)
+
+
+async def test_a_key_that_was_never_saved_is_said_before_anything_is_sent():
+    fake = FakeOpenAI([REPLY])
+    with pytest.raises(ProviderError, match="no API key in ACME_GATEWAY_KEY"):
+        await _gateway(fake, api_key=None).answers("q", INTENT)
+    assert fake.bodies == []
+
+
+# ------------------------------------------------------------------ a command on this machine
+
+FAKE_COMMAND = str(Path(__file__).parent / "fake_command.py")
+
+
+def _command(tmp_path, mode: str = "", timeout: float = 20) -> tuple[CommandClient, Path]:
+    record = tmp_path / "asked.jsonl"
+    command = (sys.executable, FAKE_COMMAND, str(record), *([mode] if mode else []))
+    return CommandClient(ProviderConfig(name="cli", kind="command", command=command, timeout=timeout)), record
+
+
+@pytest.mark.parametrize("mode", ["", "prose"])
+async def test_a_command_reads_the_questions_on_stdin_and_answers_on_stdout(tmp_path, mode):
+    client, record = _command(tmp_path, mode)
+
+    got = await client.answers({"request": "refund failed"}, {**INTENT, **RELATED})
+
+    assert got["intent"] == {"choice": "count", "confidence": 0.9} and got["c0"] == {"noul": 0.9}
+    asked = json.loads(record.read_text(encoding="utf-8"))
+    assert asked == {"version": 1, "state": {"request": "refund failed"}, "questions": {**INTENT, **RELATED}}
+    assert client.requests == 1 and client.bytes_sent > 0
+
+
+async def test_a_command_that_hangs_is_stopped_at_its_time_limit(tmp_path):
+    client, _ = _command(tmp_path, "hang", timeout=1)
+    began = time.monotonic()
+    with pytest.raises(ProviderError, match="did not answer within 1s"):
+        await client.answers("q", INTENT)
+    assert time.monotonic() - began < 5
+    assert client.last_exit is not None  # the process was reaped, not left behind
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [("fail", "exited with code 3"), ("flood", "more than"), ("missing", "cannot run")],
+)
+async def test_a_command_that_fails_is_a_provider_error_without_its_output(tmp_path, mode, message):
+    client, _ = _command(tmp_path, mode)
+    if mode == "missing":
+        cfg = ProviderConfig(name="cli", kind="command", command=("acme-llm-that-is-not-installed",))
+        client = CommandClient(cfg)
+    with pytest.raises(ProviderError, match=message) as failure:
+        await client.answers("a secret question", INTENT)
+    assert "secret" not in str(failure.value)
+    if mode == "flood":  # stopped while it was still writing, and reaped
+        assert client.last_exit is not None
+
+
+def test_each_kind_of_provider_gets_its_own_client(tmp_path):
+    kinds = [
+        ProviderConfig(name="j", kind="jev", base_url="https://api.typesafe.ai", model="jev-latest", api_key="fake-k"),
+        ProviderConfig(name="o", kind="openai", base_url="https://llm.test/v1", model="m"),
+        ProviderConfig(name="c", kind="command", command=("acme-llm",)),
+    ]
+    made = Providers.create(kinds)
+    assert [type(client).__name__ for _, client in made.order] == ["JevClient", "OpenAIClient", "CommandClient"]
+    assert [client.words for _, client in made.order] == [False, True, True]

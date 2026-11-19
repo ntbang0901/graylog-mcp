@@ -110,9 +110,13 @@ class Providers:
 
 
 def _client(cfg: ProviderConfig, transport: Any) -> Provider:
-    from graylog_mcp.ask.jev import JevClient  # they import ProviderError from here
+    from graylog_mcp.ask.command import CommandClient  # they import ProviderError from here
+    from graylog_mcp.ask.jev import JevClient
+    from graylog_mcp.ask.openai import OpenAIClient
 
-    return JevClient(cfg, transport)
+    if cfg.kind == "command":
+        return CommandClient(cfg)
+    return OpenAIClient(cfg, transport) if cfg.kind == "openai" else JevClient(cfg, transport)
 
 
 def _checked(questions: dict[str, dict[str, Any]], answers: Any) -> dict[str, dict[str, Any]]:
@@ -146,6 +150,20 @@ def _unit(value: Any, clamp: bool = True) -> float | None:
     if clamp:
         return min(1.0, max(0.0, float(value)))
     return float(value) if 0 <= value <= 1 else None
+
+
+UNSTATED_CONFIDENCE = 0.7  # of a choice a model gave without saying how sure it is
+
+
+def read_reply(text: str) -> dict[str, Any]:
+    """The answers in the text a model or a command wrote: under "answers", or the object itself. Raises
+    ``ValueError`` when the text holds no JSON object."""
+    found = json_object(text)
+    answers = found["answers"] if isinstance(found.get("answers"), dict) else found
+    for answer in answers.values():
+        if isinstance(answer, dict) and "choice" in answer:
+            answer.setdefault("confidence", UNSTATED_CONFIDENCE)
+    return dict(answers)
 
 
 def json_object(text: str) -> Any:
