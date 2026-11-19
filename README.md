@@ -350,8 +350,35 @@ another account or a proxy of your own); the environment variables `GRAYLOG_MCP_
 TypeSafe's System One API (`POST /v1/systemone`). `graylog-mcp logout --ask` forgets the saved key, model and
 endpoint.
 The default model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
-from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
-only" so the asker can correct it.
+from the existing tools and fixed sentences, and starts with what was understood, so the asker can correct it:
+
+```
+Understood: prod, "trong 15 phút qua" (2026-11-19 10:15 to 10:30), technical and business errors.
+"thanh toán" is understood as payment service, filtered by service:payment.
+```
+
+**What is read by rule, without the model.** Four things are read from the question itself; Jev is asked only for
+what is left (what the question wants, and which environment when several are configured):
+
+| Read by rule | Examples | Set in |
+|---|---|---|
+| Time, as an exact range in the instance's timezone | "15 phút qua", "last 2 hours", "sáng nay", "yesterday afternoon", "tuần trước", "từ 9h đến 11h", "since 9am", "12/11", "ngày 12 tháng 11" | `[ask.time]` |
+| Kind of error | "lỗi" or "error" alone: technical and business; "timeout", "exception", "sập": technical; "bị từ chối", "declined", "invalid": business | `[glossary.error_words]` |
+| The team's terms | "thanh toán" as `service:payment` | `[glossary.terms]` |
+| Codes | `ORD-1001` | `[glossary.codes]` |
+
+Time phrases work with or without Vietnamese accents. "Last week" and "tuần trước" are the previous calendar week,
+"past week" and "tuần qua" the last 7 days; a single clock time ("lúc 9h") is half an hour either side; a day
+without a year is the last such day. A question that names no time is passed to Jev, which picks one of five
+periods as before.
+
+Technical and business errors are the instance's own definitions (`technical_error_query`, `business_error_query`;
+by default the error query or HTTP 5xx, and HTTP 4xx). A count of "errors" gives both kinds apart
+(`result.by_kind`). An instance that defines no business errors is counted on technical ones and the summary says
+so.
+
+`understood` in the result holds the same reading as data, with where each part came from (`sources`: `rules`,
+`jev`, `caller` or `default`), and `ran` is the Graylog query that ran.
 
 **What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
 `max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
@@ -360,7 +387,11 @@ read (GET and the read-only searches).
 
 When the question is too vague ("Is the system ok?") `ask` returns a `clarify` text instead of guessing; when
 nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
-An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
+An error without a trace id cannot be followed across services: `around` then holds the lines of the same source
+within 30 seconds of it, and the hint says they are near in time, not one request. `cost` in the result counts the
+requests made, next to the cap (`graylog_cap`, from `[limits] max_requests`, 20). A question that would go past
+the cap is answered in part and says what it left out: "Checked 2 of 3 codes; 1 not checked: 15/20 Graylog
+requests used."
 
 `ask` reads the [glossary](#glossary-your-teams-words) itself, without TypeSafe: the `query` of a term named in the
 question is ANDed into the search, `understood.topics` lists the term, and the summary says how it was read
@@ -378,11 +409,25 @@ because a code's history crosses services.
 # relevance = 0.5                    # an error group scoring lower is "not what you described"
 # code_patterns = ['ORD-\d+']        # older name of [glossary.codes]: lets "what happened to order ORD-123?" find the code
 # model, base_url, max_candidates, send_chars
+
+[ask.time]
+# morning = [6, 12]                  # hours of "sáng" / "morning"; also noon [11, 14], afternoon [12, 18],
+#                                    # evening [18, 24], night [22, 6]
+# week_start = "monday"              # or "sunday"
+# date_order = "DMY"                 # "MDY": 11/12 is 12 November
+
+[glossary.error_words]               # a key given here replaces the built-in list of that key
+# either = ["lỗi", "error", "failed"]
+# technical = ["timeout", "exception"]
+# business = ["bị từ chối", "declined"]
 ```
 
-Limits: the error groups come from the newest 500 error messages of the period, and the traces of one error are
-looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
-(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
+How the described error is found: every error line of the period when one read (`max_limit`, 500) holds them all;
+else the newest lines of six equal parts of the period, so an error from its first hour is still a candidate.
+Where the instance has the field of `group_fields.exception`, one aggregation adds every exception of the period
+with its exact count; a count without it is scaled from the sample and marked `estimated`. Set that field to what
+your logs use (`graylog-mcp detect` suggests it). The traces of one error are looked up in one query of at most 500
+messages. The trace and service fields are the instance's (`trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
 `api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
 
 ## Root cause analysis
@@ -983,7 +1028,7 @@ src/graylog_mcp/
   trace.py      following one request or one business code across services
   glossary.py   the team's business terms and code shapes, matched in a question
   rca.py        root cause analysis: onsets, change detection, service map, ranking
-  ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
+  ask/          the optional `ask` tool: time phrases, what was understood, error candidates and flow, Jev client, fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name
   toolspecs/    the tools a model sees, each declared once: its arguments and the operations it runs
   server.py     model instructions, and the MCP tools built from those declarations

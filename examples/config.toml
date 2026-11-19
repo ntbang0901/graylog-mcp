@@ -118,6 +118,16 @@ preset = "payment_errors"            # optional: one of the [presets] above abou
 pattern = 'ORD-\d+'                  # what the code looks like
 fields = ["order_id"]                # searched before the text: a number alone also matches unrelated lines
 
+# Words that say which errors a question means. A key given here replaces the built-in list of that key.
+# [glossary.error_words]
+# business = ["bị từ chối", "declined", "hết hạn mức"]
+
+# How ask reads time phrases (README: Ask in plain language).
+# [ask.time]
+# morning = [6, 12]                  # also noon, afternoon, evening, night
+# week_start = "monday"              # or "sunday"
+# date_order = "DMY"                 # "MDY": 11/12 is 12 November
+
 # Scan rules (README: Scan rules). Built-in rules: crash, resource_exhaustion, error_spike, new_error_types,
 # http_5xx, connectivity, database, auth_failures.
 [scan]
