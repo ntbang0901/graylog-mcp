@@ -251,14 +251,14 @@ async def trace_request(
     def search(query: str) -> Awaitable[MessagePage]:
         return gl.search(MessageQuery(query=query, timerange=tr, streams=stream_ids, sort_order="asc", limit=limit))
 
-    kind = code_kind(app.config.glossary, gl.cfg, trace_id)
+    shape = code_kind(app.config.glossary, gl.cfg, trace_id)
     in_code_fields: str | None = None
     held_in: list[str] = []
     page = await search(base)
     if not page.messages:
-        if kind is not None and kind.fields:
+        if shape is not None and shape.fields:
             names = await gl.field_names()
-            if present := [f for f in kind.fields if f in names]:
+            if present := [f for f in shape.fields if f in names]:
                 # the code's own fields first: as text, a number also matches lines that have nothing to do with it
                 in_code_fields = _by_trace_fields(gl, [trace_id], present)
                 page = await search(in_code_fields)
@@ -282,8 +282,8 @@ async def trace_request(
             base = _by_trace_fields(gl, [code.shown])
             page = await search(base)
     out = _header(gl, tr, trace_id=trace_id, strategy=strategy, total=page.total)
-    if kind is not None:
-        out["code"] = {"kind": kind.name} | ({"fields": held_in} if held_in else {})
+    if shape is not None:
+        out["code"] = {"kind": shape.name} | ({"fields": held_in} if held_in else {})
     if code is not None:
         out["shown_trace"] = code.shown_as(app, code.shown)
         out["traces"] = code.listing(app, gl)
