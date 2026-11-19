@@ -6,6 +6,7 @@ from unittest.mock import ANY
 
 import pytest
 
+from graylog_mcp.ask import pipeline
 from graylog_mcp.ask.pipeline import ask
 from graylog_mcp.ask.understand import time_args
 from graylog_mcp.config import ConfigError, parse_config
@@ -340,6 +341,76 @@ async def test_a_flow_is_not_followed_when_the_requests_are_spent(make_ask_app):
     app, _ = make_ask_app(FakeJev(relevant=("bank call failed",)), limits={"max_requests": 6})
     out = await ask(app, "why did checkout fail with a bank connection error in the last hour?")
     assert out["matches"] and "flow" not in out and "Graylog requests used" in out["hint"]
+
+
+async def test_a_fourth_code_is_named_as_not_followed(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, fake = make_ask_app(jev, dataset="basic", ask={"code_patterns": [r"ORD-\d+"]}, limits={"max_requests": 60})
+    fake.messages = []
+    for n in range(4):
+        _add(fake, 900 - n, trace_id=f"req-{n}", service="gateway", message=f"ORD-{n} received")
+    res = await ask(app, "show ORD-0, ORD-1, ORD-2 and ORD-3")
+    assert res["codes"] == ["ORD-0", "ORD-1", "ORD-2"] and res["skipped_codes"] == ["ORD-3"]
+    assert "Only the first 3 codes of a question are followed; 1 not checked." in res["summary"]
+
+
+async def test_a_time_that_has_not_begun_where_the_logs_are_is_asked_about(make_ask_app, monkeypatch):
+    # 10:00 in Asia/Ho_Chi_Minh, the default instance's zone, is 03:00 where the chosen instance logs
+    monkeypatch.setattr(pipeline, "_now", lambda: datetime(2026, 11, 19, 3, 0, tzinfo=UTC))
+    far = {"url": "https://far.test", "token_env": "TEST_GRAYLOG_TOKEN", "timezone": "UTC"}
+    app, _ = make_ask_app(FakeJev(intent="count", instance="far"), instances={"far": far})
+    out = await ask(app, "có bao nhiêu lỗi lúc 9h")
+    assert "result" not in out and "lúc 9h" in out["clarify"] and "UTC" in out["clarify"]
+    assert out["understood"]["sources"]["time"] == "unread"
+
+
+async def test_a_date_inside_a_masked_value_is_not_read_as_the_time(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="count"))
+    out = await ask(app, "login password=12/11/2026 bị lỗi")
+    assert out["understood"]["sources"]["time"] == "jev" and "12/11/2026" not in dumps(out)
+
+
+@pytest.mark.parametrize("intent", ["error_summary", "root_cause", "compare"])
+async def test_a_kind_of_error_a_tool_does_not_take_is_said(make_ask_app, intent):
+    app, _ = make_ask_app(FakeJev(intent=intent), dataset="basic")
+    out = await ask(app, "giao dịch bị từ chối hôm nay")
+    assert out["understood"]["errors"] == "business"
+    assert "business errors are not part of it" in out["summary"] and "level:<=3" in out["summary"]
+
+
+async def test_many_long_matches_stay_under_the_size_cap(make_ask_app):
+    jev = FakeJev(relevant=("failure",))
+    app, fake = make_ask_app(jev, dataset="basic", ask={"send_chars": 2000, "max_candidates": 30})
+    fake.messages = []
+    for i in range(40):
+        word = "".join(chr(97 + int(d)) for d in f"{i:02d}")  # a different template each: letters, not digits
+        _add(fake, 600 - i, level=3, service="payment", message=f"failure {word} " + "y" * 2500)
+    out = await ask(app, "payment failure in the last hour")
+    assert len(dumps(out)) <= app.config.limits.max_output_chars
+    assert out["matches"] and out["matches_omitted"] > 0
+
+
+async def test_an_estimated_count_is_said_as_one(make_ask_app):
+    app, fake = make_ask_app(FakeJev(relevant=("bank call failed",)), dataset="basic")
+    fake.messages = []
+    for i in range(700):
+        _add(fake, 1800 - i * 2, level=3, service="payment", trace_id="req-x", message=f"bank call failed {i}")
+    out = await ask(app, "bank call failed in the last hour")
+    assert out["matches"][0]["estimated"] is True and "(~" in out["summary"]
+
+
+async def test_an_error_only_counted_is_read_before_its_path_is_judged(make_ask_app):
+    jev = FakeJev(relevant=("LedgerError",))
+    app, fake = make_ask_app(jev, dataset="basic", limits={"max_limit": 60, "default_limit": 50})
+    fake.messages = []
+    for i in range(400):
+        _add(fake, 290 - i * 0.01, level=3, service="payment", message=f"bank call failed {i}", exception_class="E")
+    rare = {"trace_id": "req-led1", "exception_class": "org.acme.LedgerError"}
+    _add(fake, 296, service="gateway", trace_id="req-led1", message="POST /ledger received")
+    _add(fake, 295, level=3, service="ledger", message="ledger out of balance", **rare)
+    out = await ask(app, "ledger error in the last hour")
+    assert out["matches"][0]["sample"] == "ledger out of balance" and out["matches"][0]["ref"]
+    assert "hint" not in out and {s["service"] for s in out["flow"]["services"]} == {"gateway", "ledger"}
 
 
 async def test_a_masked_code_is_not_echoed_by_its_trace(make_ask_app):

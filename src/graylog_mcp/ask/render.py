@@ -38,6 +38,13 @@ TEXT: dict[str, dict[str, str]] = {
         "term_filtered": '"{text}" is understood as {what}, filtered by {query}.',
         "terms_together": "These {n} terms narrow the search together: only lines that match all of them count.",
         "codes_skipped": "Checked {done} of {n} codes; {k} not checked: {used} Graylog requests used.",
+        "codes_over": "Only the first {most} codes of a question are followed; {k} not checked.",
+        "lines_not_read": "This error was counted but none of its lines was read ({used} Graylog requests used), so "
+        "nothing is known of its path. Ask about this error alone.",
+        "clarify_time": 'The time in your question ("{words}") has not begun yet where {instance} keeps its time '
+        "({zone}). Say the time you mean in that timezone, or how long ago.",
+        "kind_not_applied": "This answer looks at the instance's error query ({query}) only; business errors are "
+        "not part of it.",
         "flow_not_followed": "The trace of this error was not followed: {used} Graylog requests used. Ask about "
         "this error alone, or raise limits.max_requests.",
         "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
@@ -75,6 +82,13 @@ TEXT: dict[str, dict[str, str]] = {
         "term_filtered": 'Đã hiểu "{text}" là {what}, lọc theo {query}.',
         "terms_together": "{n} thuật ngữ này cùng thu hẹp phép tìm: chỉ tính các dòng khớp tất cả.",
         "codes_skipped": "Đã kiểm tra {done}/{n} mã; còn {k} mã chưa kiểm tra vì đã dùng {used} request Graylog.",
+        "codes_over": "Mỗi câu hỏi chỉ lần theo {most} mã đầu tiên; còn {k} mã chưa kiểm tra.",
+        "lines_not_read": "Lỗi này mới được đếm, chưa đọc được dòng nào của nó (đã dùng {used} request Graylog), "
+        "nên chưa biết gì về đường đi của nó. Hãy hỏi riêng về lỗi này.",
+        "clarify_time": 'Thời điểm trong câu hỏi ("{words}") chưa tới theo giờ của {instance} ({zone}). Hãy nêu '
+        "thời điểm theo múi giờ đó, hoặc nói cách đây bao lâu.",
+        "kind_not_applied": "Câu trả lời này chỉ xét truy vấn lỗi của instance ({query}); lỗi nghiệp vụ không nằm "
+        "trong đó.",
         "flow_not_followed": "Chưa lần theo trace của lỗi này vì đã dùng {used} request Graylog. Hãy hỏi riêng về "
         "lỗi này, hoặc tăng limits.max_requests.",
         "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',

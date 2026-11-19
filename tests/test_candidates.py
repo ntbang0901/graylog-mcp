@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from graylog_mcp.ask.candidates import error_candidates, keywords_of
+from graylog_mcp.ask.candidates import error_candidates, keywords_of, read_lines
 from graylog_mcp.client import requests_sent
 from graylog_mcp.tools import _range
 from tests.test_trace import _add
@@ -36,9 +36,64 @@ async def test_counts_are_exact_when_the_exception_field_exists(make_app):
     _errors(fake, 4, 3 * 3600, "row locked", exception_class="org.acme.LockError")
     found = await _candidates(app)
     timeout = next(c for c in found.groups if c.exception == "java.net.SocketTimeoutException")
-    assert found.exact and timeout.count == 600 and timeout.seen < 600 and found.estimate(timeout) == 600
+    # the exception is counted by Graylog; the group is one message template of it, counted in the sample
+    assert timeout.of_exception == 600 and timeout.count is None and timeout.seen < 600
+    assert not found.exact and 0 < found.estimate(timeout) <= 600
     assert timeout.first and timeout.last and timeout.service == "payment"
-    assert next(c for c in found.groups if c.exception == "org.acme.LockError").count == 4
+    assert next(c for c in found.groups if c.exception == "org.acme.LockError").of_exception == 4
+
+
+async def test_an_exception_shared_by_two_messages_does_not_give_its_count_to_one(make_app):
+    app, fake = make_app(limits={"max_limit": 60, "default_limit": 50})
+    fake.messages = []
+    for i in range(400):
+        _add(fake, 290 - i * 0.01, level=3, service="payment", message=f"bank call failed {i}", exception_class="E")
+    for i in range(300):
+        _add(fake, 280 - i * 0.01, level=3, service="ledger", message=f"ledger sync failed {i}", exception_class="E")
+    found = await _candidates(app, span="1h")
+    (ledger,) = [c for c in found.groups if "ledger sync" in c.text]
+    assert ledger.count is None and ledger.of_exception == 700 and found.estimate(ledger) <= 700
+
+
+async def test_a_range_read_whole_is_counted_exactly(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    _errors(fake, 40, 290, "payment timeout", exception_class="java.net.SocketTimeoutException")
+    _errors(fake, 5, 400, "pool exhausted", exception_class="java.net.SocketTimeoutException")
+    found = await _candidates(app)
+    assert found.exact and sorted(c.count for c in found.groups) == [5, 40]
+
+
+async def test_a_long_exception_value_is_clipped(make_app):
+    app, fake = make_app()
+    fake.messages = []
+    for i in range(5):
+        _add(fake, 290 - i, level=3, service="payment", message="boom", exception_class=f"{i} " + "x" * 3000)
+    found = await _candidates(app)
+    assert found.groups and all(len(c.exception) <= 120 and len(c.text) <= 250 for c in found.groups)
+
+
+async def test_the_lines_of_a_group_only_the_aggregation_saw_can_be_read(make_app):
+    app, fake = make_app(limits={"max_limit": 60, "default_limit": 50})
+    fake.messages = []
+    _errors(fake, 400, 290, "bank call failed", spread=0.01, exception_class="java.net.SocketTimeoutException")
+    _add(
+        fake,
+        295,
+        level=3,
+        service="ledger",
+        trace_id="req-led1",
+        message="ledger out of balance",
+        exception_class="org.acme.LedgerError",
+    )
+    gl = app.gl(None)
+    tr = _range(gl, "1h", None, None, "1h")
+    found = await error_candidates(app, gl, tr, gl.cfg.error_query, (), 250, 30)
+    rare = next(c for c in found.groups if c.exception == "org.acme.LedgerError")
+    assert rare.sample == {} and not rare.traces
+    await read_lines(app, gl, tr, gl.cfg.error_query, rare, 250)
+    assert rare.message == "ledger out of balance" and rare.traces == [("trace_id", "req-led1")]
+    assert rare.service == "ledger" and rare.sample["ref"]
 
 
 async def test_without_the_exception_field_counts_are_estimates(make_app):

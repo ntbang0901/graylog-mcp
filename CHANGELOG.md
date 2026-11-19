@@ -9,17 +9,19 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - `ask` reads time phrases itself, in Vietnamese (with or without accents) and English, as an exact range in the
   instance's timezone: a length of time back ("15 phút qua", "last 2 hours"), a day, a part of a day ("sáng nay",
-  "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "since 9am") and dates ("12/11", "ngày 12
-  tháng 11"). `[ask.time]` sets the hours of the parts of the day, the first day of the week and the order of day
-  and month.
+  "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "lúc 9h tối qua", "since 9am") and dates
+  ("ngày 12/11", "từ 12/11 đến 15/11", "ngày 12 tháng 11"). A phrase only half understood ("vài ngày qua", a date
+  that does not exist, a bare "12/11") is not read, and the provider is asked instead. `[ask.time]` sets the hours
+  of the parts of the day, the first day of the week and the order of day and month.
 - `ask` fills one structure with what it understood, rules first: the time phrase and the kind of error are read
   without the provider, which is then asked only for what is left (the intent, and the environment when several
   exist). `understood` names where each part came from (`sources`), `ran` is the Graylog query that ran, and the
   summary shows the time as typed with the range it was taken as.
 - `ask` counts errors by kind when the question says only "errors" (`result.by_kind`), says so when the instance
-  defines no business errors, answers "show me the lines about …" with a search (`intent` `search`), and for an
+  defines no business errors or when the tool it used takes no kind of error (the error summary, the root cause
+  analysis, the comparison), answers "show me the lines about …" with a search (`intent` `search`), and for an
   error without a trace id returns the lines of the same source around it (`around`) instead of only a hint.
-- `ask` stays within `max_requests`: the codes of one question share the count, a code that could no longer be
+- `ask` keeps to `max_requests`: the codes of one question share the count, a code that could no longer be
   followed whole is listed in `skipped_codes` and named in the summary ("Checked 2 of 3 codes; 1 not checked: 15/20
   Graylog requests used."), an error's trace is not followed when fewer than three requests are left, and `cost`
   carries `graylog_cap`.
@@ -58,9 +60,10 @@ All notable changes to this project are documented here. The format follows
   `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
   `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.
 - `ask` looks for the described error over the whole range: every error line when one read holds them, else the
-  newest lines of six equal parts of the range, joined with exact counts per exception where the instance has the
-  field of `group_fields.exception` (`matches` then carry `exception`; `estimated` marks a count scaled from the
-  sample). It was the newest 500 error lines.
+  newest lines of six equal parts of the range, joined with every exception of the range and its exact count where
+  the instance has the field of `group_fields.exception` (`matches` then carry `exception` and `exception_count`;
+  `estimated` marks a match's own count scaled from the sample, written "~" in the summary). At most half of the
+  size cap goes to `matches` (`matches_omitted`). It was the newest 500 error lines.
 - "last week" and "tuần trước" in an `ask` question are the previous calendar week (the provider read them as the
   last 7 days); "past week" and "tuần qua" are the last 7 days.
 - Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),

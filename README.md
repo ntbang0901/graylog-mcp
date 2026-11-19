@@ -362,20 +362,26 @@ what is left (what the question wants, and which environment when several are co
 
 | Read by rule | Examples | Set in |
 |---|---|---|
-| Time, as an exact range in the instance's timezone | "15 phút qua", "last 2 hours", "sáng nay", "yesterday afternoon", "tuần trước", "từ 9h đến 11h", "since 9am", "12/11", "ngày 12 tháng 11" | `[ask.time]` |
+| Time, as an exact range in the instance's timezone | "15 phút qua", "last 2 hours", "sáng nay", "yesterday afternoon", "tuần trước", "từ 9h đến 11h", "lúc 9h tối qua", "since 9am", "ngày 12/11", "từ 12/11 đến 15/11", "ngày 12 tháng 11" | `[ask.time]` |
 | Kind of error | "lỗi" or "error" alone: technical and business; "timeout", "exception", "sập": technical; "bị từ chối", "declined", "invalid": business | `[glossary.error_words]` |
 | The team's terms | "thanh toán" as `service:payment` | `[glossary.terms]` |
 | Codes | `ORD-1001` | `[glossary.codes]` |
 
-Time phrases work with or without Vietnamese accents. "Last week" and "tuần trước" are the previous calendar week,
-"past week" and "tuần qua" the last 7 days; a single clock time ("lúc 9h") is half an hour either side; a day
-without a year is the last such day. A question that names no time is passed to Jev, which picks one of five
-periods as before.
+Time phrases work with or without Vietnamese accents (in a question typed with accents, a bare word stays what
+it is: "ngay" is not "ngày"). "Last week" and "tuần trước" are the previous calendar week, "past week" and "tuần
+qua" the last 7 days; a single clock time ("lúc 9h") is half an hour either side, and an hour said with its part
+of the day is the hour of that part ("9h tối" is 21:00); a day without a year is the last such day. A phrase that
+is only half understood is not read at all, because a wrong period is searched in silence: "vài ngày qua" (how
+many?), a date that does not exist, or "12/11" with nothing saying it is a day (write "ngày 12/11", or add the
+year; alone it is as much a share as "3/4"). A question whose time is not read is passed to Jev, which picks one
+of five periods as before.
 
 Technical and business errors are the instance's own definitions (`technical_error_query`, `business_error_query`;
-by default the error query or HTTP 5xx, and HTTP 4xx). A count of "errors" gives both kinds apart
-(`result.by_kind`). An instance that defines no business errors is counted on technical ones and the summary says
-so.
+by default the error query or HTTP 5xx, and HTTP 4xx). The kind is applied to counts, searches and the search for
+a described error; a count of "errors" gives both kinds apart (`result.by_kind`). An instance that defines no
+business errors is counted on technical ones and the summary says so. The error summary, the root cause analysis
+and the comparison look at the instance's `error_query` alone: when the question named business errors, the
+summary says they are not part of that answer.
 
 `understood` in the result holds the same reading as data, with where each part came from (`sources`: `rules`,
 `jev`, `caller` or `default`), and `ran` is the Graylog query that ran.
@@ -424,9 +430,12 @@ because a code's history crosses services.
 
 How the described error is found: every error line of the period when one read (`max_limit`, 500) holds them all;
 else the newest lines of six equal parts of the period, so an error from its first hour is still a candidate.
-Where the instance has the field of `group_fields.exception`, one aggregation adds every exception of the period
-with its exact count; a count without it is scaled from the sample and marked `estimated`. Set that field to what
-your logs use (`graylog-mcp detect` suggests it). The traces of one error are looked up in one query of at most 500
+Where the instance has the field of `group_fields.exception`, one aggregation adds every exception of the period,
+also one no sampled line showed, with its exact count (`exception_count` on a match: the lines with that
+exception, whatever their message). The count of a match itself is exact when every line was read; otherwise it is
+scaled from the sample, marked `estimated` and written with a "~" in the summary. Set that field to what your logs
+use (`graylog-mcp detect` suggests it). At most half of the size cap goes to the matches (`matches_omitted` counts
+the rest). The traces of one error are looked up in one query of at most 500
 messages. The trace and service fields are the instance's (`trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
 `api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
 

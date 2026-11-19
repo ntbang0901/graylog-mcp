@@ -13,7 +13,7 @@ from typing import Any
 
 from graylog_mcp import rca, tools
 from graylog_mcp.ask import render
-from graylog_mcp.ask.candidates import Candidate, Candidates, error_candidates, keywords_of
+from graylog_mcp.ask.candidates import Candidate, Candidates, error_candidates, keywords_of, read_lines
 from graylog_mcp.ask.flow import TRACE_MARGIN, richest_trace
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.ask.understand import understand
@@ -32,6 +32,11 @@ CLOSE_SCORES = 0.1  # the best two matches closer than this are not told apart
 AROUND_SECONDS = 30  # lines shown around an error that no trace id ties to a request
 # what following one code always reads: its trace fields, its text, its requests, the one shown, its errors, and one
 REQUESTS_FOR_A_CODE = 6
+OWN_ERROR_QUERY = ("error_summary", "root_cause", "compare")  # intents whose tools take no kind of error
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
@@ -56,7 +61,10 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
     gl = app.gl(u.instance.value)
     lang = app.config.ask.language
     out: dict[str, Any] = {"understood": u.as_dict(app), "summary": _in_words(app, gl, u)}
-    if u.confidence < app.config.ask.min_confidence:
+    if u.time.source == "unread":
+        words, zone = app.redactor.text(u.time.text or ""), gl.cfg.timezone
+        out["clarify"] = render.say(lang, "clarify_time", words=words, instance=gl.cfg.name, zone=zone)
+    elif u.confidence < app.config.ask.min_confidence:
         out["clarify"] = render.say(lang, "clarify")
     else:
         when = u.when(gl.cfg.tz)
@@ -64,6 +72,11 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         compiled = await compile_query(app, gl, u)
         for note in compiled.notes:
             out["summary"] += "\n" + render.say(lang, note)
+        if u.intent.value in OWN_ERROR_QUERY and (
+            compiled.business if u.errors.value == "both" else u.errors.value == "business"
+        ):
+            # these tools look at error_query alone: the kind the asker named must not read as applied
+            out["summary"] += "\n" + render.say(lang, "kind_not_applied", query=gl.cfg.error_query)
         try:
             answer = await _answer(app, jev, gl, u, compiled, when, question, typed)
         except QueryError as exc:  # a Graylog without search/validate finds a broken term query only here
@@ -87,13 +100,14 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
 async def _understand(app: App, jev: JevClient, question: str, typed: str, instance: str | None) -> Understood:
     """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the rules."""
     cfg = app.config
-    now = datetime.now(UTC)
+    now = _now()
     first = app.gl(instance).cfg  # the caller's instance, else the default
     kind = error_kind(cfg.glossary.error_words, typed)
-    # which zone the time is in is not known yet; that the question names one is, and Jev is not asked then
-    skip = [
-        name for name, read in (("time", read_time(typed, first.tz, now, cfg.ask.time)), ("errors_only", kind)) if read
-    ]
+    # The time is read from the redacted question: a date inside a masked value is not the asker's period, and
+    # the words read are shown back. Which zone it is in is not known yet; that the question names a time is,
+    # and Jev is not asked about it then.
+    named = read_time(question, first.tz, now, cfg.ask.time)
+    skip = [name for name, read in (("time", named), ("errors_only", kind)) if read]
     chosen = await understand(jev, cfg, question, fixed_instance=instance, skip=skip)
     if instance:
         where = Slot(first.name, "caller")
@@ -102,9 +116,12 @@ async def _understand(app: App, jev: JevClient, question: str, typed: str, insta
     else:
         where = Slot(first.name, "default")
     inst = app.gl(where.value).cfg
-    span = read_time(typed, inst.tz, now, cfg.ask.time)
+    span = read_time(question, inst.tz, now, cfg.ask.time)
     if span is not None:
         time = Slot(span, "rules", text=span.text)
+    elif named is not None:
+        # read in the default instance's zone, not begun in this one's: asking back beats a period nobody named
+        time = Slot("unspecified", "unread", confidence=0.0, text=named.text)
     elif chosen.time is not None:
         time = Slot(chosen.time, "jev")
     else:
@@ -223,16 +240,21 @@ async def _trace_codes(app: App, instance: str, u: Understood, when: dict[str, A
         if traces and requests_left(app) < REQUESTS_FOR_A_CODE:
             break
         traces.append(await trace_request(app, code, instance=instance, **when))
-    shown = [app.redactor.text(c) for c in wanted]
+    shown = [app.redactor.text(c) for c in codes]
     for found, code in zip(traces, shown, strict=False):
         found["trace_id"] = code  # trace_request repeats what it was asked for; here that is the unmasked code
     out: dict[str, Any] = {"codes": shown[: len(traces)], "traces": _sharing_the_budget(app, traces)}
     if skipped := shown[len(traces) :]:
         out["skipped_codes"] = skipped
-        used = requests_used(app)
-        out["summary_extra"] = render.say(
-            lang, "codes_skipped", done=len(traces), n=len(wanted), k=len(skipped), used=used
-        )
+        said = []
+        if len(traces) < len(wanted):
+            unread = len(wanted) - len(traces)
+            said.append(
+                render.say(lang, "codes_skipped", done=len(traces), n=len(wanted), k=unread, used=requests_used(app))
+            )
+        if len(codes) > MAX_CODES:
+            said.append(render.say(lang, "codes_over", most=MAX_CODES, k=len(codes) - MAX_CODES))
+        out["summary_extra"] = " ".join(said)
     return out
 
 
@@ -284,8 +306,24 @@ def _match(score: float, group: Candidate, found: Candidates) -> dict[str, Any]:
         out["service"] = group.service
     if group.exception:
         out["exception"] = group.exception
+    if group.of_exception is not None and group.count is None:
+        out["exception_count"] = group.of_exception  # exact, but of the exception: this message is one of its kinds
     if group.count is None:
         out["estimated"] = True  # counted in the sampled lines and scaled to the range, not by Graylog
+    return out
+
+
+def _times(match: dict[str, Any]) -> str:
+    """How often, for a sentence: a count scaled from a sample is said as one."""
+    return f"~{match['count']}" if match.get("estimated") else str(match["count"])
+
+
+def _matches(app: App, matches: list[dict[str, Any]]) -> dict[str, Any]:
+    """The matches that fit half the size cap, the best first; the flow and the lines around share the rest."""
+    kept = Budget(app.config.limits.max_output_chars // 2, reserve=0).fit(matches)
+    out: dict[str, Any] = {"matches": kept}
+    if len(kept) < len(matches):
+        out["matches_omitted"] = len(matches) - len(kept)
     return out
 
 
@@ -325,29 +363,35 @@ async def _follow_flow(
     if not kept:
         best = ranked[0][0] if ranked else 0.0
         return {"matches": [], "ran": query, "summary_extra": render.say(lang, "no_match", score=best)}
-    matches = [_match(s, g, found) for s, g in kept]
-    if len(kept) > 1 and kept[0][0] - kept[1][0] < CLOSE_SCORES:
-        lines = [render.say(lang, "match", n=m["count"], first=m["first"], last=m["last"], sample=m["sample"])
-                 for m in matches[:5]]  # fmt: skip
-        extra = "\n".join([render.say(lang, "ambiguous"), *lines])
-        return {"matches": matches, "ran": query, "summary_extra": extra}
-
     group = kept[0][1]
+    close = len(kept) > 1 and kept[0][0] - kept[1][0] < CLOSE_SCORES
+    if not close and not group.sample and requests_left(app) >= 2:
+        # only counted so far: its lines say which service it is, and whether a trace id leads further
+        await read_lines(app, gl, tr, query, group, cfg.send_chars)
+    out = _matches(app, [_match(s, g, found) for s, g in kept])
+    out["ran"] = query
+    matches = out["matches"]
+    if close:
+        lines = [render.say(lang, "match", n=_times(m), first=m["first"], last=m["last"], sample=m["sample"])
+                 for m in matches[:5]]  # fmt: skip
+        return out | {"summary_extra": "\n".join([render.say(lang, "ambiguous"), *lines])}
+
     if not group.traces:
         fields = ", ".join(gl.cfg.trace_fields)
         ref = group.sample.get("ref")
-        if not ref or requests_left(app) < 3:
-            return {"matches": matches, "ran": query, "hint": render.say(lang, "no_trace", fields=fields)}
+        if not ref:
+            return out | {"hint": render.say(lang, "lines_not_read", used=requests_used(app))}
+        if requests_left(app) < 3:
+            return out | {"hint": render.say(lang, "no_trace", fields=fields)}
         # no id ties the error to a request: the lines of its source around it are the nearest thing to a path
         around = await tools.context_around(app, ref, seconds=AROUND_SECONDS, scope="source", instance=instance)
         hint = render.say(lang, "no_trace_around", fields=fields, seconds=AROUND_SECONDS)
-        return {"matches": matches, "ran": query, "around": around, "hint": hint}
+        return out | {"around": around, "hint": hint}
     if requests_left(app) < 3:
-        hint = render.say(lang, "flow_not_followed", used=requests_used(app))
-        return {"matches": matches, "ran": query, "hint": hint}
+        return out | {"hint": render.say(lang, "flow_not_followed", used=requests_used(app))}
     trace_id = await richest_trace(app, gl, group, tr)
     if trace_id is None:
-        return {"matches": matches, "ran": query, "hint": render.say(lang, "no_flow")}
+        return out | {"hint": render.say(lang, "no_flow")}
     trace = await trace_request(
         app,
         trace_id,
@@ -365,7 +409,7 @@ async def _follow_flow(
         "first_error": first_error or None,
     }
     path = " → ".join(s["service"] for s in steps)
-    summary = render.say(lang, "flow", sample=matches[0]["sample"], n=matches[0]["count"], services=path)
+    summary = render.say(lang, "flow", sample=matches[0]["sample"], n=_times(matches[0]), services=path)
     if first_error.get("service"):
         summary += " " + render.say(lang, "first_error", service=first_error["service"])
-    return {"matches": matches, "ran": query, "flow": flow, "summary_extra": summary}
+    return out | {"flow": flow, "summary_extra": summary}
