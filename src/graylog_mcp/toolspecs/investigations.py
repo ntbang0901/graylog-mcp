@@ -122,9 +122,21 @@ def with_recording(spec: ToolSpec) -> ToolSpec:
 
 
 NOTE = """
-Investigations: for more than a lookup, investigation(action='start') first, then pass investigation_id and
-owner_fence (and check_id) on the searches. Record a check's purpose before running it and your assessment after: a
-call that succeeded is not a finding. Give the user the 'ui' link as it is.
+Investigations (a local record the user follows in the admin page and a later session resumes):
+- When: for a question that takes more than one search, or that someone may continue (an incident, "why did X"). A
+  single lookup needs none. First get_investigation with no id: if an open one covers the question, resume it
+  (action='resume'; it returns a new owner_fence) instead of starting another. To verify a fix, start with follows.
+- Run: start fixes the window in absolute times; keep the searches inside it, and change it only by update with a
+  reason. Pass investigation_id, owner_fence and check_id on each search: a call without them is not recorded.
+- Write: record a check's purpose before running it; after it, a check_result and an assessment. supported or
+  contradicted_in_scope must cite evidence ids from a step of this investigation that succeeded; with none, say
+  undetermined. A call that succeeded is not a finding, and a conclusion no assessment cites is not one either.
+- Do not invent: identities come from evidence, never a placeholder such as [EMAIL]; a link between two is
+  'candidate' until observed, with its basis; counts are compared only with their denominator, else it is unknown.
+  What only the user has (a log you cannot see, a deploy time) is an evidence_request: ask, and record the answer.
+- End: checkpoint with a briefing when you stop partway; finish with the outcome you found, including
+  cause_undetermined and no_anomaly_detected. Whether a fix worked is verification, not the outcome.
+Give the user the 'ui' link as it is.
 """
 
 __all__ = [

@@ -22,9 +22,9 @@ interface SearchResult {
     suggestions?: { query: string; count?: number }[];
     rewritten?: { why?: string[]; ran: string };
 }
-function searchArgs(v: LogsView, narrow: string, offset = 0) {
+function searchArgs(v: LogsView, narrow: string, offset = 0, scoped = true) {
     const parts = [
-            v.query !== "*" ? v.query : "",
+            scoped && v.query !== "*" ? v.query : "",
             v.errorsOnly && v.errorQuery ? v.errorQuery : "",
             narrow.trim(),
         ].filter(Boolean),
@@ -54,10 +54,12 @@ function LogRow({
     m,
     index,
     view,
+    onSearch,
 }: {
     m: LogLine;
     index: number;
     view: LogsView;
+    onSearch: (term: string) => void;
 }) {
     const [open, setOpen] = useState(false),
         [detail, setDetail] = useState<Fields | null>(null),
@@ -144,9 +146,27 @@ function LogRow({
                                         <>
                                             <dt class="mono">{k}</dt>
                                             <dd class="mono">
-                                                {typeof v === "object"
-                                                    ? JSON.stringify(v)
-                                                    : String(v ?? "")}
+                                                {typeof v === "object" ||
+                                                v == null ||
+                                                v === "" ? (
+                                                    typeof v === "object" ? (
+                                                        JSON.stringify(v)
+                                                    ) : (
+                                                        String(v ?? "")
+                                                    )
+                                                ) : (
+                                                    <button
+                                                        class="lval"
+                                                        title={`Search ${k}:${phrase(v)}`}
+                                                        onClick={() =>
+                                                            onSearch(
+                                                                `${k}:${phrase(v)}`,
+                                                            )
+                                                        }
+                                                    >
+                                                        {String(v)}
+                                                    </button>
+                                                )}
                                             </dd>
                                         </>
                                     ))}
@@ -214,6 +234,7 @@ export function LogsDrawer() {
         rev = logsRevision.value,
         [query, setQuery] = useState(""),
         [narrow, setNarrow] = useState(""),
+        [scoped, setScoped] = useState(true),
         [lines, setLines] = useState<LogLine[]>([]),
         [result, setResult] = useState<SearchResult | null>(null),
         [error, setError] = useState(""),
@@ -223,6 +244,7 @@ export function LogsDrawer() {
     useEffect(() => {
         setQuery("");
         setNarrow("");
+        setScoped(true);
     }, [rev]);
     useEffect(() => {
         const t = setTimeout(() => setNarrow(query), 450);
@@ -247,6 +269,7 @@ export function LogsDrawer() {
                         view,
                         narrow,
                         more ? result?.next_offset || 0 : 0,
+                        scoped,
                     ),
                 })
             ).result;
@@ -269,7 +292,7 @@ export function LogsDrawer() {
         return () => {
             seq.current++;
         };
-    }, [view, narrow, rev]);
+    }, [view, narrow, rev, scoped]);
     useLayoutEffect(() => {
         if (list.current && lines.length)
             revealRows([...list.current.querySelectorAll(".lrow")].slice(-50));
@@ -283,7 +306,7 @@ export function LogsDrawer() {
                   ? `${new Date(view.from).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })} to ${new Date(view.to!).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
                   : `last ${view.range === "7d" ? "7 days" : "24 hours"}`)
             : "";
-    const effective = view ? searchArgs(view, narrow).query : "",
+    const effective = view ? searchArgs(view, narrow, 0, scoped).query : "",
         fix = result?.suggestions?.[0];
     return (
         <Dialog
@@ -352,6 +375,26 @@ export function LogsDrawer() {
                         }}
                     />
                 )}
+                {view && view.query !== "*" && (
+                    <button
+                        class={`btn sm ghost logs-scope${scoped ? "" : " off"}`}
+                        title={
+                            scoped
+                                ? "Search the whole time range, without this filter"
+                                : "Put the filter back"
+                        }
+                        onClick={() => setScoped(!scoped)}
+                    >
+                        {scoped ? (
+                            <>
+                                <span class="mono truncate">{view.query}</span>{" "}
+                                ✕
+                            </>
+                        ) : (
+                            "Filter removed · restore"
+                        )}
+                    </button>
+                )}
                 <form
                     class="logs-q"
                     id="logsForm"
@@ -416,7 +459,7 @@ export function LogsDrawer() {
                     onClick={async () => {
                         if (!view) return;
                         const v = view,
-                            a = searchArgs(v, narrow);
+                            a = searchArgs(v, narrow, 0, scoped);
                         close();
                         if (await navigate("playground"))
                             playground.value = {
@@ -438,7 +481,7 @@ export function LogsDrawer() {
                         close();
                         void openInLogs({
                             instance: v.instance,
-                            query: searchArgs(v, narrow).query,
+                            query: searchArgs(v, narrow, 0, scoped).query,
                             range: v.range,
                             from: v.from,
                             to: v.to,
@@ -495,6 +538,13 @@ export function LogsDrawer() {
                                     m={m}
                                     index={i}
                                     view={view!}
+                                    onSearch={(term) => {
+                                        const next = query.trim()
+                                            ? `${query.trim()} AND ${term}`
+                                            : term;
+                                        setQuery(next);
+                                        setNarrow(next);
+                                    }}
                                 />
                             ))}
                         {result?.next_offset != null && (

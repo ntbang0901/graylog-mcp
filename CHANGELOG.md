@@ -79,6 +79,12 @@ All notable changes to this project are documented here. The format follows
   (or 6 hours), the Log messages and Errors tiles open every line or every error line, the counts on an environment row
   open that environment's lines, and the Tool calls and Found something tiles open Activity. The drawer can switch
   environment.
+- The log drawer on the Logs dashboard can search outside its filter: the filter (for example `service:"payment"`) is
+  shown as a chip with a ✕ that searches the whole time range, and a field value in an opened line is a button that
+  searches `field:value`.
+- With investigations on, the server instructions give agents the working rules: when to start or resume one, what to
+  pass on each search, what to record before and after a check, that a supported or contradicted assessment must cite
+  evidence from a succeeded step, and how to end.
 
 ### Changed
 - The admin page is built from `ui/` (Vite, Preact and `@preact/signals`, strict TypeScript, one component per screen)
