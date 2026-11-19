@@ -29,7 +29,14 @@ _COMMON = frozenset({
     "what", "when", "where", "which", "with", "from", "have", "many", "much", "show", "that", "this", "there",
     "were", "does", "about", "into", "over", "error", "errors", "failed", "failure", "last", "past", "hour",
     "hours", "minute", "minutes", "today", "yesterday", "week", "month",
+    "since", "after", "before", "between", "during", "until", "while", "then", "than", "them", "they", "their",
+    "these", "those", "been", "being", "some", "most", "more", "less", "very", "just", "also", "only", "still",
+    "again", "here", "could", "would", "should", "please", "look", "check", "tell", "give", "want", "need", "know",
+    "help", "thanks", "morning", "afternoon", "evening", "night", "tonight", "days", "weeks", "months", "recently",
+    "right", "going", "getting", "happen", "happened", "happening", "wrong", "problem", "problems", "issue",
+    "issues", "logs",
     "trong", "nhieu", "khong", "duoc", "nhung", "ngay", "phut", "tuan", "thang",
+    "giup", "minh", "sang", "chieu", "dang",
 })  # fmt: skip
 _WORD = re.compile(r"(?<![^\W_])[^\W\d_]\w{3,}(?![^\W_])")
 

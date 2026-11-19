@@ -482,13 +482,16 @@ async def _follow_flow(
         scores = [g.hits / len(keywords) if keywords else 0.0 for g in groups]
         scored_by, least = "rules", 1.0 / (len(keywords) + 1)
     ranked = sorted(zip(scores, groups, strict=True), key=lambda p: p[0], reverse=True)
-    if judged is None and not keywords and ranked:
+    kept = [p for p in ranked if p[0] >= least]
+    if judged is None and not kept and ranked:
+        # By rule a word no error holds may only be another language than the logs': the errors there are get
+        # shown, the most frequent first, rather than "nothing matches".
+        ranked.sort(key=lambda p: found.estimate(p[1]), reverse=True)
         shown = _matches(app, [_match(s, g, found) for s, g in ranked[:UNMATCHED_SHOWN]])
         lines = [render.say(lang, "match", n=_times(m), first=m["first"], last=m["last"], sample=m["sample"])
                  for m in shown["matches"]]  # fmt: skip
-        summary = "\n".join([render.say(lang, "no_words"), *lines])
+        summary = "\n".join([render.say(lang, "words_not_found" if keywords else "no_words"), *lines])
         return shown | {"ran": query, "scored_by": scored_by, "summary_extra": summary}
-    kept = [p for p in ranked if p[0] >= least]
     if not kept:
         best = ranked[0][0] if ranked else 0.0
         summary = render.say(lang, "no_match", score=best)

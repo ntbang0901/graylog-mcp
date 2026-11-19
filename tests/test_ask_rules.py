@@ -152,6 +152,25 @@ async def test_a_kind_without_errors_costs_one_count_not_a_search_for_why(make_a
     assert out["by_kind"]["business"] == 0 and out["cost"]["graylog_requests"] <= 6
 
 
+@pytest.mark.parametrize("question", ["the printer failed in the last hour", "thanh toan bi loi trong 1 gio qua"])
+async def test_words_no_error_holds_do_not_hide_the_errors_there_are(make_app, question):
+    """By rule a word that matches nothing may only be another language than the logs': it is no proof that
+    nothing is wrong."""
+    app, _ = make_app()
+    out = await ask(app, question)
+    assert out["scored_by"] == "rules" and out["matches"] and "flow" not in out
+    assert all(m["score"] == 0 for m in out["matches"])
+    assert "None of the errors in this period holds a word of your description" in out["summary"]
+
+
+async def test_words_that_only_carry_the_sentence_are_not_looked_for(make_app):
+    app, fake = make_app("basic")
+    _add(fake, 60, level=3, service="gateway", message="uptime check failed since restart, please look")
+    out = await ask(app, "could you please look at what failed with the bank since then, in the last hour")
+    # "please", "look", "since", "could", "what" carry the sentence; "bank" describes the error
+    assert out["matches"] and all("bank" in m["sample"].lower() for m in out["matches"])
+
+
 async def test_a_description_with_no_word_to_match_lists_the_most_frequent_errors(make_app):
     app, _ = make_app(glossary=TERMS)
     out = await ask(app, "thanh toán lỗi hôm nay")

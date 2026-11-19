@@ -72,6 +72,9 @@ TEXT: dict[str, dict[str, str]] = {
         "ask_trace_code": "history of <code>",
         "no_words": "No word of the question tells the errors apart, so these are the most frequent ones in what "
         "it covers. Describe the error with a word from its message to follow one.",
+        "words_not_found": "None of the errors in this period holds a word of your description, so these are the "
+        "most frequent ones in what it covers. The logs may use other words, or another language, than the "
+        "question.",
         "provider_failed": "Provider {provider} was not used ({reason}); this was answered without it.",
     },
     "vi": {
@@ -139,6 +142,8 @@ TEXT: dict[str, dict[str, str]] = {
         "ask_trace_code": "hành trình của <mã>",
         "no_words": "Không có từ nào trong câu hỏi giúp phân biệt các lỗi, nên đây là các lỗi nhiều nhất trong phạm "
         "vi được hỏi. Hãy mô tả lỗi bằng một từ có trong message của nó để lần theo một lỗi.",
+        "words_not_found": "Không lỗi nào trong khoảng thời gian này chứa từ nào trong mô tả của bạn, nên đây là các "
+        "lỗi nhiều nhất trong phạm vi được hỏi. Log có thể dùng từ khác, hoặc ngôn ngữ khác, với câu hỏi.",
         "provider_failed": "Không dùng được nhà cung cấp {provider} ({reason}); câu này được trả lời không có nó.",
     },
 }
