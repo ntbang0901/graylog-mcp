@@ -63,7 +63,7 @@ async def test_follows_the_flow_of_the_described_error(make_ask_app):
     assert {"gateway", "payment"} <= services
     assert out["flow"]["first_error"]["service"] == "payment"
     assert "gateway" in out["summary"] and "payment" in out["summary"]
-    assert out["cost"]["jev_requests"] == 2
+    assert out["cost"]["provider_requests"] == 2 and out["scored_by"] == "jev"
     assert out["cost"]["graylog_requests"] <= 12  # the candidates (count, aggregation, one read), then the trace
     assert_read_only(fake)
 
@@ -82,7 +82,12 @@ async def test_asks_back_instead_of_guessing(make_ask_app):
     out = await ask(app, "Is the system ok?")
 
     assert "clarify" in out and "matches" not in out
-    assert out["cost"] == {"graylog_requests": 0, "graylog_cap": 20, "jev_requests": 1}
+    assert out["cost"] == {
+        "graylog_requests": 0,
+        "graylog_cap": 20,
+        "provider_requests": 1,
+        "providers": {"jev": {"requests": 1, "bytes_sent": len(json.dumps(jev.bodies[0]))}},
+    }
     assert fake.requests == []
 
 
@@ -114,15 +119,19 @@ async def test_error_without_trace_id_gets_a_hint(make_ask_app):
 
 
 async def test_other_intents_use_the_existing_tools(make_ask_app):
+    # the provider is asked what a question means only where its own words do not say
     app, _ = make_ask_app(FakeJev(intent="count"))
-    out = await ask(app, "how many errors?")
-    assert out["result"]["count"] > 0 and out["cost"]["jev_requests"] == 1
+    out = await ask(app, "errors?")
+    assert out["result"]["count"] > 0 and out["cost"]["provider_requests"] == 1
 
     app, _ = make_ask_app(FakeJev(intent="error_summary"))
-    assert (await ask(app, "what are the main errors?"))["result"]["groups"]
+    assert (await ask(app, "errors?"))["result"]["groups"]
 
     app, _ = make_ask_app(FakeJev(intent="root_cause"))
     assert "result" in await ask(app, "what is breaking?")
+
+    app, _ = make_ask_app(FakeJev(intent="compare"))
+    assert "result" in await ask(app, "errors?")
 
 
 async def test_trace_code_uses_the_configured_patterns(make_ask_app):
@@ -152,10 +161,11 @@ async def test_nothing_unredacted_is_sent_to_typesafe(make_ask_app):
     assert jev.bodies and all(leak not in sent for leak in LEAKS)
 
 
-async def test_typesafe_errors_are_explained(make_ask_app):
+async def test_typesafe_errors_are_explained_and_do_not_fail_the_question(make_ask_app):
     app, _ = make_ask_app(FakeJev(status=401))
-    with pytest.raises(Exception, match="refused the API key"):
-        await ask(app, "anything")
+    out = await ask(app, "anything")
+    assert out["provider_failures"][0]["provider"] == "jev" and "refused the API key" in out["summary"]
+    assert "clarify" in out  # nothing in the question for the rules to go on either
 
 
 async def test_empty_question_and_missing_key(make_ask_app, monkeypatch):
@@ -165,16 +175,15 @@ async def test_empty_question_and_missing_key(make_ask_app, monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY")
     bare = App.create(make_config())
     assert bare.providers.order == []
-    with pytest.raises(ToolInputError, match="ask is off"):
-        await ask(bare, "hello")
+    assert "clarify" in await ask(bare, "hello")  # without a key ask still answers, by its rules
 
 
-async def test_tool_is_registered_only_with_a_key(make_ask_app, make_app, monkeypatch):
+async def test_tool_is_registered_with_and_without_a_key(make_ask_app, make_app, monkeypatch):
     app, _ = make_ask_app(FakeJev())
     assert "ask" in {t.name for t in await build_server(app).list_tools()}
     monkeypatch.delenv("TYPESAFE_API_KEY")
     bare, _ = make_app()
-    assert "ask" not in {t.name for t in await build_server(bare).list_tools()}
+    assert "ask" in {t.name for t in await build_server(bare).list_tools()}
 
 
 def test_time_choices_become_tool_arguments():
@@ -359,8 +368,9 @@ async def test_a_time_that_has_not_begun_where_the_logs_are_is_asked_about(make_
     # 10:00 in Asia/Ho_Chi_Minh, the default instance's zone, is 03:00 where the chosen instance logs
     monkeypatch.setattr(pipeline, "_now", lambda: datetime(2026, 11, 19, 3, 0, tzinfo=UTC))
     far = {"url": "https://far.test", "token_env": "TEST_GRAYLOG_TOKEN", "timezone": "UTC"}
-    app, _ = make_ask_app(FakeJev(intent="count", instance="far"), instances={"far": far})
-    out = await ask(app, "có bao nhiêu lỗi lúc 9h")
+    app, _ = make_ask_app(FakeJev(), instances={"far": far})
+    out = await ask(app, "có bao nhiêu lỗi lúc 9h ở far")
+    assert out["understood"]["sources"]["instance"] == "rules"
     assert "result" not in out and "lúc 9h" in out["clarify"] and "UTC" in out["clarify"]
     assert out["understood"]["sources"]["time"] == "unread"
 
@@ -432,14 +442,14 @@ async def test_a_glossary_term_narrows_the_count_and_is_explained(make_ask_app):
     assert 0 < out["result"]["count"] < everything
     assert out["understood"]["topics"] == [{"term": "payment", "matched": "thanh toán", "query": "service:payment"}]
     assert 'Đã hiểu "thanh toán" là payment service, lọc theo service:payment.' in out["summary"]
-    assert out["cost"]["jev_requests"] == 1
+    assert out["cost"]["provider_requests"] == 0  # "bao nhiêu" says what is asked: nobody needs asking
 
 
 async def test_a_question_without_a_term_has_no_topics(make_ask_app):
     app, _ = make_ask_app(FakeJev(intent="count"), glossary=TERMS)
     out = await ask(app, "how many errors?")
     assert "topics" not in out["understood"] and "unclear" not in out["understood"]
-    understood = "Understood: main, last hour, technical and business errors. Say so if this is not what you meant."
+    understood = "Understood: main, last 24 hours, technical and business errors. Say so if this is not what you meant."
     first, *rest = out["summary"].splitlines()
     assert first == understood and len(rest) == 1 and "defines no business errors" in rest[0]
 
@@ -595,5 +605,5 @@ async def test_a_code_question_is_not_narrowed_by_a_term(make_ask_app):
 async def test_nothing_about_the_glossary_is_sent_to_typesafe(make_ask_app):
     jev = FakeJev(intent="count")
     app, _ = make_ask_app(jev, glossary=TERMS)
-    await ask(app, "thanh toán có bao nhiêu lỗi")
+    await ask(app, "thanh toán bị gì")  # the term alone is a guess, so the provider is asked what is meant
     assert len(jev.bodies) == 1 and "service:payment" not in json.dumps(jev.bodies)

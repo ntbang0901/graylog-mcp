@@ -469,7 +469,7 @@ def _login_ask(args: argparse.Namespace) -> int:
         secrets.save(ASK_BASE_URL_VAR, args.base_url)
     if value:
         where = secrets.save(cfg.api_key_env, value)
-        print(f"  ✓ saved as {cfg.api_key_env} in {where}; restart the server to turn ask on")
+        print(f"  ✓ saved as {cfg.api_key_env} in {where}; restart the server so that ask can use it")
     elif not (args.model or args.base_url):
         print("nothing to save")
     return 0

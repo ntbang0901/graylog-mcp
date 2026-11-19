@@ -1,26 +1,29 @@
 """``ask``: a question in plain language to the right error and its flow.
 
-Rules read what they can (time, kind of error, the team's terms, codes); Jev only chooses the rest (intent,
-environment, which error group the user means). What is shown comes from the existing tools and fixed sentences,
-and only redacted, size-capped text is ever sent to Jev.
+Rules read what they can: what is asked, where, the time, the kind of error, the team's terms and codes. A
+provider, when one is configured and the instance lets it have the question, only chooses what the rules left
+open, and scores which error group is meant when it may see their text. What is shown comes from the existing
+tools and fixed sentences, and only redacted, size-capped text is ever handed to a provider.
 """
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 
 from graylog_mcp import rca, tools
-from graylog_mcp.ask import render
+from graylog_mcp.ask import render, understand
 from graylog_mcp.ask.candidates import Candidate, Candidates, error_candidates, keywords_of, read_lines
 from graylog_mcp.ask.flow import TRACE_MARGIN, richest_trace
-from graylog_mcp.ask.jev import JevClient
-from graylog_mcp.ask.understand import understand
+from graylog_mcp.ask.intent import read_instance, read_intent
+from graylog_mcp.ask.providers import SCORE, UNDERSTAND
 from graylog_mcp.ask.understood import Compiled, Slot, Understood, compile_query
-from graylog_mcp.ask.when import TimeSpan, read_time
+from graylog_mcp.ask.when import TimeSpan, mentions_time, read_time
 from graylog_mcp.backends import Graylog
 from graylog_mcp.client import QueryError, requests_sent
+from graylog_mcp.config import PROVIDER_DATA
 from graylog_mcp.glossary import error_kind, find_codes, match_terms, match_words
 from graylog_mcp.shaping import Budget, dumps
 from graylog_mcp.tools import App, ToolInputError, and_queries, phrase, requests_left, requests_used
@@ -33,6 +36,8 @@ AROUND_SECONDS = 30  # lines shown around an error that no trace id ties to a re
 # what following one code always reads: its trace fields, its text, its requests, the one shown, its errors, and one
 REQUESTS_FOR_A_CODE = 6
 OWN_ERROR_QUERY = ("error_summary", "root_cause", "compare")  # intents whose tools take no kind of error
+UNMATCHED_SHOWN = 5  # error groups listed when no word of the question tells them apart
+Failures = list[dict[str, str]]  # providers that could not be used for this question, with the task and why
 
 
 def _now() -> datetime:
@@ -40,13 +45,8 @@ def _now() -> datetime:
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
-    jev: Any = app.providers.order[0][1] if app.providers.order else None
-    if jev is None:
-        raise ToolInputError(
-            "ask is off: set TYPESAFE_API_KEY in the environment or in secrets.toml and restart the server"
-        )
     typed = question.strip()[:MAX_QUESTION_CHARS]
-    # a pasted log line or token must not reach TypeSafe unredacted
+    # a pasted log line or token must not reach a provider unredacted
     question = app.redactor.text(typed)
     if not question:
         raise ToolInputError("question is required")
@@ -54,19 +54,36 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
     if sent is None:  # outside the MCP server (the admin page): count here
         sent = [0]
         requests_sent.set(sent)
-    graylog_before, jev_before = sent[0], jev.requests
+    graylog_before, asked_before = sent[0], app.providers.usage()
+    failed: Failures = []
 
-    app.gl(instance)  # an unknown instance fails before anything is sent to Jev
-    u = await _understand(app, jev, question, typed, instance)
+    app.gl(instance)  # an unknown instance fails before anything is handed to a provider
+    u = await _understand(app, question, typed, instance, failed)
     gl = app.gl(u.instance.value)
     lang = app.config.ask.language
     out: dict[str, Any] = {"understood": u.as_dict(app), "summary": _in_words(app, gl, u)}
     if u.time.source == "unread":
         words, zone = app.redactor.text(u.time.text or ""), gl.cfg.timezone
         out["clarify"] = render.say(lang, "clarify_time", words=words, instance=gl.cfg.name, zone=zone)
-    elif u.confidence < app.config.ask.min_confidence:
-        out["clarify"] = render.say(lang, "clarify")
+    elif u.instance.source == "unread":
+        options = ", ".join(u.options)
+        words = app.redactor.text(u.instance.text or "")
+        out["options"] = list(u.options)
+        out["clarify"] = (
+            render.say(lang, "clarify_instance", words=words, options=options)
+            if words
+            else render.say(lang, "clarify_where", options=options)
+        )
+    elif u.unsure(app.config.ask.min_confidence):
+        chosen = [u.intent.value] if u.intent.value else []
+        out["readings"] = render.readings(lang, list(dict.fromkeys((*chosen, *u.others)))[:3])
+        out["clarify"] = render.say(lang, "clarify_intent", readings=render.reading_list(lang, out["readings"]))
     else:
+        if u.intent.source == "guess":
+            out["guessed"] = {"intent": u.intent.value, "others": list(u.others)}
+            reading = render.say(lang, f"intent_{u.intent.value}")
+            others = render.reading_list(lang, render.readings(lang, u.others))
+            out["summary"] += "\n" + render.say(lang, "guessed", reading=reading, others=others)
         when = u.when(gl.cfg.tz)
         await _check_terms(gl, u, when)
         compiled = await compile_query(app, gl, u)
@@ -78,7 +95,7 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
             # these tools look at error_query alone: the kind the asker named must not read as applied
             out["summary"] += "\n" + render.say(lang, "kind_not_applied", query=gl.cfg.error_query)
         try:
-            answer = await _answer(app, jev, gl, u, compiled, when, question, typed)
+            answer = await _answer(app, gl, u, compiled, when, question, typed, failed)
         except QueryError as exc:  # a Graylog without search/validate finds a broken term query only here
             if compiled.topic is None:
                 raise
@@ -89,32 +106,84 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         if extra := answer.pop("summary_extra", None):
             out["summary"] += "\n" + extra
         out.update(answer)
+    for failure in failed:
+        said = render.say(lang, "provider_failed", provider=failure["provider"], reason=failure["reason"])
+        out["summary"] += "\n" + said
+    if failed:
+        out["provider_failures"] = failed
+    asked = {
+        name: {"requests": requests - asked_before[name][0], "bytes_sent": sent_bytes - asked_before[name][1]}
+        for name, (requests, sent_bytes) in app.providers.usage().items()
+        if requests > asked_before[name][0]
+    }
     out["cost"] = {
         "graylog_requests": sent[0] - graylog_before,
         "graylog_cap": app.config.limits.max_requests,
-        "jev_requests": jev.requests - jev_before,
+        "provider_requests": sum(used["requests"] for used in asked.values()),
     }
+    if asked:
+        out["cost"]["providers"] = asked
     return out
 
 
-async def _understand(app: App, jev: JevClient, question: str, typed: str, instance: str | None) -> Understood:
-    """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the rules."""
+async def _understand(app: App, question: str, typed: str, instance: str | None, failed: Failures) -> Understood:
+    """``question`` is redacted, for a provider; ``typed`` is what the user wrote, for the rules."""
     cfg = app.config
     now = _now()
     first = app.gl(instance).cfg  # the caller's instance, else the default
     kind = error_kind(cfg.glossary.error_words, typed)
     # The time is read from the redacted question: a date inside a masked value is not the asker's period, and
-    # the words read are shown back. Which zone it is in is not known yet; that the question names a time is,
-    # and Jev is not asked about it then.
+    # the words read are shown back. Which zone it is in is not known yet; that the question names a time is.
     named = read_time(question, first.tz, now, cfg.ask.time)
-    skip = [name for name, read in (("time", named), ("errors_only", kind)) if read]
-    chosen = await understand(jev, cfg, question, fixed_instance=instance, skip=skip)
+    several = len(cfg.instances) > 1
+    options: tuple[str, ...] = ()
+    read_where = read_instance(cfg, typed) if several and not instance else None
     if instance:
         where = Slot(first.name, "caller")
-    elif chosen.instance:
-        where = Slot(chosen.instance, "jev")
+    elif read_where and read_where.name:
+        where = Slot(read_where.name, "rules", text=read_where.text)
+    elif read_where:
+        where, options = Slot(first.name, "unread", 0.0, read_where.text), read_where.options
     else:
         where = Slot(first.name, "default")
+    inst = app.gl(where.value).cfg
+    codes = find_codes(cfg.glossary, inst, typed)
+    what = read_intent(
+        cfg.ask.intent_words,
+        cfg.glossary.error_words,
+        typed,
+        has_code=bool(codes),
+        has_term=bool(match_terms(cfg.glossary, inst, typed)[0]),
+    )
+
+    # A provider is asked only when the rules left open what decides the answer. Once it is asked, everything
+    # they did not read for sure rides along in the same request.
+    known = where.source in ("caller", "rules") or not several
+    wanted = set()
+    if not what.sure:
+        wanted.add("intent")
+    if options:
+        wanted.add("instance")
+    if named is None and mentions_time(question):
+        wanted.add("time")
+    chosen = None
+    if wanted:
+        wanted |= {"time"} if named is None else set()
+        wanted |= {"errors_only"} if kind is None else set()
+        wanted |= {"instance"} if not known else set()
+        policies = [i.provider_data for i in cfg.instances.values()]
+        # until the environment is known, the strictest of them decides what may leave
+        policy = inst.provider_data if known else min(policies, key=PROVIDER_DATA.index)
+        asked = understand.questions(cfg, wanted)
+        if policy == "none" and not known and app.providers.may_ask(UNDERSTAND, max(policies, key=PROVIDER_DATA.index)):
+            # named, an environment that allows it lets a provider help; picking one here would decide that for
+            # the asker
+            where, options = Slot(first.name, "unread", 0.0, where.text), tuple(sorted(cfg.instances))
+        elif answered := await app.providers.ask(UNDERSTAND, policy, question, asked, failed):
+            chosen = understand.read(answered)
+
+    if chosen and chosen.instance and chosen.instance[1] >= cfg.ask.min_confidence:
+        where, options = Slot(chosen.instance[0], chosen.provider, chosen.instance[1]), ()
     inst = app.gl(where.value).cfg
     span = read_time(question, inst.tz, now, cfg.ask.time)
     if span is not None:
@@ -122,24 +191,37 @@ async def _understand(app: App, jev: JevClient, question: str, typed: str, insta
     elif named is not None:
         # read in the default instance's zone, not begun in this one's: asking back beats a period nobody named
         time = Slot("unspecified", "unread", confidence=0.0, text=named.text)
-    elif chosen.time is not None:
-        time = Slot(chosen.time, "jev")
+    elif chosen and chosen.time:
+        time = Slot(chosen.time[0], chosen.provider, chosen.time[1])
     else:
         time = Slot("unspecified", "default")
     if kind is not None:
         errors = Slot(kind[0], "rules", text=kind[1])
+    elif chosen and chosen.errors_only is not None:
+        errors = Slot("both" if chosen.errors_only else "any", chosen.provider)
     else:
-        errors = Slot("both" if chosen.errors_only else "any", "jev")
+        errors = Slot("any", "default")
+    if what.sure:
+        intent = Slot(what.value, "rules", text=what.text)
+    elif chosen and chosen.intent:
+        intent = Slot(chosen.intent[0], chosen.provider, chosen.intent[1])
+    elif what.value:
+        intent = Slot(what.value, "guess", text=what.text)
+    else:
+        intent = Slot(None, "unread", 0.0)
+    others = tuple(dict.fromkeys(o for o in (what.value, *what.others) if o and o != intent.value))
     # a code's history crosses services: the team's terms do not narrow it
-    terms, unclear = ([], []) if chosen.intent == "trace_code" else match_terms(cfg.glossary, inst, typed)
+    terms, unclear = ([], []) if intent.value == "trace_code" else match_terms(cfg.glossary, inst, typed)
     return Understood(
-        intent=Slot(chosen.intent, "jev", chosen.confidence),
+        intent=intent,
         instance=where,
         time=time,
         errors=errors,
         topics=tuple(terms),
         unclear=tuple(unclear),
         codes=tuple(find_codes(cfg.glossary, inst, typed)),
+        others=others,
+        options=options,
     )
 
 
@@ -178,18 +260,21 @@ async def _check_terms(gl: Graylog, u: Understood, when: dict[str, Any]) -> None
 
 async def _answer(
     app: App,
-    jev: JevClient,
     gl: Graylog,
     u: Understood,
     compiled: Compiled,
     when: dict[str, Any],
     question: str,
     typed: str,
+    failed: Failures,
 ) -> dict[str, Any]:
-    """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the keywords in it."""
+    """``question`` is redacted, for a provider; ``typed`` is what the user wrote, for the keywords in it."""
     instance, intent = gl.cfg.name, u.intent.value
     if intent == "follow_flow":
-        return await _follow_flow(app, jev, gl, u, compiled, when, question, typed)
+        out = await _follow_flow(app, gl, u, compiled, when, question, typed, failed)
+        if u.errors.value == "both" and compiled.business and requests_left(app) >= 2:
+            out["by_kind"] = await _by_kind(app, instance, compiled, when)
+        return out
     if intent == "trace_code":
         return await _trace_codes(app, instance, u, when)
     if intent == "error_summary":
@@ -216,15 +301,17 @@ async def _answer(
 async def _count(app: App, instance: str, u: Understood, compiled: Compiled, when: dict[str, Any]) -> dict[str, Any]:
     result = await tools.count_logs(app, query=compiled.query, instance=instance, **when)
     if u.errors.value == "both" and compiled.business:
-        # "errors" said without more means both kinds: each is counted, so the asker sees which one it is
-        kinds = {"technical": compiled.technical, "business": compiled.business}
-        result["by_kind"] = {
-            kind: (await tools.count_logs(app, query=and_queries(q, compiled.topic), instance=instance, **when))[
-                "count"
-            ]
-            for kind, q in kinds.items()
-        }
+        result["by_kind"] = await _by_kind(app, instance, compiled, when)
     return {"result": result, "ran": compiled.query}
+
+
+async def _by_kind(app: App, instance: str, compiled: Compiled, when: dict[str, Any]) -> dict[str, int]:
+    """ "Errors" said without more means both kinds: each is counted, so the asker sees which one it is."""
+    kinds = {"technical": compiled.technical, "business": compiled.business}
+    return {
+        kind: (await tools.count_logs(app, query=and_queries(q, compiled.topic), instance=instance, **when))["count"]
+        for kind, q in kinds.items()
+    }
 
 
 async def _trace_codes(app: App, instance: str, u: Understood, when: dict[str, Any]) -> dict[str, Any]:
@@ -280,8 +367,11 @@ def _sharing_the_budget(app: App, traces: list[dict[str, Any]]) -> list[dict[str
     return traces
 
 
-async def _score(jev: JevClient, question: str, groups: list[Candidate]) -> list[float]:
-    """Relevance of each group to the question, in one request."""
+async def _score(
+    app: App, policy: str, question: str, groups: list[Candidate], failed: Failures
+) -> tuple[list[float], str] | None:
+    """Relevance of each group to the question as a provider judges it, in one request, with who judged. None
+    when nobody may see the groups' text here, or nobody answered."""
     questions = {
         f"c{i}": {
             "type": "noul",
@@ -289,8 +379,12 @@ async def _score(jev: JevClient, question: str, groups: list[Candidate]) -> list
         }
         for i in range(len(groups))
     }
-    got = await jev.answers({"request": question, "candidates": [g.text for g in groups]}, questions)
-    return [float(got[f"c{i}"].get("noul") or 0.0) for i in range(len(groups))]
+    state = {"request": question, "candidates": [g.text for g in groups]}
+    answered = await app.providers.ask(SCORE, policy, state, questions, failed)
+    if answered is None:
+        return None
+    # a group it left unanswered is not one it called related
+    return [float(answered.answers.get(f"c{i}", {}).get("noul", 0.0)) for i in range(len(groups))], answered.provider
 
 
 def _match(score: float, group: Candidate, found: Candidates) -> dict[str, Any]:
@@ -336,40 +430,63 @@ def _keywords(app: App, u: Understood, typed: str) -> tuple[str, ...]:
     for code in u.codes:
         at = text.find(code.value)
         taken.append((at, at + len(code.value)))
-    return keywords_of(text, taken, [k for m in u.topics for k in m.term.keywords])
+    # the words that said when, where and what is asked describe no error
+    read_as = " ".join(slot.text for slot in (u.time, u.instance, u.intent) if slot.text)
+    spoken = {w.lower() for w in re.findall(r"\w+", read_as)}
+    found = keywords_of(text, taken, [k for m in u.topics for k in m.term.keywords])
+    return tuple(word for word in found if word not in spoken)
 
 
 async def _follow_flow(
     app: App,
-    jev: JevClient,
     gl: Graylog,
     u: Understood,
     compiled: Compiled,
     when: dict[str, Any],
     question: str,
     typed: str,
+    failed: Failures,
 ) -> dict[str, Any]:
     cfg = app.config.ask
     lang = cfg.language
-    instance = gl.cfg.name
+    instance, policy = gl.cfg.name, gl.cfg.provider_data
     tr = tools._range(gl, when.get("range"), when.get("from_time"), when.get("to_time"), "24h")
     # a described problem is looked for among the errors, also when the question did not say the word
     query = compiled.query if u.errors.value != "any" else and_queries(compiled.technical, compiled.topic)
-    found = await error_candidates(app, gl, tr, query, _keywords(app, u, typed), cfg.send_chars, cfg.max_candidates)
+    keywords = _keywords(app, u, typed)
+    # Nobody may see the logs here, but someone may see the question: its words for the error, in the language
+    # of the logs, are what the rules then look for.
+    translating = not app.providers.may_ask(SCORE, policy) and app.providers.may_ask(UNDERSTAND, policy, words=True)
+    if translating and (said := await app.providers.ask(UNDERSTAND, policy, question, understand.KEYWORDS, failed)):
+        keywords = tuple(dict.fromkeys((*keywords, *said.answers["keywords"]["words"])))
+    found = await error_candidates(app, gl, tr, query, keywords, cfg.send_chars, cfg.max_candidates)
     groups = found.groups
-    scores = await _score(jev, question, groups) if groups else []
+    judged = await _score(app, policy, question, groups, failed) if groups else None
+    if judged is not None:
+        scores, scored_by, least = judged[0], judged[1], cfg.relevance
+    else:
+        # by rule: the share of the question's words a group holds; one word is enough to be meant
+        scores = [g.hits / len(keywords) if keywords else 0.0 for g in groups]
+        scored_by, least = "rules", 1.0 / (len(keywords) + 1)
     ranked = sorted(zip(scores, groups, strict=True), key=lambda p: p[0], reverse=True)
-    kept = [p for p in ranked if p[0] >= cfg.relevance]
+    if judged is None and not keywords and ranked:
+        shown = _matches(app, [_match(s, g, found) for s, g in ranked[:UNMATCHED_SHOWN]])
+        lines = [render.say(lang, "match", n=_times(m), first=m["first"], last=m["last"], sample=m["sample"])
+                 for m in shown["matches"]]  # fmt: skip
+        summary = "\n".join([render.say(lang, "no_words"), *lines])
+        return shown | {"ran": query, "scored_by": scored_by, "summary_extra": summary}
+    kept = [p for p in ranked if p[0] >= least]
     if not kept:
         best = ranked[0][0] if ranked else 0.0
-        return {"matches": [], "ran": query, "summary_extra": render.say(lang, "no_match", score=best)}
+        summary = render.say(lang, "no_match", score=best)
+        return {"matches": [], "ran": query, "scored_by": scored_by, "summary_extra": summary}
     group = kept[0][1]
     close = len(kept) > 1 and kept[0][0] - kept[1][0] < CLOSE_SCORES
     if not close and not group.sample and requests_left(app) >= 2:
         # only counted so far: its lines say which service it is, and whether a trace id leads further
         await read_lines(app, gl, tr, query, group, cfg.send_chars)
     out = _matches(app, [_match(s, g, found) for s, g in kept])
-    out["ran"] = query
+    out["ran"], out["scored_by"] = query, scored_by
     matches = out["matches"]
     if close:
         lines = [render.say(lang, "match", n=_times(m), first=m["first"], last=m["last"], sample=m["sample"])

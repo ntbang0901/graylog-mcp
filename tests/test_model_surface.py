@@ -11,8 +11,7 @@ from graylog_mcp.server import INSTRUCTIONS, build_server
 SNAPSHOT = Path(__file__).parent / "snapshots" / "model_surface.json"
 
 
-async def test_what_the_model_receives_is_unchanged(make_app, monkeypatch):
-    monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")  # ask is declared only with a key
+async def test_what_the_model_receives_is_unchanged(make_app):
     app, _ = make_app()
     declared = [t.model_dump(mode="json", exclude_none=True) for t in await build_server(app).list_tools()]
     assert len(declared) == 10

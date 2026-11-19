@@ -87,9 +87,12 @@ class Providers:
         self, task: str, policy: str, state: Any, questions: dict[str, dict[str, Any]], failed: list[dict[str, str]]
     ) -> Answered | None:
         """The checked answers of the first provider that gives any; None when nobody may be asked or all failed.
-        Each failure is added to ``failed`` as provider, task and reason."""
+        Each failure is added to ``failed`` as provider, task and reason; a provider already in it is not asked
+        again, so one that is down costs a question its wait once."""
         words = any(q.get("type") == "words" for q in questions.values())
         for cfg, client in self._able(task, policy, words):
+            if any(failure["provider"] == cfg.name for failure in failed):
+                continue
             try:
                 believed = _checked(questions, await client.answers(state, questions))
                 if not believed:

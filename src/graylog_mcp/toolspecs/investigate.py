@@ -6,8 +6,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from graylog_mcp import secrets
-from graylog_mcp.tools import App
 from graylog_mcp.toolspecs.spec import FromTime, Instance, Range, Streams, ToolSpec, ToTime, single, switched
 
 
@@ -107,22 +105,17 @@ class AskArgs(BaseModel):
     instance: Instance = None
 
 
-def _has_typesafe_key(app: App | None) -> bool:
-    return bool(app.providers.order if app is not None else secrets.get("TYPESAFE_API_KEY"))
-
-
 ASK = ToolSpec(
     "ask",
     "Ask",
     "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the "
     "error the question describes, follows its trace across services, and states what it understood "
-    "(environment, period, kind of error, the team's terms) and the query it ran, so it can be corrected. Time "
-    "phrases in Vietnamese or English, the glossary's terms and codes are read by rule. Asks back when the "
-    "question is too vague. "
-    "Sends TypeSafe the question and redacted, size-capped error text (250 characters each); "
-    "never raw logs.",
+    "(environment, period, kind of error, the team's terms) and the query it ran, so it can be corrected. What "
+    "is asked, the environment, time phrases in Vietnamese or English, the glossary's terms and codes are read "
+    "by rule; a reading that is only a guess is said to be one, and a question too vague is asked back with the "
+    "ways it could be meant. Needs no model. When the user has configured a provider, it is asked only for what "
+    "the rules left open, and gets the redacted question and, unless the environment forbids it "
+    "(provider_data), redacted error text of 250 characters each; never raw logs.",
     AskArgs,
     single("ask"),
-    # declared only with a TypeSafe key: without one nothing is ever sent to TypeSafe
-    enabled=_has_typesafe_key,
 )

@@ -1,7 +1,8 @@
-"""Fixed sentences of the answer in English and Vietnamese. No generated prose: Jev only chooses."""
+"""Fixed sentences of the answer in English and Vietnamese. No generated prose: a provider only chooses."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -48,6 +49,30 @@ TEXT: dict[str, dict[str, str]] = {
         "flow_not_followed": "The trace of this error was not followed: {used} Graylog requests used. Ask about "
         "this error alone, or raise limits.max_requests.",
         "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
+        "guessed": "Read as a request to {reading}; that is a guess. If you meant something else, ask for it in "
+        "words: {others}.",
+        "clarify_intent": "I could not tell what you want to know. Ask for it in words: {readings}.",
+        "clarify_instance": 'Which environment do you mean by "{words}"? Name one of: {options}.',
+        "clarify_where": "Name the environment in the question, one of: {options}. Until it is known nothing of "
+        "the question is handed to a provider, because one of them forbids it (provider_data).",
+        "reading": '{what} ("{ask}")',
+        "intent_follow_flow": "follow one error across services",
+        "intent_error_summary": "list the main errors",
+        "intent_root_cause": "find what broke first",
+        "intent_count": "count",
+        "intent_compare": "compare with the period before",
+        "intent_search": "show log lines",
+        "intent_trace_code": "follow one code",
+        "ask_follow_flow": "where does … go wrong",
+        "ask_error_summary": "what are the main errors of …",
+        "ask_root_cause": "what is the root cause of …",
+        "ask_count": "how many …",
+        "ask_compare": "what changed in …",
+        "ask_search": "show the logs of …",
+        "ask_trace_code": "history of <code>",
+        "no_words": "No word of the question tells the errors apart, so these are the most frequent ones in what "
+        "it covers. Describe the error with a word from its message to follow one.",
+        "provider_failed": "Provider {provider} was not used ({reason}); this was answered without it.",
     },
     "vi": {
         "understood": "Đã hiểu: {parts}. Nếu chưa đúng ý, hãy nói lại.",
@@ -92,6 +117,29 @@ TEXT: dict[str, dict[str, str]] = {
         "flow_not_followed": "Chưa lần theo trace của lỗi này vì đã dùng {used} request Graylog. Hãy hỏi riêng về "
         "lỗi này, hoặc tăng limits.max_requests.",
         "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',
+        "guessed": "Tôi hiểu đây là yêu cầu {reading}; đó là phỏng đoán. Nếu ý bạn khác, hãy hỏi rõ: {others}.",
+        "clarify_intent": "Tôi chưa rõ bạn muốn biết điều gì. Hãy hỏi rõ: {readings}.",
+        "clarify_instance": 'Bạn muốn nói môi trường nào khi viết "{words}"? Hãy nêu một trong: {options}.',
+        "clarify_where": "Hãy nêu môi trường trong câu hỏi, một trong: {options}. Khi chưa biết môi trường thì không "
+        "phần nào của câu hỏi được chuyển cho nhà cung cấp, vì có môi trường cấm điều đó (provider_data).",
+        "reading": '{what} ("{ask}")',
+        "intent_follow_flow": "lần theo một lỗi qua các dịch vụ",
+        "intent_error_summary": "liệt kê các lỗi chính",
+        "intent_root_cause": "tìm thứ hỏng đầu tiên",
+        "intent_count": "đếm",
+        "intent_compare": "so sánh với khoảng thời gian trước đó",
+        "intent_search": "xem các dòng log",
+        "intent_trace_code": "tra một mã",
+        "ask_follow_flow": "… lỗi ở bước nào",
+        "ask_error_summary": "các lỗi chính của … là gì",
+        "ask_root_cause": "nguyên nhân gốc của … là gì",
+        "ask_count": "có bao nhiêu …",
+        "ask_compare": "… thay đổi gì so với trước",
+        "ask_search": "xem log của …",
+        "ask_trace_code": "hành trình của <mã>",
+        "no_words": "Không có từ nào trong câu hỏi giúp phân biệt các lỗi, nên đây là các lỗi nhiều nhất trong phạm "
+        "vi được hỏi. Hãy mô tả lỗi bằng một từ có trong message của nó để lần theo một lỗi.",
+        "provider_failed": "Không dùng được nhà cung cấp {provider} ({reason}); câu này được trả lời không có nó.",
     },
 }
 
@@ -103,6 +151,18 @@ def say(language: str, key: str, **values: Any) -> str:
 def understood(language: str, instance: str, time: str, errors: str) -> str:
     """The first line of every answer. ``time`` is already in words; ``errors`` is one of understood.ERRORS."""
     return say(language, "understood", parts=", ".join((instance, time, say(language, f"errors_{errors}"))))
+
+
+def readings(language: str, intents: Sequence[str]) -> list[dict[str, str]]:
+    """Ways a question may be meant, each with how to ask for it."""
+    return [
+        {"intent": name, "what": say(language, f"intent_{name}"), "ask": say(language, f"ask_{name}")}
+        for name in intents
+    ]
+
+
+def reading_list(language: str, items: Sequence[dict[str, str]]) -> str:
+    return "; ".join(say(language, "reading", what=r["what"], ask=r["ask"]) for r in items)
 
 
 def time_read(language: str, words: str, start: datetime, end: datetime) -> str:

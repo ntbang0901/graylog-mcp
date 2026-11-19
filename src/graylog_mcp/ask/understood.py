@@ -20,28 +20,35 @@ from graylog_mcp.tools import App, and_queries, error_queries
 ERRORS = ("any", "technical", "business", "both")
 
 
+# where a slot's value came from when no provider gave it: read by rule, a rule's guess, given by the caller,
+# the default, or named in the question but not placed
+OWN_SOURCES = ("rules", "guess", "caller", "default", "unread")
+
+
 @dataclass(frozen=True)
 class Slot:
     value: Any
-    source: str  # "rules", "caller", "default", or the provider's name ("jev")
+    source: str  # one of OWN_SOURCES, or the name of the provider that chose it
     confidence: float = 1.0
     text: str | None = None  # the words of the question it was read from
 
 
 @dataclass(frozen=True)
 class Understood:
-    intent: Slot  # value: one of understand.INTENTS
+    intent: Slot  # value: one of understand.INTENTS; None when nobody could tell
     instance: Slot  # value: an instance name
     time: Slot  # value: a TimeSpan (rules) or one of understand.TIMES (a provider's choice)
     errors: Slot  # value: one of ERRORS
     topics: tuple[TermMatch, ...] = ()
     unclear: tuple[Unclear, ...] = ()
     codes: tuple[CodeMatch, ...] = ()
+    others: tuple[str, ...] = ()  # intents the question could also mean
+    options: tuple[str, ...] = ()  # instances to choose from, when ``instance`` is "unread"
 
-    @property
-    def confidence(self) -> float:
-        """The least sure of what decides where and what to search."""
-        return min(slot.confidence for slot in (self.intent, self.instance, self.time))
+    def unsure(self, floor: float) -> bool:
+        """Nobody could tell what is asked, or a provider chose it or the period with less than ``floor``."""
+        chosen = [slot for slot in (self.intent, self.time) if slot.source not in OWN_SOURCES]
+        return self.intent.value is None or any(slot.confidence < floor for slot in chosen)
 
     def when(self, tz: tzinfo) -> dict[str, Any]:
         """``range``, or ``from_time`` and ``to_time``, as the tools take them."""

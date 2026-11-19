@@ -337,7 +337,7 @@ INTENT_WORDS: dict[str, tuple[str, ...]] = {
         "common errors", "summary", "summarize", "overview", "kinds of errors",
     ),
     "follow_flow": (
-        "bước nào", "từng bước", "lần lại", "go wrong", "goes wrong", "went wrong", "breaks", "what happened",
+        "bước nào", "từng bước", "lần lại", "go wrong", "goes wrong", "went wrong", "breaks",
     ),
     "search": (
         "log", "logs", "dòng log", "show me", "cho xem", "cho tôi xem", "liệt kê", "list", "find", "tìm", "search",
