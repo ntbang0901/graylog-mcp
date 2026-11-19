@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from graylog_mcp.glossary import fold
+from graylog_mcp.glossary import alias_key
 from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
 
 
@@ -1025,11 +1025,10 @@ def _check_aliases(glossary: Glossary, instances: dict[str, InstanceConfig]) -> 
         owner: dict[str, str] = {}
         for term in glossary.terms_for(inst):
             for alias in term.aliases:
-                key = " ".join(fold(alias).split())
-                other = owner.setdefault(key, term.name)
+                other = owner.setdefault(alias_key(alias), term.name)
                 if other != term.name:
                     raise ConfigError(
-                        f"glossary: alias {key!r} belongs to both terms {other!r} and {term.name!r} on instance "
+                        f"glossary: alias {alias!r} belongs to both terms {other!r} and {term.name!r} on instance "
                         f"{inst.name!r}; give each alias to one term, or limit the terms with instances"
                     )
 

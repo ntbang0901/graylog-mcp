@@ -1123,29 +1123,36 @@ def list_glossary(app: App, instance: str | None = None) -> dict[str, Any]:
         return {"name": name} | {k: list(v) if isinstance(v, tuple) else v for k, v in values.items() if v}
 
     budget = app.budget()
+    # the few code shapes first: a long list of terms must not be what leaves them out
+    listed_codes = budget.fit(
+        [
+            entry(c.name, pattern=c.pattern, fields=c.fields, description=c.description, instances=c.instances)
+            for c in codes
+        ]
+    )
+    listed_terms = budget.fit(
+        [
+            entry(
+                t.name,
+                aliases=t.aliases,
+                description=t.description,
+                query=t.query,
+                keywords=t.keywords,
+                preset=t.preset,
+                instances=t.instances,
+            )
+            for t in terms
+        ]
+    )
     out: dict[str, Any] = {
-        "terms": budget.fit(
-            [
-                entry(
-                    t.name,
-                    aliases=t.aliases,
-                    description=t.description,
-                    query=t.query,
-                    keywords=t.keywords,
-                    preset=t.preset,
-                    instances=t.instances,
-                )
-                for t in terms
-            ]
-        ),
-        "codes": budget.fit(
-            [
-                entry(c.name, pattern=c.pattern, fields=c.fields, description=c.description, instances=c.instances)
-                for c in codes
-            ]
-        ),
+        "count": {"terms": len(terms), "codes": len(codes)},
+        "terms": listed_terms,
+        "codes": listed_codes,
+        "truncated": budget.truncated,
     }
-    if not glossary.terms and not glossary.codes:
+    if budget.truncated:
+        out["hint"] = "the glossary is longer than one answer: pass instance to list only what applies to it"
+    elif not glossary.terms and not glossary.codes:
         out["hint"] = "no glossary configured: add [glossary.terms.<name>] and [glossary.codes.<name>] to the config"
     return out
 

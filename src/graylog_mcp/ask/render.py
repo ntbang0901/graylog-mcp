@@ -25,8 +25,9 @@ TEXT: dict[str, dict[str, str]] = {
         "first_error": "The first error came from {service}.",
         "no_code": "No order or transaction code was found in the question. Add a [glossary.codes.<name>] with its "
         "pattern to the config (ask.code_patterns still works) to teach ask what your codes look like.",
-        "term": '"{text}" is understood as {what}.',
+        "term": '"{text}" is understood as {what}; this term does not narrow the search.',
         "term_filtered": '"{text}" is understood as {what}, filtered by {query}.',
+        "terms_together": "These {n} terms narrow the search together: only lines that match all of them count.",
         "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
     },
     "vi": {
@@ -49,8 +50,9 @@ TEXT: dict[str, dict[str, str]] = {
         "first_error": "Lỗi đầu tiên xuất hiện ở {service}.",
         "no_code": "Không tìm thấy mã đơn hàng hay mã giao dịch trong câu hỏi. Khai báo [glossary.codes.<tên>] kèm "
         "pattern trong cấu hình (ask.code_patterns vẫn dùng được) để ask nhận ra dạng mã của bạn.",
-        "term": 'Đã hiểu "{text}" là {what}.',
+        "term": 'Đã hiểu "{text}" là {what}; thuật ngữ này không thu hẹp phép tìm.',
         "term_filtered": 'Đã hiểu "{text}" là {what}, lọc theo {query}.',
+        "terms_together": "{n} thuật ngữ này cùng thu hẹp phép tìm: chỉ tính các dòng khớp tất cả.",
         "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',
     },
 }

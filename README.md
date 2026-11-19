@@ -295,21 +295,24 @@ query = "service:payment"            # ANDed into the search when a question nam
 
 [glossary.terms.refund]
 aliases = ["hoàn tiền", "refund"]
-keywords = ["refund"]                # plain words to match log text with
-preset = "refund_errors"             # optional: a preset that answers questions about this term
+keywords = ["refund"]                # the English words the logs use for it
+preset = "refund_errors"             # optional: one of your [presets] about this term
 
 [glossary.codes.order]
 pattern = 'ORD-\d+'
 fields = ["order_id"]                # searched before the text
 ```
 
-A term needs `aliases` and at least one of `query`, `keywords` and `preset`. How a question is read:
+A term needs `aliases` and at least one of `query`, `keywords` and `preset`. Only `query` narrows a search today;
+`keywords` and `preset` are listed for the model of a chat client, which can search for the words or run the preset
+itself. How a question is read:
 
 - An alias matches as whole words, whatever the case and spacing: "refund" does not match "refunded".
 - The longest phrase wins: with both "cổng thanh toán" and "thanh toán" in the glossary, a question about "cổng
   thanh toán" names only the first.
 - Accents are optional when typing: "thanh toan" matches "thanh toán". Words typed with accents only match the
-  alias with those accents, and words typed without any that fit two terms are reported, not guessed.
+  alias with those accents, and words typed without any that fit two terms are reported, not guessed. Both places
+  of a tone mark are the same word: "hoá đơn" and "hóa đơn" need one alias.
 - One alias means one term: the same alias on two terms of one instance stops the load, naming both. Systems that
   use one word for different things limit each term with `instances` (instance, group or environment names), as
   scan rules do.
@@ -359,11 +362,13 @@ When the question is too vague ("Is the system ok?") `ask` returns a `clarify` t
 nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
 An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
 
-`ask` reads the [glossary](#glossary-your-teams-words) itself, without TypeSafe: a term named in the question
-becomes a filter ANDed into the search, `understood.topics` lists it, and the summary says how it was read
-("thanh toán" is understood as payment service, filtered by service:payment-service). Words typed without accents
-that fit two terms are not guessed: the summary names both. Codes are found with `[glossary.codes]`, and a question
-about a code is not narrowed by a term, because a code's history crosses services.
+`ask` reads the [glossary](#glossary-your-teams-words) itself, without TypeSafe: the `query` of a term named in the
+question is ANDed into the search, `understood.topics` lists the term, and the summary says how it was read
+("thanh toán" is understood as payment service, filtered by service:payment). A term without a `query` is named
+too, with the note that it does not narrow the search. Two terms with a `query` narrow together (only lines
+matching both count), and the summary says so. Words typed without accents that fit two terms are not guessed: the
+summary names both. Codes are found with `[glossary.codes]`, and a question about a code is not narrowed by a term,
+because a code's history crosses services.
 
 ```toml
 [ask]

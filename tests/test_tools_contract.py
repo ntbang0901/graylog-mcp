@@ -392,6 +392,19 @@ async def test_the_glossary_is_listed_for_the_model(make_app):
     assert json.loads(described.content[0].text) == everything
 
 
+async def test_a_glossary_too_long_for_one_answer_says_what_it_left_out(make_app):
+    terms = {
+        f"term{i}": {"aliases": [f"alias number {i}"], "query": f"service:svc{i}", "description": "x" * 80}
+        for i in range(300)
+    }
+    app, _ = make_app(glossary={"terms": terms, "codes": GLOSSARY["codes"]})
+    listed = tools.list_glossary(app)
+    assert len(listed["codes"]) == 1 and 0 < len(listed["terms"]) < 300  # the few code shapes are never the ones cut
+    assert listed["truncated"] is True and listed["count"] == {"terms": 300, "codes": 1}
+    assert "instance" in listed["hint"] and len(dumps(listed)) <= app.config.limits.max_output_chars
+    assert tools.list_glossary(make_app(glossary=GLOSSARY)[0])["truncated"] is False
+
+
 async def test_an_empty_glossary_says_how_to_add_one(make_app):
     app, _ = make_app()
     listed = tools.list_glossary(app)

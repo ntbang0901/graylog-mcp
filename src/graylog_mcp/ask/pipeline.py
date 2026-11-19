@@ -59,13 +59,15 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         key = "term_filtered" if m.term.query else "term"
         what = m.term.description or m.term.name
         out["summary"] += "\n" + render.say(lang, key, text=app.redactor.text(m.text), what=what, query=m.term.query)
+    filtering = [m.term for m in terms if m.term.query]
+    if len(filtering) > 1:  # two services named together match no line: the reader must see why the answer is small
+        out["summary"] += "\n" + render.say(lang, "terms_together", n=len(filtering))
     for w in unclear:
         names = ", ".join(w.terms)
         out["summary"] += "\n" + render.say(lang, "unclear_term", text=app.redactor.text(w.text), names=names)
     if u.confidence < app.config.ask.min_confidence:
         out["clarify"] = render.say(lang, "clarify")
     else:
-        filtering = [m.term for m in terms if m.term.query]
         topic = and_queries(*(t.query for t in filtering)) if filtering else None
         try:
             answer = await _answer(app, jev, u, gl.cfg.name, question, typed, topic)

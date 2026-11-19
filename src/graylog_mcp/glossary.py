@@ -32,6 +32,40 @@ def strip_marks(text: str) -> str:
     return "".join(_bare(c) for c in text)
 
 
+_TONE_NAMES = ("ACUTE ACCENT", "GRAVE ACCENT", "HOOK ABOVE", "TILDE", "DOT BELOW")
+_TONES = frozenset(unicodedata.lookup(f"COMBINING {name}") for name in _TONE_NAMES)
+_VOWELS = frozenset("aăâeêioôơuưy")
+_WORD = re.compile(r"[^\W\d_]+")
+
+
+def _settle_tones(folded: str) -> str:
+    """``folded`` with the tone mark of each word on its first vowel, character for character: Vietnamese writes
+    one word both ways (hoá, hóa), and a reader of either means the same word."""
+    out = list(folded)
+    for word in _WORD.finditer(folded):
+        parts = [unicodedata.normalize("NFD", c) for c in word.group()]
+        toned = [i for i, part in enumerate(parts) if any(mark in _TONES for mark in part[1:])]
+        if len(toned) != 1:
+            continue
+        at = toned[0]
+        tone = next(mark for mark in parts[at][1:] if mark in _TONES)
+        parts[at] = parts[at].replace(tone, "")
+        plain = [unicodedata.normalize("NFC", part) for part in parts]
+        if plain[at] not in _VOWELS:
+            continue  # a mark on a consonant is not a Vietnamese tone
+        first = next(i for i, char in enumerate(plain) if char in _VOWELS)
+        moved = unicodedata.normalize("NFC", parts[first] + tone)
+        if len(moved) == 1:
+            out[word.start() + at] = plain[at]
+            out[word.start() + first] = moved
+    return "".join(out)
+
+
+def alias_key(alias: str) -> str:
+    """What makes two aliases the same words: case, spacing and the place of a tone mark do not."""
+    return " ".join(_settle_tones(fold(alias)).split())
+
+
 @dataclass(frozen=True)
 class TermMatch:
     term: GlossaryTerm
@@ -69,19 +103,16 @@ def match_terms(glossary: Glossary, inst: InstanceConfig, text: str) -> tuple[li
     The longest phrase wins. An alias also matches without its diacritics, but only words typed with none: "ma"
     may stand for "mã", "má" never does."""
     typed = unicodedata.normalize("NFC", text)
-    folded = fold(typed)
+    folded = _settle_tones(fold(typed))
     bare = strip_marks(folded)
     found: list[tuple[tuple[int, int], bool, GlossaryTerm]] = []
     for term in glossary.terms_for(inst):
-        spans: set[tuple[int, int]] = set()
-        for alias in term.aliases:
-            key = fold(alias)
-            exact = {m.span() for m in _whole_words(key).finditer(folded)}
-            loose = {m.span() for m in _whole_words(strip_marks(key)).finditer(bare)}
-            loose = {s for s in loose if folded[s[0] : s[1]] == bare[s[0] : s[1]]} - exact
-            found += [(s, True, term) for s in exact - spans]
-            found += [(s, False, term) for s in loose - spans]
-            spans |= exact | loose
+        keys = [_settle_tones(fold(alias)) for alias in term.aliases]
+        # every alias as written before any alias without its marks: "ma" listed beside "mã" is an exact word
+        exact = {m.span() for key in keys for m in _whole_words(key).finditer(folded)}
+        loose = {m.span() for key in keys for m in _whole_words(strip_marks(key)).finditer(bare)}
+        loose = {s for s in loose if folded[s[0] : s[1]] == bare[s[0] : s[1]]} - exact
+        found += [(s, True, term) for s in sorted(exact)] + [(s, False, term) for s in sorted(loose)]
     found.sort(key=lambda f: (f[0][0] - f[0][1], not f[1], f[0][0]))  # longer, then exact, then earlier
     taken: list[tuple[int, int]] = []
     matches: list[TermMatch] = []
@@ -93,7 +124,8 @@ def match_terms(glossary: Glossary, inst: InstanceConfig, text: str) -> tuple[li
         written = typed[span[0] : span[1]]
         rivals = [t.name for s, e, t in found if s == span and not e]
         if not exact_match and len(rivals) > 1:
-            unclear.append(Unclear(written, tuple(rivals)))
+            if (word := Unclear(written, tuple(rivals))) not in unclear:
+                unclear.append(word)
         else:
             matches.append(TermMatch(term, written, span[0], span[1], exact_match))
     once: dict[str, TermMatch] = {}

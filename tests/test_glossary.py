@@ -153,6 +153,37 @@ def test_an_accented_word_never_matches_another_accented_alias():
     assert _matched("ma bi sai", {"terms": terms}) == ([], [("ma", ("code", "cheek"))])
 
 
+@pytest.mark.parametrize("aliases", [["mã", "ma"], ["ma", "mã"]])
+def test_an_alias_written_without_accents_settles_what_the_bare_word_means(aliases):
+    terms = {"code": {"aliases": aliases, "keywords": ["code"]}, "cheek": {"aliases": ["má"], "keywords": ["cheek"]}}
+    assert _matched("ma bi sai", {"terms": terms}) == ([("code", "ma", True)], [])
+
+
+@pytest.mark.parametrize(
+    ("alias", "typed"),
+    [("hóa đơn", "hoá đơn"), ("hoá đơn", "hóa đơn"), ("hủy đơn", "Huỷ đơn"), ("khoá", "khóa"), ("thúy", "THUÝ")],
+)
+def test_both_places_of_a_tone_mark_are_one_word(alias, typed):
+    terms = {"t": {"aliases": [alias], "keywords": ["x"]}}
+    assert _matched(f"{typed} bị lỗi", {"terms": terms}) == ([("t", typed, True)], [])
+
+
+def test_another_tone_is_another_word():
+    terms = {"t": {"aliases": ["hóa đơn"], "keywords": ["x"]}}
+    assert _matched("hòa đơn và hoà đơn", {"terms": terms}) == ([], [])
+
+
+def test_two_spellings_of_one_word_are_one_alias():
+    terms = {"a": {"aliases": ["hoá đơn"], "keywords": ["x"]}, "b": {"aliases": ["hóa đơn"], "keywords": ["y"]}}
+    with pytest.raises(ConfigError, match="belongs to both terms 'a' and 'b'"):
+        make_config(glossary={"terms": terms})
+
+
+def test_an_unclear_word_is_reported_once():
+    terms = {"code": {"aliases": ["mã"], "keywords": ["code"]}, "cheek": {"aliases": ["má"], "keywords": ["cheek"]}}
+    assert _matched("ma hay ma", {"terms": terms}) == ([], [("ma", ("code", "cheek"))])
+
+
 def test_an_unaccented_alias_wins_over_a_stripped_one():
     terms = {
         "refund": {"aliases": ["hoàn tiền"], "keywords": ["refund"]},

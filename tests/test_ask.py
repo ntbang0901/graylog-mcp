@@ -362,7 +362,17 @@ async def test_a_term_with_keywords_only_is_explained_and_filters_nothing(make_a
     out = await ask(app, "hoàn tiền có bao nhiêu lỗi")
     assert out["result"]["count"] == everything
     assert out["understood"]["topics"] == [{"term": "refund", "matched": "hoàn tiền", "keywords": ["refund"]}]
-    assert '"hoàn tiền" is understood as refund.' in out["summary"]
+    assert '"hoàn tiền" is understood as refund; this term does not narrow the search.' in out["summary"]
+
+
+async def test_two_filtering_terms_say_that_they_narrow_together(make_ask_app):
+    terms = {"payment": PAYMENT, "gateway": {"aliases": ["cổng"], "query": "service:gateway"}}
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    out = await ask(app, "thanh toán và cổng có bao nhiêu lỗi")
+    assert out["result"]["count"] == 0
+    assert "These 2 terms narrow the search together: only lines that match all of them count." in out["summary"]
+    one = await ask(app, "thanh toán có bao nhiêu lỗi")
+    assert "narrow the search together" not in one["summary"]
 
 
 async def test_a_refused_glossary_query_names_the_term(make_ask_app):

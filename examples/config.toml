@@ -109,8 +109,8 @@ query = "service:payment"            # ANDed into the search when a question nam
 
 [glossary.terms.refund]
 aliases = ["hoàn tiền", "refund"]
-keywords = ["refund"]                # plain words to match log text with
-preset = "payment_errors"            # optional: a preset that answers questions about this term
+keywords = ["refund"]                # the English words the logs use for it (listed for the model; no filter)
+preset = "payment_errors"            # optional: one of the [presets] above about this term
 # instances = ["prod"]               # only on these instances, groups or environments
 
 [glossary.codes.order]

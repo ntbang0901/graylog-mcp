@@ -9,15 +9,17 @@ All notable changes to this project are documented here. The format follows
 ### Added
 - A `[glossary]` section names the team's business terms (`aliases`, an optional `query`, `keywords`, `preset`) and
   the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
-  terms of the same instance stops the load with both names.
+  terms of the same instance stops the load with both names. An alias matches whole words, with or without its
+  accents, and whichever vowel carries the tone mark ("hoá đơn" and "hóa đơn").
 - `describe(what="glossary")` lists the glossary, for one instance when `instance` is given.
 - `trace_request` looks a code up in the fields its glossary entry names (`[glossary.codes.<name>] fields`) before
   searching the text, so a number that also appears in unrelated lines leads only to its own requests; `code` in the
   result names the kind of code and the fields that held it. A code found in its field on lines without any trace id
   returns those lines (`strategy` is `code_field`).
-- `ask` reads the glossary: a term in the question becomes a filter ANDed into the search, `understood.topics` lists
-  it and the summary says how it was read; words typed without accents that fit two terms are named, not guessed
-  (`understood.unclear`); codes are found with `[glossary.codes]` as well as `ask.code_patterns`.
+- `ask` reads the glossary: the `query` of a term in the question is ANDed into the search, `understood.topics` lists
+  the term and the summary says how it was read (a term with only `keywords` or a `preset` is named as not narrowing
+  the search; several queries narrow together); words typed without accents that fit two terms are named, not
+  guessed (`understood.unclear`); codes are found with `[glossary.codes]` as well as `ask.code_patterns`.
 - `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
   id, it lists the requests the code went through (`traces`), details the one with an error or the most services
   (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).
