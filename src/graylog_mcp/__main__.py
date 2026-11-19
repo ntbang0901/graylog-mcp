@@ -266,7 +266,7 @@ def _version(argv: list[str]) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers", "version", "investigate",
+    "ui", "connect", "headers", "version", "investigate", "skill",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
     "hook",  # internal: what Claude Code runs once 'install claude-code --trace' added the hooks
 )  # fmt: skip
@@ -292,6 +292,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
        graylog-mcp investigate list|show|resume|export   read the investigations agents kept (no server needed)
+       graylog-mcp skill install|path         the Claude Code skill for working with investigations
 
 Run 'graylog-mcp COMMAND --help' for the options of a command.
 """
@@ -1367,6 +1368,29 @@ def _tolerant_output() -> None:
             stream.reconfigure(errors="replace")
 
 
+def _skill(argv: list[str]) -> int:
+    """Copy the Claude Code skill that teaches an agent to work with investigations into the user's skills folder."""
+    from graylog_mcp.setup import skill
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp skill", description="The Claude Code skill for working with investigations"
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    inst = sub.add_parser("install", help="copy it into Claude Code's skills folder (replaces an older copy)")
+    where = inst.add_mutually_exclusive_group()
+    where.add_argument("--project", action="store_true", help="this folder's .claude/skills instead of your own")
+    where.add_argument("--dir", help="a skills folder of your choice")
+    sub.add_parser("path", help="print where the skill is in this installation")
+    args = parser.parse_args(argv)
+    if args.action == "path":
+        print(skill.source() / skill.NAME)
+        return 0
+    target = skill.install(Path(args.dir) if args.dir else None, project=args.project)
+    print(f"✓ installed the {skill.NAME} skill: {target}")
+    print("  Claude Code reads it in new sessions. It is useful once investigations are on (admin page).")
+    return 0
+
+
 def _investigate(argv: list[str]) -> int:
     """Read the investigations an agent kept, straight from the local file: it works with the server stopped. Nothing
     here starts an agent or writes a record."""
@@ -1478,6 +1502,7 @@ def main(argv: list[str] | None = None) -> int:
         "keepalive": _keepalive,
         "hook": _hook,
         "investigate": _investigate,
+        "skill": _skill,
     }
     return handlers[command](argv)
 

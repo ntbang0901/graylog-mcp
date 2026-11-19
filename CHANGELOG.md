@@ -82,6 +82,8 @@ All notable changes to this project are documented here. The format follows
 - The log drawer on the Logs dashboard can search outside its filter: the filter (for example `service:"payment"`) is
   shown as a chip with a ✕ that searches the whole time range, and a field value in an opened line is a button that
   searches `field:value`.
+- `graylog-mcp skill install` copies a Claude Code skill (`graylog-investigate`) that teaches an agent the whole
+  investigation workflow: resume or start, run checks as steps, record and cite evidence, hand over and finish.
 - With investigations on, the server instructions give agents the working rules: when to start or resume one, what to
   pass on each search, what to record before and after a check, that a supported or contradicted assessment must cite
   evidence from a succeeded step, and how to end.

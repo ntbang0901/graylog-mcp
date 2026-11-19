@@ -360,6 +360,10 @@ piece of evidence); `graylog-mcp investigate list|show|resume|export` reads them
 sentence to give an agent; it starts nothing), and the page exports Markdown; the concept is in
 [PR #48](https://github.com/ntbang0901/graylog-mcp/pull/48).
 
+A Claude Code **skill** teaches an agent how to work with them (when to start or resume, what to record and cite, how to
+finish): `graylog-mcp skill install` copies it into `~/.claude/skills/` (`--project` for this folder's `.claude/skills/`,
+`--dir` for another). It is read in new sessions.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
