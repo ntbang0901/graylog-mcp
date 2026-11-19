@@ -8,7 +8,7 @@ import unicodedata
 import pytest
 
 from graylog_mcp.config import ConfigError
-from graylog_mcp.glossary import fold, strip_marks
+from graylog_mcp.glossary import code_kind, find_codes, fold, match_terms, strip_marks
 from tests.conftest import make_config
 
 GLOSSARY = {
@@ -48,6 +48,7 @@ def test_no_glossary_is_an_empty_one():
         ({"terms": {"a": {"aliases": ["a"], "query": "x:1", "colour": 1}}}, "colour"),
         ({"codes": {"c": {"pattern": "("}}}, "glossary.codes.c.pattern: '(' is not a regular expression"),
         ({"codes": {"c": {"pattern": r"\d*"}}}, "matches empty text"),
+        ({"codes": {"c": {"fields": ["order_id"]}}}, "glossary.codes.c.pattern: expected a regular expression"),
         ({"words": {}}, "words"),
     ],
 )
@@ -99,3 +100,67 @@ def test_fold_and_strip_marks_keep_every_position():
     typed = unicodedata.normalize("NFD", "Cổng Thanh Toán Đỏ")
     assert fold(typed) == "cổng thanh toán đỏ" and strip_marks(fold(typed)) == "cong thanh toan do"
     assert len(fold("İstanbul")) == len(unicodedata.normalize("NFC", "İstanbul"))
+
+
+def _matched(question, glossary=GLOSSARY):
+    cfg = make_config(glossary=glossary)
+    found, unclear = match_terms(cfg.glossary, cfg.instances["main"], question)
+    return [(m.term.name, m.text, m.exact) for m in found], [(u.text, u.terms) for u in unclear]
+
+
+def test_the_longest_phrase_wins():
+    assert _matched("Cổng Thanh  Toán bị lỗi") == ([("gateway", "Cổng Thanh  Toán", True)], [])
+    assert _matched("thanh toán bị lỗi, payment timeout") == ([("payment", "thanh toán", True)], [])
+
+
+def test_a_question_typed_without_accents_or_decomposed_still_matches():
+    assert _matched("cong thanh toan loi") == ([("gateway", "cong thanh toan", False)], [])
+    assert _matched(unicodedata.normalize("NFD", "hoàn tiền chậm")) == ([("refund", "hoàn tiền", True)], [])
+
+
+def test_an_alias_inside_a_longer_word_does_not_match():
+    assert _matched("refunded twice, thanh toánh, payment2") == ([], [])
+    assert _matched("order-refund, ok") == ([("refund", "refund", True)], [])
+
+
+def test_several_terms_come_in_the_order_of_the_question():
+    found, _ = _matched("hoàn tiền sau khi thanh toán")
+    assert [name for name, _, _ in found] == ["refund", "payment"]
+
+
+def test_an_accented_word_never_matches_another_accented_alias():
+    terms = {"code": {"aliases": ["mã"], "keywords": ["code"]}, "cheek": {"aliases": ["má"], "keywords": ["cheek"]}}
+    assert _matched("mã bị sai", {"terms": terms}) == ([("code", "mã", True)], [])
+    assert _matched("ma bi sai", {"terms": terms}) == ([], [("ma", ("code", "cheek"))])
+
+
+def test_an_unaccented_alias_wins_over_a_stripped_one():
+    terms = {
+        "refund": {"aliases": ["hoàn tiền"], "keywords": ["refund"]},
+        "club": {"aliases": ["hoan tien"], "keywords": ["club"]},
+    }
+    assert _matched("hoan tien", {"terms": terms}) == ([("club", "hoan tien", True)], [])
+    assert _matched("hoàn tiền", {"terms": terms}) == ([("refund", "hoàn tiền", True)], [])
+
+
+def test_terms_of_another_instance_do_not_match():
+    terms = {"payment": {"aliases": ["thanh toán"], "query": "service:payment", "instances": ["elsewhere"]}}
+    assert _matched("thanh toán lỗi", {"terms": terms}) == ([], [])
+
+
+def test_codes_are_found_in_the_order_of_the_question():
+    codes = {"order": {"pattern": r"ORD-\d+", "fields": ["order_id"]}, "any": {"pattern": r"[A-Z]+-\d+"}}
+    cfg = make_config(glossary={"codes": codes}, ask={"code_patterns": [r"\b\d{10}\b"]})
+    found = find_codes(cfg.glossary, cfg.instances["main"], "TXN-7 rồi ORD-1001, lại ORD-1001 và 4111111111")
+    assert [(c.kind.name, c.value) for c in found] == [
+        ("any", "TXN-7"),
+        ("order", "ORD-1001"),
+        ("ask_code_1", "4111111111"),
+    ]
+
+
+def test_code_kind_needs_the_whole_value():
+    cfg = make_config(glossary=GLOSSARY)
+    main = cfg.instances["main"]
+    assert code_kind(cfg.glossary, main, "ORD-1001").name == "order"
+    assert code_kind(cfg.glossary, main, "ORD-1001x") is None and code_kind(cfg.glossary, main, "req-7f3a9c") is None
