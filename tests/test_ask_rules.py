@@ -131,6 +131,16 @@ async def test_a_described_error_is_matched_by_its_words_and_said_to_be_a_guess(
     assert out["flow"]["first_error"]["service"] == "payment"
 
 
+async def test_a_word_for_a_kind_of_error_also_describes_the_error(make_app):
+    """ "timeout" says the error is technical, and it is the word its message holds: both readings count."""
+    app, _ = make_app("basic")
+    out = await ask(app, "timeout in the last hour")
+    assert out["understood"]["errors"] == "technical" and out["scored_by"] == "rules"
+    assert out["matches"] and all("timeout" in m["sample"] and m["score"] == 1.0 for m in out["matches"])
+    # the bare word "error" tells nothing apart
+    assert "No word of the question" in (await ask(app, "errors in the last hour"))["summary"]
+
+
 async def test_a_description_with_no_word_to_match_lists_the_most_frequent_errors(make_app):
     app, _ = make_app(glossary=TERMS)
     out = await ask(app, "thanh toán lỗi hôm nay")

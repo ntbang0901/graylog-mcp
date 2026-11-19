@@ -426,12 +426,15 @@ def _keywords(app: App, u: Understood, typed: str) -> tuple[str, ...]:
     text = unicodedata.normalize("NFC", typed)
     words = app.config.glossary.error_words
     groups = {"either": words.either, "technical": words.technical, "business": words.business}
-    taken = [(m.start, m.end) for m in u.topics] + [(start, end) for _, _, start, end in match_words(groups, text)]
+    # "error" tells no error from another; "timeout" or "declined" names the kind and is in the message too
+    bare = [(start, end) for kind, _, start, end in match_words(groups, text) if kind == "either"]
+    taken = [(m.start, m.end) for m in u.topics] + bare
     for code in u.codes:
         at = text.find(code.value)
         taken.append((at, at + len(code.value)))
-    # the words that said when, where and what is asked describe no error
-    read_as = " ".join(slot.text for slot in (u.time, u.instance, u.intent) if slot.text)
+    # the words that said when, where and what is asked describe no error; a guessed intent has no words of its own
+    slots = (u.time, u.instance, *([u.intent] if u.intent.source == "rules" else []))
+    read_as = " ".join(slot.text for slot in slots if slot.text)
     spoken = {w.lower() for w in re.findall(r"\w+", read_as)}
     found = keywords_of(text, taken, [k for m in u.topics for k in m.term.keywords])
     return tuple(word for word in found if word not in spoken)
