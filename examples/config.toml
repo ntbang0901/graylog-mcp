@@ -100,6 +100,23 @@ description = "Quick health scan: high and critical rules"
 tool = "scan"
 args = { range = "1h", min_severity = "high" }
 
+# The team's own words (README: Glossary). ask and trace_request read them; describe(what="glossary") lists them
+# for the model of a chat client.
+[glossary.terms.payment]
+description = "payment service"      # how the answer names what the word was read as
+aliases = ["thanh toán", "payment"]  # matched as whole words, with or without accents; the longest phrase wins
+query = "service:payment"            # ANDed into the search when a question names the term
+
+[glossary.terms.refund]
+aliases = ["hoàn tiền", "refund"]
+keywords = ["refund"]                # plain words to match log text with
+preset = "payment_errors"            # optional: a preset that answers questions about this term
+# instances = ["prod"]               # only on these instances, groups or environments
+
+[glossary.codes.order]
+pattern = 'ORD-\d+'                  # what the code looks like
+fields = ["order_id"]                # searched before the text: a number alone also matches unrelated lines
+
 # Scan rules (README: Scan rules). Built-in rules: crash, resource_exhaustion, error_spike, new_error_types,
 # http_5xx, connectivity, database, auth_failures.
 [scan]

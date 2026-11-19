@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import re
+import tomllib
 import unicodedata
+from pathlib import Path
 
 import pytest
 
 from graylog_mcp.config import ConfigError
 from graylog_mcp.glossary import code_kind, find_codes, fold, match_terms, strip_marks
+from graylog_mcp.setup import configfile
 from tests.conftest import make_config
 
 GLOSSARY = {
@@ -100,6 +103,22 @@ def test_fold_and_strip_marks_keep_every_position():
     typed = unicodedata.normalize("NFD", "Cổng Thanh Toán Đỏ")
     assert fold(typed) == "cổng thanh toán đỏ" and strip_marks(fold(typed)) == "cong thanh toan do"
     assert len(fold("İstanbul")) == len(unicodedata.normalize("NFC", "İstanbul"))
+
+
+def test_the_example_config_holds_a_glossary_that_loads():
+    example = Path(__file__).resolve().parents[1] / "examples" / "config.toml"
+    data = tomllib.loads(example.read_text(encoding="utf-8"))
+    cfg = make_config(glossary=data["glossary"], presets=data["presets"])
+    assert cfg.glossary.terms and cfg.glossary.codes
+
+
+def test_saving_settings_from_the_admin_page_keeps_the_glossary():
+    main = {"url": "https://graylog.test", "token_env": "TEST_GRAYLOG_TOKEN"}
+    data = {"instances": {"main": main}, "glossary": GLOSSARY}
+    saved = configfile.render(configfile.write_scope(data, "global", {"error_query": "level:<=4"}))
+    kept = configfile.validate_text(saved)
+    assert kept.instances["main"].error_query == "level:<=4"
+    assert kept.glossary == make_config(glossary=GLOSSARY).glossary
 
 
 def _matched(question, glossary=GLOSSARY):

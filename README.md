@@ -282,6 +282,51 @@ Writing rules that are fast and accurate:
 Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > Learned) shows
 each one with its counts, weight and whether it applies by itself, and forgets one on request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
+## Glossary: your team's words
+
+People who know the business say "thanh toán", "refund" or "order ORD-1001", not `service:payment`. The glossary
+is where a team writes down once what its words stand for in the logs:
+
+```toml
+[glossary.terms.payment]
+description = "payment service"
+aliases = ["thanh toán", "payment"]
+query = "service:payment"            # ANDed into the search when a question names the term
+
+[glossary.terms.refund]
+aliases = ["hoàn tiền", "refund"]
+keywords = ["refund"]                # plain words to match log text with
+preset = "refund_errors"             # optional: a preset that answers questions about this term
+
+[glossary.codes.order]
+pattern = 'ORD-\d+'
+fields = ["order_id"]                # searched before the text
+```
+
+A term needs `aliases` and at least one of `query`, `keywords` and `preset`. How a question is read:
+
+- An alias matches as whole words, whatever the case and spacing: "refund" does not match "refunded".
+- The longest phrase wins: with both "cổng thanh toán" and "thanh toán" in the glossary, a question about "cổng
+  thanh toán" names only the first.
+- Accents are optional when typing: "thanh toan" matches "thanh toán". Words typed with accents only match the
+  alias with those accents, and words typed without any that fit two terms are reported, not guessed.
+- One alias means one term: the same alias on two terms of one instance stops the load, naming both. Systems that
+  use one word for different things limit each term with `instances` (instance, group or environment names), as
+  scan rules do.
+
+Who reads it:
+
+- **`describe(what="glossary")`** lists it, so the model of a chat client can turn the user's words into the
+  right query itself.
+- **`trace_request`** looks a code up in the `fields` of its kind before searching the text. A bare number such as
+  `100200` also appears in durations, amounts and ids of other things; in `order_id` it is only the order.
+- **`ask`** turns a term into a filter and says so in its answer, and finds codes by their `pattern`
+  (see [below](#ask-in-plain-language)).
+
+Keep an alias to what its term really covers. "Checkout" usually spans more than the payment service; pointing it
+at `service:payment` gives answers that look right and miss logs. The line "… is understood as …" in `ask`'s answer
+is where a wrong mapping shows.
+
 ## Ask in plain language
 
 For people who do not write Lucene or know field names. `ask` takes a question, works out what it means, finds the
@@ -462,7 +507,7 @@ rest: several instances, token or basic auth, TLS verification and CA bundle, pr
 `trace_fields`, `error_query` (because `level` is a syslog number or a string depending on how logs are
 shipped), `app_packages`, how request logs read (`endpoint_fields`, `status_fields`, `business_error_query`,
 `technical_error_query`, `slow_ms`, `latency_unit`, for the Logs screen of the admin UI), `ui_links`, redaction
-packs and custom patterns, presets and limits. Secrets are never
+packs and custom patterns, presets, the [glossary](#glossary-your-teams-words) and limits. Secrets are never
 written in the file; it names the environment variable that holds them (`token_env`, `password_env`).
 The file is validated at startup and any mistake (unknown key, bad regex, unknown timezone, missing
 secret) stops the server with a precise message.
@@ -931,6 +976,7 @@ src/graylog_mcp/
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
   trace.py      following one request or one business code across services
+  glossary.py   the team's business terms and code shapes, matched in a question
   rca.py        root cause analysis: onsets, change detection, service map, ranking
   ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name
