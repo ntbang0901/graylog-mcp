@@ -90,6 +90,11 @@ async def test_every_tool(app):
     assert trace["first_error"]["message"] == "payment failed"
     assert_clean(trace)
 
+    by_text = await tracing.trace_request(app, "/api/pay", range="1d")
+    assert by_text["strategy"] == "business_code" and by_text["shown_trace"] == "req-7f3a9c", by_text
+    assert len(by_text["timeline"]) == 6  # the whole request, not only its lines naming the path
+    assert_clean(by_text)
+
     ref = trace["first_error"].get("ref")
     if ref:
         msg = await tools.get_message(app, ref)

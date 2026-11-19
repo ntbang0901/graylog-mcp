@@ -240,3 +240,27 @@ async def test_an_empty_absolute_range_suggests_absolute_times(make_app):
     (found,) = res["suggestions"]
     assert "range" not in found and found["count"] == 6 and {"from_time", "to_time"} <= set(found)
     assert "from_time=" in res["hint"] and "range=" not in res["hint"]
+
+
+def _wide_lines(fake, lines):
+    fake.messages = []
+    for i in range(lines):
+        _add(fake, 600 - i, trace_id="T-wide", service="gateway", message=f"step {i} " + "x" * 900)
+
+
+async def test_a_trace_the_size_cap_cut_says_so_and_claims_no_more_than_it_shows(make_app):
+    app, fake = make_app()
+    _wide_lines(fake, 300)
+    res = await trace.trace_request(app, "T-wide", range="1h", limit=200)
+    shown = len(res["timeline"])
+    assert shown < 200 and res["hidden"] == 300 - shown
+    assert f"showing {shown} of 300 messages" in res["note"] and "size cap" in res["note"]
+    assert "the earliest 200" not in res["note"] and "raise limit" not in res["note"]
+
+
+async def test_a_trace_read_whole_but_cut_by_the_size_cap_says_so(make_app):
+    app, fake = make_app()
+    _wide_lines(fake, 60)
+    res = await trace.trace_request(app, "T-wide", range="1h")
+    shown = len(res["timeline"])
+    assert shown < 60 and f"showing {shown} of 60 messages" in res["note"] and "size cap" in res["note"]

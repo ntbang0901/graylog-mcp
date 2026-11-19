@@ -369,8 +369,14 @@ async def trace_request(
     shown = len(out["timeline"])
     if page.total is not None and page.total > shown:
         out["hidden"] = page.total - shown
-    if cut:
-        some = f"{shown} of {page.total} messages" if page.total is not None else f"{shown} messages and more exist"
+    some = f"{shown} of {page.total} messages" if page.total is not None else f"{shown} messages and more exist"
+    if shown < len(timeline):
+        # the size cap took lines the read had kept: naming the read's limit would claim more than is shown
+        notes.append(
+            f"showing {some}: the size cap kept the error lines, then the first and last line of each service's "
+            "step, then lines spread over the rest; narrow the range"
+        )
+    elif cut:
         errors = f"the earliest {marks.cap} error lines of each kind" if marks.capped else "every error line"
         notes.append(
             f"showing {some}: {errors}, the earliest {limit} and the last one; narrow the range or raise limit"
