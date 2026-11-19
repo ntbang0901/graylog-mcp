@@ -93,6 +93,7 @@ class Limits:
     max_groups: int = 100
     sample_concurrency: int = 4
     scan_concurrency: int = 8
+    max_requests: int = 20  # Graylog requests of one trace_request or ask call before optional work is dropped
 
 
 @dataclass(frozen=True)

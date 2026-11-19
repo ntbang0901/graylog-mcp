@@ -20,7 +20,7 @@ from graylog_mcp import recover, ui_links
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
-from graylog_mcp.client import GraylogError
+from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, InstanceConfig
 from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
@@ -56,6 +56,19 @@ def phrase(value: Any) -> str:
 
 def escape_field(name: str) -> str:
     return _LUCENE_FIELD_SPECIAL.sub(r"\\\1", name)
+
+
+def requests_left(app: App) -> int:
+    """Graylog requests the current tool call may still send within ``limits.max_requests``. Outside a tool call
+    nothing is counted."""
+    sent = requests_sent.get()
+    return app.config.limits.max_requests - (sent[0] if sent else 0)
+
+
+def requests_used(app: App) -> str:
+    """ "18/20", for the sentence saying why something was left out."""
+    sent = requests_sent.get()
+    return f"{sent[0] if sent else 0}/{app.config.limits.max_requests}"
 
 
 def and_queries(*queries: str | None) -> str:

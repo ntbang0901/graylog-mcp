@@ -8,7 +8,10 @@ from unittest.mock import ANY
 import pytest
 
 from graylog_mcp import recover, tools, trace, ui_links
+from graylog_mcp.client import requests_sent
+from graylog_mcp.config import ConfigError
 from graylog_mcp.shaping import Budget, dumps
+from tests.conftest import make_config
 
 
 def _add(fake, seconds_ago=5, **fields):
@@ -240,6 +243,66 @@ async def test_an_empty_absolute_range_suggests_absolute_times(make_app):
     (found,) = res["suggestions"]
     assert "range" not in found and found["count"] == 6 and {"from_time", "to_time"} <= set(found)
     assert "from_time=" in res["hint"] and "range=" not in res["hint"]
+
+
+@pytest.fixture
+def used_requests():
+    """Pretend the tool call already sent this many Graylog requests. Set inside the test's own task, whose
+    context ends with it: nothing to undo."""
+
+    def use(count):
+        sent = [count]
+        requests_sent.set(sent)
+        return sent
+
+    return use
+
+
+async def test_a_trace_under_the_request_cap_is_unchanged(make_app, used_requests):
+    app, _ = make_app(investigation={"business_error_query": 'message:"queued"'})
+    sent = used_requests(0)
+    res = await trace.trace_request(app, "req-7f3a9c", range="1h")
+    assert res["first_business_error"]["service"] == "notify" and "note" not in res and sent[0] <= 9
+    assert tools.requests_left(app) == 20 - sent[0] and tools.requests_used(app) == f"{sent[0]}/20"
+
+
+async def test_out_of_requests_optional_work_is_dropped_and_named(make_app, used_requests):
+    app, _ = make_app(investigation={"business_error_query": 'message:"queued"'})
+    used_requests(18)
+    res = await trace.trace_request(app, "req-7f3a9c", range="1h")
+    assert len(res["timeline"]) == 6 and res["first_error"]["message"] == "payment failed"
+    assert all(m.get("error") != "business" for m in res["timeline"]) and "first_business_error" not in res
+    assert "business errors not marked" in res["note"] and "/20 Graylog requests used" in res["note"]
+
+
+async def test_out_of_requests_a_long_trace_keeps_its_first_lines(make_app, used_requests):
+    app, fake = make_app()
+    _long_trace(fake)
+    used_requests(19)
+    res = await trace.trace_request(app, "long-1", range="1h", limit=50)
+    shown = [m["message"] for m in res["timeline"]]
+    assert shown[:50] == [f"step {i}" for i in range(50)] and "step 299" not in shown
+    assert "last line not read" in res["note"] and res["hidden"] == 300 - len(shown)
+
+
+async def test_out_of_requests_an_empty_trace_does_not_look_further_back(make_app, used_requests):
+    app, _ = make_app()
+    used_requests(19)
+    res = await trace.trace_request(app, "req-7f3a9c", range="1m")
+    assert res["timeline"] == [] and "suggestions" not in res and "Graylog requests used" in res["hint"]
+
+
+def test_the_request_cap_comes_from_the_config():
+    assert make_config().limits.max_requests == 20
+    assert make_config(limits={"max_requests": 35}).limits.max_requests == 35
+    with pytest.raises(ConfigError, match=r"limits\.max_requests"):
+        make_config(limits={"max_requests": 0})
+
+
+async def test_outside_a_tool_call_nothing_is_counted(make_app):
+    app, _ = make_app(limits={"max_requests": 3})
+    res = await trace.trace_request(app, "req-7f3a9c", range="1h")  # no counter: the admin page, a script
+    assert tools.requests_left(app) == 3 and "note" not in res
 
 
 ORDER_CODES = {"codes": {"order": {"pattern": r"\d{6}", "fields": ["order_id", "orderId"]}}}

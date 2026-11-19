@@ -30,6 +30,8 @@ from graylog_mcp.tools import (
     error_queries,
     escape_field,
     phrase,
+    requests_left,
+    requests_used,
 )
 
 ERROR_LINES = 50  # error lines of one kind read for a trace
@@ -296,6 +298,9 @@ async def trace_request(
         )
         out["timeline"] = []
         anywhere = " OR ".join(f"({q})" for q in (field_query, in_code_fields, phrase(trace_id)) if q)
+        if requests_left(app) < 2:
+            out["hint"] += f"; a wider range was not searched: {requests_used(app)} Graylog requests used"
+            return out
         if found := await _further_back(gl, anywhere, tr, stream_ids, ends_now=to_time is None):
             out["suggestions"] = [found]
             if "range" in found:
@@ -312,12 +317,19 @@ async def trace_request(
     names = await gl.field_names()
     status_field = next((f for f in gl.cfg.status_fields if f in names), None)
     business, technical = error_queries(gl.cfg, status_field)
+    # close to limits.max_requests the optional reads go, the business marks first; each note says what and why
+    if business and requests_left(app) < 2:
+        business = None
+        notes.append(f"business errors not marked: {requests_used(app)} Graylog requests used")
     marks = await _error_marks(gl, base, technical, business, tr, stream_ids, limit)
     out["error_queries"] = {"technical": technical} | ({"business": business} if business else {})
     if marks.refused:
         notes.append("an error query was refused by Graylog; errors are marked by level only")
 
-    lines, cut = await _beyond_the_limit(gl, base, page, marks, tr, stream_ids, limit)
+    read_last = requests_left(app) >= 1
+    if not read_last and _has_more(page, limit):
+        notes.append(f"last line not read: {requests_used(app)} Graylog requests used")
+    lines, cut = await _beyond_the_limit(gl, base, page, marks, tr, stream_ids, limit, read_last)
     shaper = app.shaper(gl)
     service_fields = gl.cfg.service_fields
     times = [parse_graylog_ts(m.fields.get("timestamp")) for m in lines]
@@ -394,9 +406,8 @@ async def trace_request(
         )
     elif cut:
         errors = f"the earliest {marks.cap} error lines of each kind" if marks.capped else "every error line"
-        notes.append(
-            f"showing {some}: {errors}, the earliest {limit} and the last one; narrow the range or raise limit"
-        )
+        last = " and the last one" if read_last else ""
+        notes.append(f"showing {some}: {errors}, the earliest {limit}{last}; narrow the range or raise limit")
     if notes:
         out["note"] = "; ".join(notes)
     return out
@@ -417,15 +428,19 @@ async def _beyond_the_limit(
     tr: TimeRange,
     streams: tuple[str, ...],
     limit: int,
+    read_last: bool = True,
 ) -> tuple[list[RawMessage], bool]:
-    """The page's messages and whether the trace has more. A longer trace also gets its error lines and its last
-    line, in time order: what went wrong often lies after the earliest ``limit`` messages."""
+    """The page's messages and whether the trace has more. A longer trace also gets its error lines and, with
+    ``read_last``, its last line, in time order: what went wrong often lies after the earliest ``limit`` messages."""
     if not _has_more(page, limit):
         return page.messages, False
-    last = await gl.search(MessageQuery(query=base, timerange=tr, streams=streams, sort_order="desc", limit=1))
+    newest: list[RawMessage] = []
+    if read_last:
+        query = MessageQuery(query=base, timerange=tr, streams=streams, sort_order="desc", limit=1)
+        newest = (await gl.search(query)).messages
     seen = {m.id for m in page.messages}
     extra: list[RawMessage] = []
-    for m in [*(marks.technical or []), *(marks.business or []), *last.messages]:
+    for m in [*(marks.technical or []), *(marks.business or []), *newest]:
         if m.id not in seen:
             seen.add(m.id)
             extra.append(m)

@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "since 9am") and dates ("12/11", "ngày 12
   tháng 11"). `[ask.time]` sets the hours of the parts of the day, the first day of the week and the order of day
   and month.
+- `[limits] max_requests` (20) caps the Graylog requests of one `trace_request` or `ask` call. Close to it the
+  optional reads are dropped, the business error marks first, then the last line of a long trace and the look into a
+  wider range, and `note` or `hint` says what was left out and how many requests were used.
 - The words of a question say which errors it means: a bare "lỗi" or "error" is technical and business errors alike,
   "timeout" or "exception" technical ones, "bị từ chối" or "declined" business ones. The lists are built in and
   `[glossary.error_words]` (`either`, `technical`, `business`) replaces any of them.
