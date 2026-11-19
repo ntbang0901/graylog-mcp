@@ -26,7 +26,7 @@ from graylog_mcp.client import QueryError, requests_sent
 from graylog_mcp.config import PROVIDER_DATA
 from graylog_mcp.glossary import error_kind, find_codes, match_terms, match_words
 from graylog_mcp.shaping import Budget, dumps
-from graylog_mcp.tools import App, ToolInputError, and_queries, phrase, requests_left, requests_used
+from graylog_mcp.tools import App, ToolInputError, and_queries, apply_focus, phrase, requests_left, requests_used
 from graylog_mcp.trace import keep_by_priority, trace_request
 
 MAX_QUESTION_CHARS = 1000
@@ -45,15 +45,23 @@ def _now() -> datetime:
 
 
 async def ask(app: App, question: str, instance: str | None = None) -> dict[str, Any]:
+    sent = requests_sent.get()
+    if sent is not None:
+        return await _ask(app, question, instance, sent)
+    # outside the MCP server (the admin page) nobody counts the requests: count here, for this question alone
+    token = requests_sent.set([0])
+    try:
+        return await _ask(app, question, instance, requests_sent.get() or [0])
+    finally:
+        requests_sent.reset(token)
+
+
+async def _ask(app: App, question: str, instance: str | None, sent: list[int]) -> dict[str, Any]:
     typed = question.strip()[:MAX_QUESTION_CHARS]
     # a pasted log line or token must not reach a provider unredacted
     question = app.redactor.text(typed)
     if not question:
         raise ToolInputError("question is required")
-    sent = requests_sent.get()
-    if sent is None:  # outside the MCP server (the admin page): count here
-        sent = [0]
-        requests_sent.set(sent)
     graylog_before, asked_before = sent[0], app.providers.usage()
     failed: Failures = []
 
@@ -273,7 +281,7 @@ async def _answer(
     if intent == "follow_flow":
         out = await _follow_flow(app, gl, u, compiled, when, question, typed, failed)
         if u.errors.value == "both" and compiled.business and requests_left(app) >= 2:
-            out["by_kind"] = await _by_kind(app, instance, compiled, when)
+            out["by_kind"] = await _by_kind(app, gl, compiled, when)
         return out
     if intent == "trace_code":
         return await _trace_codes(app, instance, u, when)
@@ -301,17 +309,19 @@ async def _answer(
 async def _count(app: App, instance: str, u: Understood, compiled: Compiled, when: dict[str, Any]) -> dict[str, Any]:
     result = await tools.count_logs(app, query=compiled.query, instance=instance, **when)
     if u.errors.value == "both" and compiled.business:
-        result["by_kind"] = await _by_kind(app, instance, compiled, when)
+        result["by_kind"] = await _by_kind(app, app.gl(instance), compiled, when)
     return {"result": result, "ran": compiled.query}
 
 
-async def _by_kind(app: App, instance: str, compiled: Compiled, when: dict[str, Any]) -> dict[str, int]:
-    """ "Errors" said without more means both kinds: each is counted, so the asker sees which one it is."""
-    kinds = {"technical": compiled.technical, "business": compiled.business}
-    return {
-        kind: (await tools.count_logs(app, query=and_queries(q, compiled.topic), instance=instance, **when))["count"]
-        for kind, q in kinds.items()
-    }
+async def _by_kind(app: App, gl: Graylog, compiled: Compiled, when: dict[str, Any]) -> dict[str, int]:
+    """ "Errors" said without more means both kinds: each is counted, so the asker sees which one it is. One
+    request a kind: a kind without errors is an answer here, not a question to look into as count_logs does."""
+    tr = tools._range(gl, when.get("range"), when.get("from_time"), when.get("to_time"), "24h")
+    counts = {}
+    for kind, query in (("technical", compiled.technical), ("business", compiled.business)):
+        effective, streams, _ = await apply_focus(app, gl, and_queries(query, compiled.topic), None)
+        counts[kind] = await gl.count(effective, tr, streams)
+    return counts
 
 
 async def _trace_codes(app: App, instance: str, u: Understood, when: dict[str, Any]) -> dict[str, Any]:

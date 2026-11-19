@@ -141,6 +141,17 @@ async def test_a_word_for_a_kind_of_error_also_describes_the_error(make_app):
     assert "No word of the question" in (await ask(app, "errors in the last hour"))["summary"]
 
 
+async def test_a_kind_without_errors_costs_one_count_not_a_search_for_why(make_app):
+    app, _ = make_app("basic", instances={"main": server("graylog", business_error_query="http_status:499")})
+    out = await ask(app, "how many errors in the last hour")
+    assert out["result"]["by_kind"]["business"] == 0 and out["result"]["by_kind"]["technical"] > 0
+    # the version and the fields of a first call, the count itself, and one request for each kind
+    assert out["cost"]["graylog_requests"] <= 6
+
+    out = await ask(app, "errors in the last hour")  # followed, with the split as an extra
+    assert out["by_kind"]["business"] == 0 and out["cost"]["graylog_requests"] <= 6
+
+
 async def test_a_description_with_no_word_to_match_lists_the_most_frequent_errors(make_app):
     app, _ = make_app(glossary=TERMS)
     out = await ask(app, "thanh toán lỗi hôm nay")
