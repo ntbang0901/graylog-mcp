@@ -125,12 +125,14 @@ def _read(
     typed = unicodedata.normalize("NFC", text)
     folded = _settle_tones(fold(typed))
     bare = strip_marks(folded)
+    plain = folded == bare
     found: list[tuple[tuple[int, int], bool, str]] = []
     for name, aliases in groups.items():
         keys = [_settle_tones(fold(alias)) for alias in aliases]
         # every alias as written before any alias without its marks: "ma" listed beside "mã" is an exact word
         exact = {m.span() for key in keys for m in _whole_words(key).finditer(folded)}
-        loose = {m.span() for key in keys for m in _whole_words(strip_marks(key)).finditer(bare)}
+        # without their marks only in a text typed without any: in "SAP bị lỗi" the bare word is not "sập"
+        loose = {m.span() for key in keys for m in _whole_words(strip_marks(key)).finditer(bare)} if plain else set()
         loose = {s for s in loose if folded[s[0] : s[1]] == bare[s[0] : s[1]]} - exact
         found += [(s, True, name) for s in sorted(exact)] + [(s, False, name) for s in sorted(loose)]
     found.sort(key=lambda f: (f[0][0] - f[0][1], not f[1], f[0][0]))  # longer, then exact, then earlier

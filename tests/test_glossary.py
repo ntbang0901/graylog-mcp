@@ -116,6 +116,7 @@ def test_fold_and_strip_marks_keep_every_position():
         ("declined or timeout", ("both", "declined timeout")),
         ("Payment FAILED twice", ("both", "FAILED")),
         ("có bao nhiêu dòng", None),
+        ("SAP bị lỗi hôm nay", ("both", "lỗi")),  # typed with accents, "SAP" is not "sập"
         ("lời chào", None),
         ("errorless and failsafe", None),
     ],
@@ -137,11 +138,18 @@ def test_error_words_come_from_the_config():
 
 def test_words_are_matched_in_the_order_of_the_text():
     groups = {"fruit": ["táo", "cam sành"], "colour": ["cam"]}
-    assert match_words(groups, "Cam sành, tao và cam") == [
+    assert match_words(groups, "Cam sành, táo và cam") == [
         ("fruit", "Cam sành", 0, 8),
+        ("fruit", "táo", 10, 13),
+        ("colour", "cam", 17, 20),
+    ]
+    assert match_words(groups, "cam sanh, tao va cam") == [
+        ("fruit", "cam sanh", 0, 8),
         ("fruit", "tao", 10, 13),
         ("colour", "cam", 17, 20),
     ]
+    # a text typed with accents means its bare words as they are: "tao" there is not "táo"
+    assert match_words(groups, "tao ăn cam") == [("colour", "cam", 7, 10)]
 
 
 def test_the_example_config_holds_a_glossary_that_loads():

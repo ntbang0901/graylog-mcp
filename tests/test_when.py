@@ -95,9 +95,38 @@ PHRASES: list[tuple[str, str | None, str | None]] = [
     ("hôm qua lúc 14h30", "11-18 14:00", "11-18 15:00"),
     ("từ 9 giờ 30 đến 10 giờ", "09:30", "10:00"),
     ("yesterday from 2pm to 4pm", "11-18 14:00", "11-18 16:00"),
+    # a clock time said with its part of the day: the hour is the one of that part
+    ("lúc 9h tối qua", "11-18 20:30", "11-18 21:30"),
+    ("từ 2h đến 4h chiều hôm qua", "11-18 14:00", "11-18 16:00"),
+    ("lúc 3 giờ chiều hôm qua", "11-18 14:30", "11-18 15:30"),
+    ("từ 8h tối qua", "11-18 20:00", NOW_TEXT),
+    ("hôm qua lúc 9h tối", "11-18 20:30", "11-18 21:30"),
+    ("lúc 8h sáng nay", "07:30", "08:30"),
+    ("từ 10h đến 2h chiều hôm qua", "11-18 10:00", "11-18 14:00"),
+    # a number written as a word, or with a fraction
+    ("hai giờ qua", "08:30", NOW_TEXT),
+    ("ba ngày qua", "11-16 10:30", NOW_TEXT),
+    ("mười phút trước", "10:20", NOW_TEXT),
+    ("last two hours", "08:30", NOW_TEXT),
+    ("1000 phút qua", "11-18 17:50", NOW_TEXT),
+    ("1,5 giờ qua", "09:00", NOW_TEXT),
+    ("1.5 hours ago", "09:00", NOW_TEXT),
+    ("vài ngày qua", None, None),  # how many is not said
+    ("mấy giờ qua", None, None),
+    # from one day to another, or to now
+    ("từ ngày 12/11 đến ngày 15/11", "11-12 00:00", "11-16 00:00"),
+    ("từ 12/11 đến nay", "11-12 00:00", NOW_TEXT),
+    ("from 2026-11-10 to 2026-11-12", "11-10 00:00", "11-13 00:00"),
+    ("since monday", "11-16 00:00", NOW_TEXT),
+    ("since last week", "11-09 00:00", NOW_TEXT),
+    ("từ tuần trước", "11-09 00:00", NOW_TEXT),
+    ("từ hôm 12/11", "11-12 00:00", NOW_TEXT),
     # dates
     ("ngày 12 tháng 11", "11-12 00:00", "11-13 00:00"),
-    ("12/11", "11-12 00:00", "11-13 00:00"),
+    ("ngày 12/11", "11-12 00:00", "11-13 00:00"),
+    ("hôm 12/11", "11-12 00:00", "11-13 00:00"),
+    ("on 12/11", "11-12 00:00", "11-13 00:00"),
+    ("12/11", None, None),  # alone it may as well be a share: 3/4, 24/7
     ("12/11/2026", "11-12 00:00", "11-13 00:00"),
     ("12-11-2026", "11-12 00:00", "11-13 00:00"),
     ("2026-11-12", "11-12 00:00", "11-13 00:00"),
@@ -105,7 +134,14 @@ PHRASES: list[tuple[str, str | None, str | None]] = [
     ("sáng 12/11", "11-12 06:00", "11-12 12:00"),
     ("ngày 25 tháng 12", "2025-12-25 00:00", "2025-12-26 00:00"),  # not yet come this year: the last one
     ("ngày 12", "11-12 00:00", "11-13 00:00"),
+    # not read yet: they stay here so the share below can move
+    ("tuần rồi", "11-09 00:00", "11-16 00:00"),
+    ("lúc nãy", "09:30", NOW_TEXT),
+    ("5 ngày nay", "11-14 10:30", NOW_TEXT),
+    ("last 24h", "11-18 10:30", NOW_TEXT),
+    ("5m ago", "10:25", NOW_TEXT),
 ]
+NOT_READ_YET = {"tuần rồi", "lúc nãy", "5 ngày nay", "last 24h", "5m ago"}
 
 
 def _at(text: str) -> datetime:
@@ -123,7 +159,10 @@ def _reads(question: str, start: str | None, end: str | None) -> bool:
     return got is not None and (got.start, got.end) == (_at(start), _at(end))
 
 
-@pytest.mark.parametrize(("question", "start", "end"), PHRASES, ids=[p[0] for p in PHRASES])
+READ = [p for p in PHRASES if p[0] not in NOT_READ_YET]
+
+
+@pytest.mark.parametrize(("question", "start", "end"), READ, ids=[p[0] for p in READ])
 def test_time_phrases_are_read(question, start, end):
     got = read_time(question, SAIGON, NOW)
     assert _reads(question, start, end), got
@@ -132,6 +171,12 @@ def test_time_phrases_are_read(question, start, end):
 def test_at_least_nine_in_ten_phrases_are_read():
     right = sum(_reads(*phrase) for phrase in PHRASES)
     assert len(PHRASES) >= 50 and right / len(PHRASES) >= 0.9, f"{right}/{len(PHRASES)}"
+
+
+@pytest.mark.parametrize("question", sorted(NOT_READ_YET))
+def test_a_phrase_not_read_yet_is_left_to_the_provider(question):
+    # read wrong would be worse than not read: these must give nothing until the reader knows them
+    assert read_time(question, SAIGON, NOW) is None
 
 
 def test_the_words_read_are_returned_as_typed():
@@ -150,6 +195,15 @@ def test_the_words_read_are_returned_as_typed():
         "tôi qua bước 3 thì lỗi",
         "thanh toán bị lỗi",
         "host 10.0.0.12 lỗi",
+        "hệ thống chạy 24/7 bị lỗi",
+        "tỉ lệ lỗi 3/4 request",
+        "2/3 pod bị crash",
+        "kết quả 10/10",
+        "ngày 29 tháng 2",
+        "ngày 12 tháng 13",
+        "cần xử lý ngay 5 đơn lỗi",  # "ngay" (at once) in a sentence typed with accents is not "ngày"
+        "đẩy sang 12/11 mới làm",
+        "SAP bị lỗi, thu 2 khoản",
     ],
 )
 def test_words_and_numbers_that_are_not_times_are_left_alone(question):
@@ -172,13 +226,21 @@ def test_day_boundaries_follow_the_zone():
     assert (today.end.astimezone(UTC) - today.start.astimezone(UTC)).total_seconds() == 13 * 3600
 
 
+def test_a_length_of_time_is_real_time_across_a_clock_change():
+    berlin = ZoneInfo("Europe/Berlin")
+    after = datetime(2026, 3, 29, 3, 10, tzinfo=berlin)  # ten minutes after 02:00 became 03:00
+    got = read_time("trong 15 phút qua", berlin, after)
+    assert (got.end.astimezone(UTC) - got.start.astimezone(UTC)).total_seconds() == 900
+    assert got.start.isoformat() == "2026-03-29T01:55:00+01:00"
+
+
 def test_time_settings_come_from_the_config():
     cfg = make_config(ask={"time": {"morning": [5, 11], "week_start": "sunday", "date_order": "MDY"}})
     settings = cfg.ask.time
     assert settings == TimeSettings(morning=(5, 11), week_start=6, day_first=False)
     assert read_time("sáng qua", SAIGON, NOW, settings).start == _at("11-18 05:00")
     assert read_time("tuần trước", SAIGON, NOW, settings).start == _at("11-08 00:00")
-    assert read_time("11/12", SAIGON, NOW, settings).start == _at("11-12 00:00")
+    assert read_time("on 11/12", SAIGON, NOW, settings).start == _at("11-12 00:00")
     wrongs = ({"morning": [12, 5]}, {"week_start": "friday"}, {"date_order": "YMD"}, {"noon": [11]}, {"dusk": [1, 2]})
     for wrong in wrongs:
         with pytest.raises(ConfigError, match=r"ask\.time"):
