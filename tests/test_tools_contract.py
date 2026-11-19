@@ -363,9 +363,39 @@ async def test_describe_takes_an_instance_for_every_listing(make_app):
 
     app, _ = make_app()
     server = build_server(app)
-    for what in ("instances", "streams", "fields", "presets", "scan_rules"):
+    for what in ("instances", "streams", "fields", "presets", "scan_rules", "glossary"):
         result = await server.call_tool("describe", {"what": what, "instance": "main"})
         assert json.loads(result.content[0].text)
+
+
+GLOSSARY = {
+    "terms": {
+        "payment": {"aliases": ["thanh toán"], "query": "service:payment"},
+        "elsewhere": {"aliases": ["kho"], "keywords": ["stock"], "instances": ["other"]},
+    },
+    "codes": {"order": {"pattern": r"ORD-\d+", "fields": ["order_id"]}},
+}
+
+
+async def test_the_glossary_is_listed_for_the_model(make_app):
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app(glossary=GLOSSARY)
+    everything = tools.list_glossary(app)
+    assert everything["terms"] == [
+        {"name": "payment", "aliases": ["thanh toán"], "query": "service:payment"},
+        {"name": "elsewhere", "aliases": ["kho"], "keywords": ["stock"], "instances": ["other"]},
+    ]
+    assert everything["codes"] == [{"name": "order", "pattern": r"ORD-\d+", "fields": ["order_id"]}]
+    assert [t["name"] for t in tools.list_glossary(app, instance="main")["terms"]] == ["payment"]
+    described = await build_server(app).call_tool("describe", {"what": "glossary"})
+    assert json.loads(described.content[0].text) == everything
+
+
+async def test_an_empty_glossary_says_how_to_add_one(make_app):
+    app, _ = make_app()
+    listed = tools.list_glossary(app)
+    assert listed["terms"] == [] and listed["codes"] == [] and "glossary.terms" in listed["hint"]
 
 
 async def test_get_message_arguments_refused_with_context_say_so(make_app):

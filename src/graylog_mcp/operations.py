@@ -92,6 +92,7 @@ OPERATIONS: dict[str, Operation] = {
         _op(tools.list_streams, playground=True),
         _op(tools.list_fields, playground=True, template={"contains": ""}),
         _op(tools.list_presets),
+        _op(tools.list_glossary),
         _op(scan.list_scan_rules),
         _op(run_preset),
         _op(ask, playground=True),

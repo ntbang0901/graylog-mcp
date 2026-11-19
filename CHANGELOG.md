@@ -10,6 +10,7 @@ All notable changes to this project are documented here. The format follows
 - A `[glossary]` section names the team's business terms (`aliases`, an optional `query`, `keywords`, `preset`) and
   the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
   terms of the same instance stops the load with both names.
+- `describe(what="glossary")` lists the glossary, for one instance when `instance` is given.
 - `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
   id, it lists the requests the code went through (`traces`), details the one with an error or the most services
   (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).

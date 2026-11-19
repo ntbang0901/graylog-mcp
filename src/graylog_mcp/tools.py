@@ -1112,6 +1112,44 @@ async def list_instances(app: App) -> dict[str, Any]:
     return out
 
 
+def list_glossary(app: App, instance: str | None = None) -> dict[str, Any]:
+    """The team's terms and code shapes; with ``instance``, those that apply to it."""
+    glossary = app.config.glossary
+    inst = app.gl(instance).cfg if instance else None
+    terms = [t for t in glossary.terms.values() if inst is None or t.applies_to(inst)]
+    codes = [c for c in glossary.codes.values() if inst is None or c.applies_to(inst)]
+
+    def entry(name: str, **values: Any) -> dict[str, Any]:
+        return {"name": name} | {k: list(v) if isinstance(v, tuple) else v for k, v in values.items() if v}
+
+    budget = app.budget()
+    out: dict[str, Any] = {
+        "terms": budget.fit(
+            [
+                entry(
+                    t.name,
+                    aliases=t.aliases,
+                    description=t.description,
+                    query=t.query,
+                    keywords=t.keywords,
+                    preset=t.preset,
+                    instances=t.instances,
+                )
+                for t in terms
+            ]
+        ),
+        "codes": budget.fit(
+            [
+                entry(c.name, pattern=c.pattern, fields=c.fields, description=c.description, instances=c.instances)
+                for c in codes
+            ]
+        ),
+    }
+    if not glossary.terms and not glossary.codes:
+        out["hint"] = "no glossary configured: add [glossary.terms.<name>] and [glossary.codes.<name>] to the config"
+    return out
+
+
 def list_presets(app: App) -> dict[str, Any]:
     return {
         "presets": [

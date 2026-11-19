@@ -42,6 +42,8 @@ Query syntax (Lucene, as in the Graylog search bar):
 - Field names are case-sensitive; call describe(what='fields') when unsure. Streams accept names or ids.
 - level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.
   The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.
+- The team's own words: when the user names a product, a flow or a kind of code, describe(what='glossary') gives
+  the query and keywords that word stands for here. Use them rather than guessing a field or a service name.
 
 Environments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one
 system group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'
