@@ -18,6 +18,9 @@ Redact = Callable[[Any], Any]
 
 # operations whose result carries lines worth showing as excerpts, and the field that holds them
 LINES = ("messages", "timeline", "samples", "findings", "errors", "groups", "items", "top", "buckets")
+# the lists that are log lines: a page of them can be short of the matching total. The others are buckets, groups
+# and findings: their length says nothing about how many lines matched, so they are never "sampled"
+MESSAGE_LISTS = ("messages", "timeline", "samples")
 # the parts of a result that say how it was run: kept on the step as what was executed
 EXECUTED = ("instance", "query", "range", "from", "to", "streams", "focus", "rewritten", "effective_query")
 LINE_FIELDS = ("ref", "ts", "level", "source", "service", "message", "count", "key", "value", "name", "trace_id")
@@ -60,7 +63,7 @@ def executed_of(result: Any) -> dict[str, Any] | None:
     return out or None
 
 
-def _coverage(result: dict[str, Any], exact: int | None, returned: int | None) -> list[str]:
+def _coverage(result: dict[str, Any], exact: int | None, returned: int | None, of_lines: bool) -> list[str]:
     notes: list[str] = []
     if isinstance(result.get("rewritten"), dict):
         why = "; ".join(str(w) for w in result["rewritten"].get("why", []) or [])
@@ -75,7 +78,7 @@ def _coverage(result: dict[str, Any], exact: int | None, returned: int | None) -
         notes.append(f"{len(result['suggestions'])} suggested queries, each with its own count")
     if result.get("truncated"):
         notes.append("the answer was cut to fit its size budget")
-    if exact is not None and returned is not None and returned < exact:
+    if of_lines and exact is not None and returned is not None and returned < exact:
         notes.append(f"{returned} of {exact} matching lines are in the answer")
     if exact is None and "messages" in result:
         notes.append("Graylog gave no exact total for this search")
@@ -94,10 +97,12 @@ def build(op: str, result: Any, redact: Redact) -> list[dict[str, Any]]:
             exact = result[name]
             break
     lines: list[Any] = []
+    listed = ""
     for name in LINES:
         if isinstance(result.get(name), list) and result[name]:
-            lines = result[name]
+            lines, listed = result[name], name
             break
+    of_lines = listed in MESSAGE_LISTS or not lines
     returned = result.get("returned") if isinstance(result.get("returned"), int) else (len(lines) or None)
     if returned is None and exact is not None and kind in ("search_logs", "count_logs"):
         returned = 0
@@ -118,9 +123,11 @@ def build(op: str, result: Any, redact: Redact) -> list[dict[str, Any]]:
         "refs": [redact(r) for r in refs],
         "exact_count": exact,
         "returned": returned,
-        "sampled": bool(result.get("next_offset")) or (exact is not None and returned is not None and returned < exact),
+        "sampled": bool(result.get("next_offset"))
+        or result.get("method") == "sampled"  # a grouping Graylog could only do on a sample of the lines
+        or (of_lines and exact is not None and returned is not None and returned < exact),
         "truncated": bool(result.get("truncated")),
-        "coverage": redact(_coverage(result, exact, returned)),
+        "coverage": redact(_coverage(result, exact, returned, of_lines)),
     }
     while draft["excerpts"] and _size(draft["summary"]) + _size(draft["excerpts"]) > MAX_EVIDENCE_BYTES:
         draft["excerpts"] = draft["excerpts"][: len(draft["excerpts"]) // 2]
