@@ -999,9 +999,11 @@ def _parse_glossary(data: Any, presets: dict[str, Preset], legacy_patterns: tupl
         where = f"glossary.codes.{name}"
         _check_keys(where, item, _CODE_KEYS)
         pattern = item.get("pattern")
+        if not isinstance(pattern, str):
+            raise ConfigError(f"{where}.pattern: expected a regular expression")
         try:
             compiled = re.compile(pattern)
-        except (re.error, TypeError) as exc:
+        except re.error as exc:
             raise ConfigError(f"{where}.pattern: {pattern!r} is not a regular expression ({exc})") from None
         if compiled.search(""):
             raise ConfigError(f"{where}.pattern: {pattern!r} matches empty text")
