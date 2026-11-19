@@ -314,13 +314,19 @@ When the question is too vague ("Is the system ok?") `ask` returns a `clarify` t
 nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
 An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
 
+`ask` reads the [glossary](#glossary-your-teams-words) itself, without TypeSafe: a term named in the question
+becomes a filter ANDed into the search, `understood.topics` lists it, and the summary says how it was read
+("thanh toán" is understood as payment service, filtered by service:payment-service). Words typed without accents
+that fit two terms are not guessed: the summary names both. Codes are found with `[glossary.codes]`, and a question
+about a code is not narrowed by a term, because a code's history crosses services.
+
 ```toml
 [ask]
 # api_key_env = "TYPESAFE_API_KEY"   # name of the variable, never the key
 # language = "en"                    # "en" or "vi": the language of the summary text
 # min_confidence = 0.6               # below this, ask asks back
 # relevance = 0.5                    # an error group scoring lower is "not what you described"
-# code_patterns = ['ORD-\d+']        # lets "what happened to order ORD-123?" find the code
+# code_patterns = ['ORD-\d+']        # older name of [glossary.codes]: lets "what happened to order ORD-123?" find the code
 # model, base_url, max_candidates, send_chars
 ```
 

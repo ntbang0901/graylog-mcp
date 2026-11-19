@@ -15,6 +15,9 @@ All notable changes to this project are documented here. The format follows
   searching the text, so a number that also appears in unrelated lines leads only to its own requests; `code` in the
   result names the kind of code and the fields that held it. A code found in its field on lines without any trace id
   returns those lines (`strategy` is `code_field`).
+- `ask` reads the glossary: a term in the question becomes a filter ANDed into the search, `understood.topics` lists
+  it and the summary says how it was read; words typed without accents that fit two terms are named, not guessed
+  (`understood.unclear`); codes are found with `[glossary.codes]` as well as `ask.code_patterns`.
 - `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
   id, it lists the requests the code went through (`traces`), details the one with an error or the most services
   (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).
@@ -25,6 +28,8 @@ All notable changes to this project are documented here. The format follows
   the newest was logged (`suggestions`).
 
 ### Changed
+- Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),
+  and where two patterns match overlapping text the longer match is the code.
 - `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is
   now the request they belong to (`strategy` is `business_code`) with the list of such requests, not every message
   holding the text. Messages without any trace id are returned as before (`full_text`); `search_logs` remains the

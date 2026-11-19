@@ -23,8 +23,11 @@ TEXT: dict[str, dict[str, str]] = {
         "no_flow": "None of its trace ids was found in the logs of this period.",
         "flow": 'The error "{sample}" ({n}x) went through {services}.',
         "first_error": "The first error came from {service}.",
-        "no_code": "No order or transaction code was found in the question. Set ask.code_patterns in the config "
-        "to teach ask what your codes look like.",
+        "no_code": "No order or transaction code was found in the question. Add a [glossary.codes.<name>] with its "
+        "pattern to the config (ask.code_patterns still works) to teach ask what your codes look like.",
+        "term": '"{text}" is understood as {what}.',
+        "term_filtered": '"{text}" is understood as {what}, filtered by {query}.',
+        "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
     },
     "vi": {
         "understood": "Đã hiểu: {parts}. Nếu chưa đúng ý, hãy nói lại.",
@@ -44,8 +47,11 @@ TEXT: dict[str, dict[str, str]] = {
         "no_flow": "Không tìm thấy trace id nào của lỗi này trong log của khoảng thời gian này.",
         "flow": 'Lỗi "{sample}" ({n} lần) đi qua {services}.',
         "first_error": "Lỗi đầu tiên xuất hiện ở {service}.",
-        "no_code": "Không tìm thấy mã đơn hàng hay mã giao dịch trong câu hỏi. Khai báo ask.code_patterns trong "
-        "cấu hình để ask nhận ra dạng mã của bạn.",
+        "no_code": "Không tìm thấy mã đơn hàng hay mã giao dịch trong câu hỏi. Khai báo [glossary.codes.<tên>] kèm "
+        "pattern trong cấu hình (ask.code_patterns vẫn dùng được) để ask nhận ra dạng mã của bạn.",
+        "term": 'Đã hiểu "{text}" là {what}.',
+        "term_filtered": 'Đã hiểu "{text}" là {what}, lọc theo {query}.',
+        "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',
     },
 }
 

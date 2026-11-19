@@ -11,7 +11,7 @@ from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import MessageQuery
 from graylog_mcp.shaping import group_key
 from graylog_mcp.timerange import TimeRange
-from graylog_mcp.tools import App, apply_focus
+from graylog_mcp.tools import App, and_queries, apply_focus
 from graylog_mcp.trace import richest, summarise
 
 MAX_TRACES_PER_GROUP = 50
@@ -32,9 +32,12 @@ class ErrorGroup:
         return str(self.sample.get("message", ""))
 
 
-async def error_groups(app: App, gl: Graylog, tr: TimeRange, send_chars: int, limit: int) -> list[ErrorGroup]:
-    """Error messages of the range grouped by template, the most frequent first (one Graylog request)."""
-    query, streams, _ = await apply_focus(app, gl, gl.cfg.error_query, None)
+async def error_groups(
+    app: App, gl: Graylog, tr: TimeRange, send_chars: int, limit: int, query: str | None = None
+) -> list[ErrorGroup]:
+    """Error messages of the range grouped by template, the most frequent first (one Graylog request).
+    ``query`` narrows them."""
+    query, streams, _ = await apply_focus(app, gl, and_queries(gl.cfg.error_query, query), None)
     names = ("timestamp", "message", "level", *gl.cfg.trace_fields, *gl.cfg.service_fields)
     page = await gl.search(
         MessageQuery(

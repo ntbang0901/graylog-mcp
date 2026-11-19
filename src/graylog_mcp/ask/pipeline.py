@@ -6,7 +6,6 @@ existing tools and fixed sentences, and only redacted, size-capped text is ever 
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from graylog_mcp import rca, tools
@@ -14,9 +13,10 @@ from graylog_mcp.ask import render
 from graylog_mcp.ask.flow import TRACE_MARGIN, ErrorGroup, error_groups, richest_trace
 from graylog_mcp.ask.jev import JevClient
 from graylog_mcp.ask.understand import Understanding, time_args, understand
-from graylog_mcp.client import requests_sent
+from graylog_mcp.client import QueryError, requests_sent
+from graylog_mcp.glossary import TermMatch, find_codes, match_terms
 from graylog_mcp.shaping import Budget, dumps
-from graylog_mcp.tools import App, ToolInputError
+from graylog_mcp.tools import App, ToolInputError, and_queries
 from graylog_mcp.trace import keep_by_priority, trace_request
 
 MAX_QUESTION_CHARS = 1000
@@ -49,10 +49,33 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
         "understood": {"instance": gl.cfg.name, "time": u.time, "errors_only": u.errors_only, "intent": u.intent},
         "summary": render.understood(lang, gl.cfg.name, u.time, u.errors_only),
     }
+    # a code's history crosses services: the team's terms do not narrow it
+    terms, unclear = ([], []) if u.intent == "trace_code" else match_terms(app.config.glossary, gl.cfg, typed)
+    if terms:
+        out["understood"]["topics"] = [_topic(app, m) for m in terms]
+    if unclear:
+        out["understood"]["unclear"] = [{"text": app.redactor.text(w.text), "terms": list(w.terms)} for w in unclear]
+    for m in terms:
+        key = "term_filtered" if m.term.query else "term"
+        what = m.term.description or m.term.name
+        out["summary"] += "\n" + render.say(lang, key, text=app.redactor.text(m.text), what=what, query=m.term.query)
+    for w in unclear:
+        names = ", ".join(w.terms)
+        out["summary"] += "\n" + render.say(lang, "unclear_term", text=app.redactor.text(w.text), names=names)
     if u.confidence < app.config.ask.min_confidence:
         out["clarify"] = render.say(lang, "clarify")
     else:
-        answer = await _answer(app, jev, u, gl.cfg.name, question, typed)
+        filtering = [m.term for m in terms if m.term.query]
+        topic = and_queries(*(t.query for t in filtering)) if filtering else None
+        try:
+            answer = await _answer(app, jev, u, gl.cfg.name, question, typed, topic)
+        except QueryError as exc:
+            if topic is None:
+                raise
+            names = ", ".join(t.name for t in filtering)
+            raise ToolInputError(
+                f"glossary term(s) {names}: Graylog refused the query ({exc}); fix glossary.terms.<name>.query"
+            ) from exc
         if extra := answer.pop("summary_extra", None):
             out["summary"] += "\n" + extra
         out.update(answer)
@@ -60,37 +83,39 @@ async def ask(app: App, question: str, instance: str | None = None) -> dict[str,
     return out
 
 
+def _topic(app: App, match: TermMatch) -> dict[str, Any]:
+    term = match.term
+    said = {"query": term.query, "keywords": list(term.keywords), "preset": term.preset}
+    return {"term": term.name, "matched": app.redactor.text(match.text)} | {k: v for k, v in said.items() if v}
+
+
 async def _answer(
-    app: App, jev: JevClient, u: Understanding, instance: str, question: str, typed: str
+    app: App, jev: JevClient, u: Understanding, instance: str, question: str, typed: str, topic: str | None
 ) -> dict[str, Any]:
-    """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the codes in it."""
+    """``question`` is redacted, for Jev; ``typed`` is what the user wrote, for the codes in it; ``topic`` is the
+    filter of the glossary terms the question names."""
     gl = app.gl(instance)
     when = time_args(u.time, gl.cfg.tz)
     if u.intent == "follow_flow":
-        return await _follow_flow(app, jev, instance, question, when)
+        return await _follow_flow(app, jev, instance, question, when, topic)
     if u.intent == "trace_code":
         return await _trace_codes(app, instance, typed, when)
     if u.intent == "error_summary":
-        return {"result": await tools.error_summary(app, instance=instance, **when)}
+        return {"result": await tools.error_summary(app, query=topic, instance=instance, **when)}
     if u.intent == "count":
-        query = gl.cfg.error_query if u.errors_only else "*"
+        query = and_queries(gl.cfg.error_query if u.errors_only else None, topic)
         return {"result": await tools.count_logs(app, query=query, instance=instance, **when)}
     if u.intent == "root_cause":
-        return {"result": await rca.root_cause(app, instance=instance, **when)}
+        return {"result": await rca.root_cause(app, query=topic, instance=instance, **when)}
     split = when.get("to_time") if u.time == "yesterday" else None
     window = when.get("range") or "24h"
-    return {"result": await tools.compare_periods(app, split_at=split, window=window, instance=instance)}
+    return {"result": await tools.compare_periods(app, split_at=split, window=window, query=topic, instance=instance)}
 
 
 async def _trace_codes(app: App, instance: str, typed: str, when: dict[str, Any]) -> dict[str, Any]:
     """The codes are read from the question as typed: the redactor masks one shaped like a card or phone number."""
     lang = app.config.ask.language
-    codes: list[str] = []
-    for pattern in app.config.ask.code_patterns:
-        for m in re.finditer(pattern, typed):
-            code = m.group(0)
-            if code not in codes:
-                codes.append(code)
+    codes = [c.value for c in find_codes(app.config.glossary, app.gl(instance).cfg, typed)]
     if not codes:
         return {"hint": render.say(lang, "no_code")}
     traces = [await trace_request(app, c, instance=instance, **when) for c in codes[:MAX_CODES]]
@@ -146,12 +171,14 @@ def _match(score: float, group: ErrorGroup) -> dict[str, Any]:
     }
 
 
-async def _follow_flow(app: App, jev: JevClient, instance: str, question: str, when: dict[str, Any]) -> dict[str, Any]:
+async def _follow_flow(
+    app: App, jev: JevClient, instance: str, question: str, when: dict[str, Any], topic: str | None
+) -> dict[str, Any]:
     cfg = app.config.ask
     lang = cfg.language
     gl = app.gl(instance)
     tr = tools._range(gl, when.get("range"), when.get("from_time"), when.get("to_time"), "24h")
-    groups = await error_groups(app, gl, tr, cfg.send_chars, cfg.max_candidates)
+    groups = await error_groups(app, gl, tr, cfg.send_chars, cfg.max_candidates, topic)
     scores = await _score(jev, question, groups) if groups else []
     ranked = sorted(zip(scores, groups, strict=True), key=lambda p: p[0], reverse=True)
     kept = [p for p in ranked if p[0] >= cfg.relevance]

@@ -302,3 +302,92 @@ async def test_a_masked_code_is_not_echoed_by_its_trace(make_ask_app):
     app, _ = make_ask_app(FakeJev(intent="trace_code"), dataset="basic", ask={"code_patterns": [r"\d{16}"]})
     res = await ask(app, "what happened to transaction 4111111111111111?")
     assert "4111111111111111" not in dumps(res) and res["traces"][0]["trace_id"] == "[CARD]"
+
+
+PAYMENT = {"aliases": ["thanh toán"], "query": "service:payment", "description": "payment service"}
+TERMS = {"terms": {"payment": PAYMENT}}
+REQUEST_CODES = {"codes": {"request": {"pattern": r"req-[0-9a-f]{6}"}}}
+
+
+async def test_a_glossary_term_narrows_the_count_and_is_explained(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary=TERMS, ask={"language": "vi"})
+    everything = (await ask(app, "có bao nhiêu lỗi"))["result"]["count"]
+    out = await ask(app, "thanh toán có bao nhiêu lỗi")
+    assert 0 < out["result"]["count"] < everything
+    assert out["understood"]["topics"] == [{"term": "payment", "matched": "thanh toán", "query": "service:payment"}]
+    assert 'Đã hiểu "thanh toán" là payment service, lọc theo service:payment.' in out["summary"]
+    assert out["cost"]["jev_requests"] == 1
+
+
+async def test_a_question_without_a_term_has_no_topics(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary=TERMS)
+    out = await ask(app, "how many errors?")
+    assert "topics" not in out["understood"] and "unclear" not in out["understood"]
+    assert out["summary"] == "Understood: main, last hour, errors only. Say so if this is not what you meant."
+
+
+@pytest.mark.parametrize("intent", ["error_summary", "root_cause", "compare"])
+async def test_a_glossary_term_narrows_the_other_tools_too(make_ask_app, intent):
+    app, fake = make_ask_app(FakeJev(intent=intent), glossary=TERMS)
+    await ask(app, "thanh toán thế nào")
+    assert any("service:payment" in _sent(r) for r in fake.requests)
+
+
+def _sent(request):
+    return " ".join(v for _, v in request.url.params.multi_items()) + request.content.decode()
+
+
+async def test_a_glossary_term_narrows_the_error_groups_of_a_flow(make_ask_app):
+    app, fake = make_ask_app(FakeJev(relevant=("bank call failed",)), glossary=TERMS)
+    out = await ask(app, "thanh toán bị lỗi gọi ngân hàng")
+    assert out["matches"] and out["flow"]["first_error"]["service"] == "payment"
+    assert any("service:payment" in _sent(r) for r in fake.requests)
+    # the flow itself is not narrowed: it crosses services
+    assert {"gateway", "payment"} <= {s["service"] for s in out["flow"]["services"]}
+
+
+async def test_words_typed_without_accents_that_fit_two_terms_are_asked_about(make_ask_app):
+    terms = {"code": {"aliases": ["mã"], "keywords": ["code"]}, "cheek": {"aliases": ["má"], "keywords": ["cheek"]}}
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    out = await ask(app, "ma co bao nhieu loi")
+    assert "topics" not in out["understood"]
+    assert out["understood"]["unclear"] == [{"text": "ma", "terms": ["code", "cheek"]}]
+    assert '"ma" could be code, cheek; write it with its accents or say more.' in out["summary"]
+
+
+async def test_a_term_with_keywords_only_is_explained_and_filters_nothing(make_ask_app):
+    terms = {"refund": {"aliases": ["hoàn tiền"], "keywords": ["refund"]}}
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    everything = (await ask(app, "how many errors?"))["result"]["count"]
+    out = await ask(app, "hoàn tiền có bao nhiêu lỗi")
+    assert out["result"]["count"] == everything
+    assert out["understood"]["topics"] == [{"term": "refund", "matched": "hoàn tiền", "keywords": ["refund"]}]
+    assert '"hoàn tiền" is understood as refund.' in out["summary"]
+
+
+async def test_a_refused_glossary_query_names_the_term(make_ask_app):
+    terms = {"payment": {"aliases": ["thanh toán"], "query": "service:(payment"}}
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    wanted = r"glossary term\(s\) payment: Graylog refused the query .* fix glossary\.terms\.<name>\.query"
+    with pytest.raises(ToolInputError, match=wanted):
+        await ask(app, "thanh toán có bao nhiêu lỗi")
+
+
+async def test_codes_come_from_the_glossary_and_from_the_old_setting(make_ask_app):
+    jev = FakeJev(intent="trace_code")
+    app, _ = make_ask_app(jev, dataset="basic", glossary=REQUEST_CODES, ask={"code_patterns": [r"ORD-\d+"]})
+    out = await ask(app, "xem ORD-1 và req-7f3a9c giúp")
+    assert out["codes"] == ["ORD-1", "req-7f3a9c"]  # in the order of the question
+
+
+async def test_a_code_question_is_not_narrowed_by_a_term(make_ask_app):
+    app, _ = make_ask_app(FakeJev(intent="trace_code"), dataset="basic", glossary=TERMS | REQUEST_CODES)
+    out = await ask(app, "thanh toán req-7f3a9c đi qua đâu")
+    assert "topics" not in out["understood"] and len(out["traces"][0]["timeline"]) == 6
+
+
+async def test_nothing_about_the_glossary_is_sent_to_typesafe(make_ask_app):
+    jev = FakeJev(intent="count")
+    app, _ = make_ask_app(jev, glossary=TERMS)
+    await ask(app, "thanh toán có bao nhiêu lỗi")
+    assert len(jev.bodies) == 1 and "service:payment" not in json.dumps(jev.bodies)
