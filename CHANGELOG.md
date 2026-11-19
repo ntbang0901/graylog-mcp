@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `ask` reads time phrases itself, in Vietnamese (with or without accents) and English, as an exact range in the
+  instance's timezone: a length of time back ("15 phút qua", "last 2 hours"), a day, a part of a day ("sáng nay",
+  "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "since 9am") and dates ("12/11", "ngày 12
+  tháng 11"). `[ask.time]` sets the hours of the parts of the day, the first day of the week and the order of day
+  and month.
 - A `[glossary]` section names the team's business terms (`aliases`, an optional `query`, `keywords`, `preset`) and
   the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
   terms of the same instance stops the load with both names. An alias matches whole words, with or without its

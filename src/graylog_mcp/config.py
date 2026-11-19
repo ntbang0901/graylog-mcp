@@ -280,6 +280,19 @@ class HttpConfig:
 
 
 @dataclass(frozen=True)
+class TimeSettings:
+    """How ``ask`` reads time phrases (see graylog_mcp.ask.when). Parts of the day are hours, the end excluded."""
+
+    morning: tuple[int, int] = (6, 12)
+    noon: tuple[int, int] = (11, 14)
+    afternoon: tuple[int, int] = (12, 18)
+    evening: tuple[int, int] = (18, 24)
+    night: tuple[int, int] = (22, 6)  # ends on the next day
+    week_start: int = 0  # 0 Monday .. 6 Sunday
+    day_first: bool = True  # 12/11 is 12 November
+
+
+@dataclass(frozen=True)
 class AskConfig:
     """The ``ask`` tool: a plain-language question answered with TypeSafe's Jev model choosing what to look at."""
 
@@ -293,6 +306,7 @@ class AskConfig:
     send_chars: int = 250  # characters of each group's sample sent to Jev
     language: str = "en"  # "en" or "vi": the language of the summary text
     code_patterns: tuple[str, ...] = ()  # regexes finding order or transaction codes in a question
+    time: TimeSettings = TimeSettings()
 
     @property
     def enabled(self) -> bool:
@@ -491,8 +505,11 @@ _TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instance
 _CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
     "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
-    "code_patterns",
+    "code_patterns", "time",
 }  # fmt: skip
+_TIME_PARTS = ("morning", "noon", "afternoon", "evening", "night")
+_TIME_KEYS = {*_TIME_PARTS, "week_start", "date_order"}
+_WEEK_STARTS = {"monday": 0, "sunday": 6}
 MAX_BASELINE_PERIODS = 10
 _SCAN_RULE_KEYS = {f for f in ScanRule.__dataclass_fields__ if f not in ("name", "builtin")}
 
@@ -1111,7 +1128,33 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
         send_chars=_positive_int("ask.send_chars", data.get("send_chars", AskConfig.send_chars)),
         language=language,
         code_patterns=patterns,
+        time=_parse_time(data.get("time", {})),
     )
+
+
+def _parse_time(data: Any) -> TimeSettings:
+    if not isinstance(data, dict):
+        raise ConfigError("ask.time: expected a table")
+    _check_keys("ask.time", data, _TIME_KEYS)
+    values: dict[str, Any] = {}
+    for part in _TIME_PARTS:
+        if part not in data:
+            continue
+        hours = data[part]
+        whole = isinstance(hours, list) and len(hours) == 2 and all(type(h) is int and 0 <= h <= 24 for h in hours)
+        # only the night runs past midnight
+        if not whole or hours[0] == hours[1] or (part != "night" and hours[0] > hours[1]):
+            raise ConfigError(f"ask.time.{part}: expected [first hour, last hour] from 0 to 24, e.g. [6, 12]")
+        values[part] = (hours[0], hours[1])
+    if "week_start" in data:
+        if data["week_start"] not in _WEEK_STARTS:
+            raise ConfigError("ask.time.week_start: expected 'monday' or 'sunday'")
+        values["week_start"] = _WEEK_STARTS[data["week_start"]]
+    if "date_order" in data:
+        if data["date_order"] not in ("DMY", "MDY"):
+            raise ConfigError("ask.time.date_order: expected 'DMY' or 'MDY'")
+        values["day_first"] = data["date_order"] == "DMY"
+    return TimeSettings(**values)
 
 
 def _parse_http(data: Any) -> HttpConfig:
