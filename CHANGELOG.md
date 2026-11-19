@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "since 9am") and dates ("12/11", "ngày 12
   tháng 11"). `[ask.time]` sets the hours of the parts of the day, the first day of the week and the order of day
   and month.
+- The words of a question say which errors it means: a bare "lỗi" or "error" is technical and business errors alike,
+  "timeout" or "exception" technical ones, "bị từ chối" or "declined" business ones. The lists are built in and
+  `[glossary.error_words]` (`either`, `technical`, `business`) replaces any of them.
 - A `[glossary]` section names the team's business terms (`aliases`, an optional `query`, `keywords`, `preset`) and
   the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
   terms of the same instance stops the load with both names. An alias matches whole words, with or without its

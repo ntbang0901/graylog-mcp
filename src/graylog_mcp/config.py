@@ -204,10 +204,30 @@ class CodeKind:
         return _applies(self.instances, inst)
 
 
+DEFAULT_ERROR_WORDS = ("lỗi", "error", "errors", "fail", "failed", "failure", "thất bại", "sự cố", "bug")
+DEFAULT_TECHNICAL_WORDS = (
+    "exception", "timeout", "time out", "crash", "sập", "treo", "lỗi hệ thống", "5xx", "stack trace",
+    "connection refused", "không kết nối được",
+)  # fmt: skip
+DEFAULT_BUSINESS_WORDS = (
+    "bị từ chối", "từ chối", "declined", "rejected", "không hợp lệ", "invalid", "validation", "4xx",
+)  # fmt: skip
+
+
+@dataclass(frozen=True)
+class ErrorWords:
+    """The words of a question that say which errors it is about."""
+
+    either: tuple[str, ...] = DEFAULT_ERROR_WORDS  # technical and business alike
+    technical: tuple[str, ...] = DEFAULT_TECHNICAL_WORDS
+    business: tuple[str, ...] = DEFAULT_BUSINESS_WORDS
+
+
 @dataclass(frozen=True)
 class Glossary:
     terms: dict[str, GlossaryTerm] = field(default_factory=dict)
     codes: dict[str, CodeKind] = field(default_factory=dict)
+    error_words: ErrorWords = ErrorWords()
 
     def terms_for(self, inst: InstanceConfig) -> list[GlossaryTerm]:
         return [t for t in self.terms.values() if t.applies_to(inst)]
@@ -500,7 +520,8 @@ _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
 _HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
-_GLOSSARY_KEYS = {"terms", "codes"}
+_GLOSSARY_KEYS = {"terms", "codes", "error_words"}
+_ERROR_WORD_KEYS = {"either", "technical", "business"}
 _TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instances"}
 _CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
@@ -1033,7 +1054,15 @@ def _parse_glossary(data: Any, presets: dict[str, Preset], legacy_patterns: tupl
         )
     for n, pattern in enumerate(legacy_patterns, 1):
         codes.setdefault(f"ask_code_{n}", CodeKind(name=f"ask_code_{n}", pattern=pattern))
-    return Glossary(terms=terms, codes=codes)
+    said = data.get("error_words", {})
+    if not isinstance(said, dict):
+        raise ConfigError("glossary.error_words: expected a table")
+    _check_keys("glossary.error_words", said, _ERROR_WORD_KEYS)
+    for key, value in said.items():
+        if not isinstance(value, list):
+            raise ConfigError(f"glossary.error_words.{key}: expected a list of words")
+    error_words = ErrorWords(**{key: _str_list(f"glossary.error_words.{key}", value) for key, value in said.items()})
+    return Glossary(terms=terms, codes=codes, error_words=error_words)
 
 
 def _check_aliases(glossary: Glossary, instances: dict[str, InstanceConfig]) -> None:

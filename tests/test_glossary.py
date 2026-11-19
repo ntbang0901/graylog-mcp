@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from graylog_mcp.config import ConfigError
-from graylog_mcp.glossary import code_kind, find_codes, fold, match_terms, strip_marks
+from graylog_mcp.glossary import code_kind, error_kind, find_codes, fold, match_terms, match_words, strip_marks
 from graylog_mcp.setup import configfile
 from tests.conftest import make_config
 
@@ -103,6 +103,45 @@ def test_fold_and_strip_marks_keep_every_position():
     typed = unicodedata.normalize("NFD", "Cổng Thanh Toán Đỏ")
     assert fold(typed) == "cổng thanh toán đỏ" and strip_marks(fold(typed)) == "cong thanh toan do"
     assert len(fold("İstanbul")) == len(unicodedata.normalize("NFC", "İstanbul"))
+
+
+@pytest.mark.parametrize(
+    ("question", "kind"),
+    [
+        ("thanh toán bị lỗi", ("both", "lỗi")),
+        ("thanh toan bi loi", ("both", "loi")),
+        ("giao dịch bị từ chối", ("business", "bị từ chối")),
+        ("timeout khi gọi ngân hàng", ("technical", "timeout")),
+        ("lỗi hệ thống sáng nay", ("technical", "lỗi hệ thống")),
+        ("declined or timeout", ("both", "declined timeout")),
+        ("Payment FAILED twice", ("both", "FAILED")),
+        ("có bao nhiêu dòng", None),
+        ("lời chào", None),
+        ("errorless and failsafe", None),
+    ],
+)
+def test_the_kind_of_error_is_read_from_the_words(question, kind):
+    assert error_kind(make_config().glossary.error_words, question) == kind
+
+
+def test_error_words_come_from_the_config():
+    cfg = make_config(glossary={"error_words": {"business": ["hết hạn mức"]}})
+    words = cfg.glossary.error_words
+    assert words.business == ("hết hạn mức",) and "timeout" in words.technical and "lỗi" in words.either
+    assert error_kind(words, "khách bị hết hạn mức") == ("business", "hết hạn mức")
+    assert error_kind(words, "giao dịch bị từ chối") is None
+    for wrong in ({"fatal": ["x"]}, {"business": "declined"}, {"technical": [""]}):
+        with pytest.raises(ConfigError, match=r"glossary\.error_words"):
+            make_config(glossary={"error_words": wrong})
+
+
+def test_words_are_matched_in_the_order_of_the_text():
+    groups = {"fruit": ["táo", "cam sành"], "colour": ["cam"]}
+    assert match_words(groups, "Cam sành, tao và cam") == [
+        ("fruit", "Cam sành", 0, 8),
+        ("fruit", "tao", 10, 13),
+        ("colour", "cam", 17, 20),
+    ]
 
 
 def test_the_example_config_holds_a_glossary_that_loads():

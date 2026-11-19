@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from graylog_mcp.config import CodeKind, Glossary, GlossaryTerm, InstanceConfig
+    from graylog_mcp.config import CodeKind, ErrorWords, Glossary, GlossaryTerm, InstanceConfig
 
 
 def fold(text: str) -> str:
@@ -102,36 +103,63 @@ def match_terms(glossary: Glossary, inst: InstanceConfig, text: str) -> tuple[li
 
     The longest phrase wins. An alias also matches without its diacritics, but only words typed with none: "ma"
     may stand for "mã", "má" never does."""
+    terms = {term.name: term for term in glossary.terms_for(inst)}
+    typed, kept, unclear = _read({name: term.aliases for name, term in terms.items()}, text)
+    once: dict[str, TermMatch] = {}
+    for (start, end), exact, name in kept:
+        once.setdefault(name, TermMatch(terms[name], typed[start:end], start, end, exact))
+    return list(once.values()), unclear
+
+
+def match_words(groups: Mapping[str, Sequence[str]], text: str) -> list[tuple[str, str, int, int]]:
+    """Every place ``text`` holds a word of ``groups``, read like a term's alias: (group, the words as typed, start,
+    end), in the order of the text. Words that fit two groups are left out."""
+    typed, kept, _ = _read(groups, text)
+    return [(name, typed[start:end], start, end) for (start, end), _, name in kept]
+
+
+def _read(
+    groups: Mapping[str, Sequence[str]], text: str
+) -> tuple[str, list[tuple[tuple[int, int], bool, str]], list[Unclear]]:
+    """``text`` in NFC, the matches kept in its order as (span, typed with its marks, group), and the unclear words."""
     typed = unicodedata.normalize("NFC", text)
     folded = _settle_tones(fold(typed))
     bare = strip_marks(folded)
-    found: list[tuple[tuple[int, int], bool, GlossaryTerm]] = []
-    for term in glossary.terms_for(inst):
-        keys = [_settle_tones(fold(alias)) for alias in term.aliases]
+    found: list[tuple[tuple[int, int], bool, str]] = []
+    for name, aliases in groups.items():
+        keys = [_settle_tones(fold(alias)) for alias in aliases]
         # every alias as written before any alias without its marks: "ma" listed beside "mã" is an exact word
         exact = {m.span() for key in keys for m in _whole_words(key).finditer(folded)}
         loose = {m.span() for key in keys for m in _whole_words(strip_marks(key)).finditer(bare)}
         loose = {s for s in loose if folded[s[0] : s[1]] == bare[s[0] : s[1]]} - exact
-        found += [(s, True, term) for s in sorted(exact)] + [(s, False, term) for s in sorted(loose)]
+        found += [(s, True, name) for s in sorted(exact)] + [(s, False, name) for s in sorted(loose)]
     found.sort(key=lambda f: (f[0][0] - f[0][1], not f[1], f[0][0]))  # longer, then exact, then earlier
     taken: list[tuple[int, int]] = []
-    matches: list[TermMatch] = []
+    kept: list[tuple[tuple[int, int], bool, str]] = []
     unclear: list[Unclear] = []
-    for span, exact_match, term in found:
+    for span, exact_match, name in found:
         if _overlaps(span, taken):
             continue
         taken.append(span)
-        written = typed[span[0] : span[1]]
-        rivals = [t.name for s, e, t in found if s == span and not e]
+        rivals = [n for s, e, n in found if s == span and not e]
         if not exact_match and len(rivals) > 1:
-            if (word := Unclear(written, tuple(rivals))) not in unclear:
+            if (word := Unclear(typed[span[0] : span[1]], tuple(rivals))) not in unclear:
                 unclear.append(word)
         else:
-            matches.append(TermMatch(term, written, span[0], span[1], exact_match))
-    once: dict[str, TermMatch] = {}
-    for match in sorted(matches, key=lambda m: m.start):
-        once.setdefault(match.term.name, match)
-    return list(once.values()), unclear
+            kept.append((span, exact_match, name))
+    return typed, sorted(kept), unclear
+
+
+def error_kind(words: ErrorWords, text: str) -> tuple[str, str] | None:
+    """Which errors ``text`` speaks of, "technical", "business" or "both", with the words that say so; None when it
+    names none. A bare "error" means both kinds."""
+    groups = {"either": words.either, "technical": words.technical, "business": words.business}
+    found = match_words(groups, text)
+    if not found:
+        return None
+    named = {name for name, *_ in found} - {"either"}
+    kind = named.pop() if len(named) == 1 else "both"
+    return kind, " ".join(written for _, written, *_ in found)
 
 
 def find_codes(glossary: Glossary, inst: InstanceConfig, text: str) -> list[CodeMatch]:
