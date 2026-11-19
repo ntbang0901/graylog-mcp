@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from unittest.mock import ANY
 
 import pytest
 
@@ -46,8 +47,15 @@ async def test_follows_the_flow_of_the_described_error(make_ask_app):
 
     out = await ask(app, "why did checkout fail with a bank connection error in the last hour?")
 
-    assert out["understood"] == {"instance": "main", "time": "last_hour", "errors_only": True, "intent": "follow_flow"}
-    assert out["summary"].startswith("Understood: main, last hour, errors only.")
+    assert out["understood"] == {
+        "intent": "follow_flow",
+        "instance": "main",
+        "time": {"from": ANY, "to": ANY, "words": "in the last hour"},
+        "errors": "both",
+        "sources": {"intent": "jev", "instance": "default", "time": "rules", "errors": "rules"},
+    }
+    assert out["summary"].startswith('Understood: main, "in the last hour" (')
+    assert "technical and business errors." in out["summary"].splitlines()[0]
     (match,) = out["matches"]
     assert "bank call failed" in match["sample"] and match["score"] >= 0.9
     services = {s["service"] for s in out["flow"]["services"]}
@@ -98,7 +106,7 @@ async def test_lists_close_matches_instead_of_picking(make_ask_app):
 async def test_error_without_trace_id_gets_a_hint(make_ask_app):
     app, _ = make_ask_app(FakeJev(relevant=("deadlock",), time="last_7_days"))
 
-    out = await ask(app, "database deadlock last week")
+    out = await ask(app, "database deadlock in the past week")
 
     assert "deadlock" in out["matches"][0]["sample"]
     assert "no trace id" in out["hint"] and "flow" not in out
@@ -128,7 +136,8 @@ async def test_trace_code_uses_the_configured_patterns(make_ask_app):
 async def test_vietnamese_summary(make_ask_app):
     app, _ = make_ask_app(FakeJev(relevant=("nothing",)), ask={"language": "vi"})
     out = await ask(app, "lỗi thanh toán")
-    assert out["summary"].startswith("Đã hiểu: main, 1 giờ qua, chỉ lỗi.")
+    assert out["summary"].startswith("Đã hiểu: main, 1 giờ qua, lỗi kỹ thuật và nghiệp vụ.")
+    assert out["understood"]["time"] == {"choice": "last_hour"} and out["understood"]["sources"]["time"] == "jev"
 
 
 async def test_nothing_unredacted_is_sent_to_typesafe(make_ask_app):
@@ -323,7 +332,9 @@ async def test_a_question_without_a_term_has_no_topics(make_ask_app):
     app, _ = make_ask_app(FakeJev(intent="count"), glossary=TERMS)
     out = await ask(app, "how many errors?")
     assert "topics" not in out["understood"] and "unclear" not in out["understood"]
-    assert out["summary"] == "Understood: main, last hour, errors only. Say so if this is not what you meant."
+    understood = "Understood: main, last hour, technical and business errors. Say so if this is not what you meant."
+    first, *rest = out["summary"].splitlines()
+    assert first == understood and len(rest) == 1 and "defines no business errors" in rest[0]
 
 
 @pytest.mark.parametrize("intent", ["error_summary", "root_cause", "compare"])
@@ -377,10 +388,88 @@ async def test_two_filtering_terms_say_that_they_narrow_together(make_ask_app):
 
 async def test_a_refused_glossary_query_names_the_term(make_ask_app):
     terms = {"payment": {"aliases": ["thanh toán"], "query": "service:(payment"}}
-    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
-    wanted = r"glossary term\(s\) payment: Graylog refused the query .* fix glossary\.terms\.<name>\.query"
+    app, fake = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    wanted = r"glossary term 'payment': Graylog cannot read its query \(.*\); fix glossary\.terms\.payment\.query"
     with pytest.raises(ToolInputError, match=wanted):
         await ask(app, "thanh toán có bao nhiêu lỗi")
+    asked = [r.url.path.rsplit("/api/", 1)[-1] for r in fake.requests]
+    assert asked.count("search/validate") == 1 and not any("universal" in p or "views/search" in p for p in asked)
+
+
+async def test_a_term_on_a_field_this_range_does_not_hold_is_not_a_broken_query(make_ask_app):
+    terms = {"stock": {"aliases": ["kho"], "query": "warehouse_zone:north"}}
+    app, _ = make_ask_app(FakeJev(intent="count"), glossary={"terms": terms})
+    assert (await ask(app, "kho có bao nhiêu lỗi"))["result"]["count"] == 0
+
+
+async def test_a_time_phrase_is_read_without_asking_the_provider(make_ask_app):
+    jev = FakeJev(intent="count")
+    app, _ = make_ask_app(jev, glossary=TERMS)
+    out = await ask(app, "thanh toán lỗi trong 15 phút qua")
+    assert set(jev.bodies[0]["questions"]) == {"intent"}
+    assert out["understood"]["time"]["words"] == "trong 15 phút qua"
+    assert out["understood"]["sources"] == {"intent": "jev", "instance": "default", "time": "rules", "errors": "rules"}
+    assert out["understood"]["errors"] == "both"
+    first, last = (datetime.fromisoformat(out["understood"]["time"][k]) for k in ("from", "to"))
+    assert (last - first).total_seconds() == 900
+
+
+async def test_without_a_time_phrase_or_an_error_word_the_provider_is_asked(make_ask_app):
+    jev = FakeJev(intent="count", errors_only=False)
+    app, _ = make_ask_app(jev)
+    out = await ask(app, "thanh toán bị gì")
+    assert {"intent", "time", "errors_only"} <= set(jev.bodies[0]["questions"])
+    assert out["understood"]["sources"]["time"] == "jev" and out["understood"]["errors"] == "any"
+    assert "all lines" in out["summary"]
+
+
+async def test_a_count_of_errors_is_split_by_kind(make_ask_app):
+    app, fake = make_ask_app(FakeJev(intent="count"), dataset="basic")
+    _add(fake, 30, service="gateway", http_status=500, message="upstream gone")
+    _add(fake, 20, service="gateway", http_status=422, message="amount refused")
+    out = await ask(app, "có bao nhiêu lỗi")
+    kinds = out["result"]["by_kind"]
+    assert kinds["technical"] > 0 and kinds["business"] > 0
+    assert out["result"]["count"] == kinds["technical"] + kinds["business"]
+    assert "http_status:[500 TO 599]" in out["ran"] and "http_status:[400 TO 499]" in out["ran"]
+
+
+async def test_business_errors_on_an_instance_without_a_definition_say_so(make_ask_app):
+    app, fake = make_ask_app(FakeJev(intent="count"), dataset="basic")
+    for m in fake.messages:
+        m.pop("http_status", None)
+    out = await ask(app, "giao dịch bị từ chối hôm nay")
+    assert out["understood"]["errors"] == "business" and "defines no business errors" in out["summary"]
+    assert "by_kind" not in out["result"]
+
+
+async def test_a_search_question_returns_lines_filtered_by_the_term(make_ask_app):
+    terms = {"payment": PAYMENT | {"keywords": ["bank"]}}
+    app, fake = make_ask_app(FakeJev(intent="search", errors_only=False), glossary={"terms": terms})
+    out = await ask(app, "thanh toán hôm nay")
+    assert out["result"]["messages"] and out["ran"] == '(service:payment) AND ("bank")'
+    assert any(out["ran"] in _sent(r) for r in fake.requests)
+
+
+async def test_an_error_without_a_trace_id_shows_the_lines_around_it(make_ask_app):
+    app, _ = make_ask_app(FakeJev(relevant=("deadlock",), time="last_7_days"))
+    out = await ask(app, "database deadlock")
+    assert "flow" not in out and out["around"]["messages"]
+    assert "no trace id" in out["hint"] and "not one request" in out["hint"]
+
+
+async def test_the_acceptance_question_needs_one_provider_call(make_ask_app):
+    def instance(name):
+        return {"url": f"https://{name}.test", "token_env": "TEST_GRAYLOG_TOKEN"}
+
+    jev = FakeJev(intent="count")
+    app, _ = make_ask_app(jev, instances={"prod": instance("prod"), "dev": instance("dev")}, glossary=TERMS)
+    out = await ask(app, "thanh toán lỗi trong 15 phút qua ở prod", instance="main")
+    assert len(jev.bodies) == 1 and set(jev.bodies[0]["questions"]) == {"intent"}
+    assert out["understood"]["sources"]["instance"] == "caller" and out["understood"]["errors"] == "both"
+    assert out["understood"]["time"]["words"] == "trong 15 phút qua"
+    assert '"thanh toán" is understood as payment service, filtered by service:payment.' in out["summary"]
+    assert out["ran"].endswith("AND (service:payment)")
 
 
 async def test_codes_come_from_the_glossary_and_from_the_old_setting(make_ask_app):

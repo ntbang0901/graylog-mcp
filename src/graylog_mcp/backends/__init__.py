@@ -190,8 +190,12 @@ class Graylog:
 
     # ------------------------------------------------------------------ query validation
 
-    async def validate(self, query: str, tr: TimeRange, streams: tuple[str, ...] = ()) -> list[str]:
-        """Problems Graylog finds in a query (syntax errors, unknown fields). Empty if none or unavailable."""
+    async def validate(
+        self, query: str, tr: TimeRange, streams: tuple[str, ...] = (), syntax_only: bool = False
+    ) -> list[str]:
+        """Problems Graylog finds in a query (syntax errors, unknown fields). Empty if none or unavailable.
+        ``syntax_only`` leaves out the warnings: a field no message of the range holds is not a broken query."""
+        await self.ensure()  # the version decides whether the endpoint exists; unknown, nothing would be checked
         if not query or query.strip() == "*" or self.version is None or self.version < (4, 3, 0):
             return []
         body = {"query": query, "timerange": tr.views(), "streams": list(streams)}
@@ -202,7 +206,7 @@ class Graylog:
         out = []
         for exp in (data or {}).get("explanations") or []:
             msg = str(exp.get("error_message") or exp.get("error_title") or "").strip()
-            if not msg:
+            if not msg or (syntax_only and exp.get("error_type") != "QUERY_PARSING_ERROR"):
                 continue
             if exp.get("begin_column") is not None and exp.get("error_type") == "QUERY_PARSING_ERROR":
                 msg += f" (columns {exp.get('begin_column')}-{exp.get('end_column')})"

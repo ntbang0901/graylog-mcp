@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 TEXT: dict[str, dict[str, str]] = {
     "en": {
         "understood": "Understood: {parts}. Say so if this is not what you meant.",
-        "errors_only": "errors only",
+        "errors_any": "all lines",
+        "errors_technical": "technical errors",
+        "errors_business": "business errors",
+        "errors_both": "technical and business errors",
+        "time_read": '"{words}" ({start} to {end})',
+        "no_business_errors": "This instance defines no business errors (business_error_query, or an HTTP status "
+        "field), so only technical errors are counted.",
+        "no_trace_around": "This error has no trace id ({fields}), so its path across services cannot be followed. "
+        "'around' holds the lines of the same source within {seconds} seconds of it: near in time, not one request.",
         "last_hour": "last hour",
         "today": "today",
         "yesterday": "yesterday",
@@ -32,7 +41,16 @@ TEXT: dict[str, dict[str, str]] = {
     },
     "vi": {
         "understood": "Đã hiểu: {parts}. Nếu chưa đúng ý, hãy nói lại.",
-        "errors_only": "chỉ lỗi",
+        "errors_any": "mọi dòng",
+        "errors_technical": "lỗi kỹ thuật",
+        "errors_business": "lỗi nghiệp vụ",
+        "errors_both": "lỗi kỹ thuật và nghiệp vụ",
+        "time_read": '"{words}" ({start} đến {end})',
+        "no_business_errors": "Instance này chưa định nghĩa lỗi nghiệp vụ (business_error_query, hoặc một field mã "
+        "HTTP), nên chỉ tính lỗi kỹ thuật.",
+        "no_trace_around": "Lỗi này không có trace id ({fields}) nên không lần theo được đường đi qua các dịch vụ. "
+        "'around' là các dòng cùng nguồn trong vòng {seconds} giây quanh lỗi: gần nhau về thời gian, không phải một "
+        "request.",
         "last_hour": "1 giờ qua",
         "today": "hôm nay",
         "yesterday": "hôm qua",
@@ -62,6 +80,12 @@ def say(language: str, key: str, **values: Any) -> str:
     return TEXT[language][key].format(**values)
 
 
-def understood(language: str, instance: str | None, time: str, errors_only: bool) -> str:
-    parts = [p for p in (instance, say(language, time), say(language, "errors_only") if errors_only else None) if p]
-    return say(language, "understood", parts=", ".join(parts))
+def understood(language: str, instance: str, time: str, errors: str) -> str:
+    """The first line of every answer. ``time`` is already in words; ``errors`` is one of understood.ERRORS."""
+    return say(language, "understood", parts=", ".join((instance, time, say(language, f"errors_{errors}"))))
+
+
+def time_read(language: str, words: str, start: datetime, end: datetime) -> str:
+    """A range read from the question: the words, then the range they were taken as."""
+    last = end.strftime("%H:%M" if end.date() == start.date() else "%Y-%m-%d %H:%M")
+    return say(language, "time_read", words=words, start=start.strftime("%Y-%m-%d %H:%M"), end=last)

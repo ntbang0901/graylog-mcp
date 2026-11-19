@@ -12,6 +12,15 @@ All notable changes to this project are documented here. The format follows
   "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "since 9am") and dates ("12/11", "ngày 12
   tháng 11"). `[ask.time]` sets the hours of the parts of the day, the first day of the week and the order of day
   and month.
+- `ask` fills one structure with what it understood, rules first: the time phrase and the kind of error are read
+  without the provider, which is then asked only for what is left (the intent, and the environment when several
+  exist). `understood` names where each part came from (`sources`), `ran` is the Graylog query that ran, and the
+  summary shows the time as typed with the range it was taken as.
+- `ask` counts errors by kind when the question says only "errors" (`result.by_kind`), says so when the instance
+  defines no business errors, answers "show me the lines about …" with a search (`intent` `search`), and for an
+  error without a trace id returns the lines of the same source around it (`around`) instead of only a hint.
+- A glossary term's query is checked with Graylog before anything runs: a broken one is named with its term and
+  its config key.
 - `[limits] max_requests` (20) caps the Graylog requests of one `trace_request` or `ask` call. Close to it the
   optional reads are dropped, the business error marks first, then the last line of a long trace and the look into a
   wider range, and `note` or `hint` says what was left out and how many requests were used.
@@ -41,6 +50,15 @@ All notable changes to this project are documented here. The format follows
   the newest was logged (`suggestions`).
 
 ### Changed
+- `ask`'s `understood` has a new shape: `errors` (`any`, `technical`, `business`, `both`) replaces `errors_only`,
+  `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
+  `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.
+- `ask` looks for the described error over the whole range: every error line when one read holds them, else the
+  newest lines of six equal parts of the range, joined with exact counts per exception where the instance has the
+  field of `group_fields.exception` (`matches` then carry `exception`; `estimated` marks a count scaled from the
+  sample). It was the newest 500 error lines.
+- "last week" and "tuần trước" in an `ask` question are the previous calendar week (the provider read them as the
+  last 7 days); "past week" and "tuần qua" are the last 7 days.
 - Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),
   and where two patterns match overlapping text the longer match is the code.
 - `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is

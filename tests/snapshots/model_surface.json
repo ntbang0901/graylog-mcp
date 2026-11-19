@@ -1015,7 +1015,7 @@
     {
       "name": "ask",
       "title": "Ask",
-      "description": "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the error the question describes, follows its trace across services, and states what it understood (environment, period) so it can be corrected. Asks back when the question is too vague. Sends TypeSafe the question and redacted, size-capped error text (250 characters each); never raw logs.",
+      "description": "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the error the question describes, follows its trace across services, and states what it understood (environment, period, kind of error, the team's terms) and the query it ran, so it can be corrected. Time phrases in Vietnamese or English, the glossary's terms and codes are read by rule. Asks back when the question is too vague. Sends TypeSafe the question and redacted, size-capped error text (250 characters each); never raw logs.",
       "input_schema": {
         "properties": {
           "question": {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
@@ -16,6 +17,7 @@ INTENTS = {
     "count": "The user asks how many errors or messages there are",
     "root_cause": "The user asks what is causing an incident, which service broke first, or why the system is failing",
     "compare": "The user asks what changed, or how things differ from before or from another period",
+    "search": "The user wants to see log lines about something, without asking for a count, a summary or a cause",
 }
 TIMES = {
     "last_hour": "The last hour, or recently, or right now",
@@ -28,10 +30,12 @@ TIMES = {
 
 @dataclass(frozen=True)
 class Understanding:
+    """What the provider chose. ``time`` and ``errors_only`` are None when it was not asked about them."""
+
     intent: str
-    time: str
+    time: str | None
     instance: str | None
-    errors_only: bool
+    errors_only: bool | None
     confidence: float
 
 
@@ -54,8 +58,11 @@ def _certainty(answer: dict[str, Any]) -> float:
     return float(answer.get("confidence") or 0.0)
 
 
-async def understand(jev: JevClient, config: Config, question: str, fixed_instance: str | None = None) -> Understanding:
-    """``fixed_instance``: the caller already chose the instance, so the question is not asked."""
+async def understand(
+    jev: JevClient, config: Config, question: str, fixed_instance: str | None = None, skip: Collection[str] = ()
+) -> Understanding:
+    """``fixed_instance``: the caller already chose the instance, so the question is not asked. ``skip``: what the
+    rules already read ("time", "errors_only"), so the provider is not asked either."""
     questions: dict[str, dict[str, Any]] = {
         "intent": {"type": "choice", "instructions": "What does the request ask for?", "criteria": INTENTS},
         "time": {"type": "choice", "instructions": "Which period does the request refer to?", "criteria": TIMES},
@@ -64,6 +71,8 @@ async def understand(jev: JevClient, config: Config, question: str, fixed_instan
             "instructions": "Is the request only about errors and failures, not about normal activity?",
         },
     }
+    for name in skip:
+        questions.pop(name, None)
     names = list(config.instances)
     if len(names) > 1 and not fixed_instance:
         questions["instance"] = {
@@ -72,19 +81,23 @@ async def understand(jev: JevClient, config: Config, question: str, fixed_instan
             "criteria": {n: config.instances[n].description or n for n in names},
         }
     got = await jev.answers(question, questions)
-    used = [_certainty(got["intent"]), _certainty(got["time"])]
+    used = [_certainty(got["intent"])]
+    time = None
+    if "time" in got:
+        time = str(got["time"].get("choice"))
+        time = time if time in TIMES else "unspecified"
+        used.append(_certainty(got["time"]))
     instance = None
     if "instance" in got:
         instance = str(got["instance"].get("choice"))
         used.append(_certainty(got["instance"]))
         if instance not in config.instances:
             instance = None
-    p = float(got["errors_only"].get("noul") or 0.0)
-    intent, time = str(got["intent"].get("choice")), str(got["time"].get("choice"))
+    intent = str(got["intent"].get("choice"))
     return Understanding(
         intent=intent if intent in INTENTS else "follow_flow",
-        time=time if time in TIMES else "unspecified",
+        time=time,
         instance=instance,
-        errors_only=p >= 0.5,
+        errors_only=float(got["errors_only"].get("noul") or 0.0) >= 0.5 if "errors_only" in got else None,
         confidence=min(used),  # errors_only is a refinement: a neutral question must not be sent back as unclear
     )
