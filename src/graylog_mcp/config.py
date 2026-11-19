@@ -14,6 +14,7 @@ import difflib
 import os
 import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -157,6 +158,7 @@ class InstanceConfig:
     technical_error_query: str = ""  # empty: a status from 500 to 599, or error_query
     slow_ms: tuple[int, ...] = DEFAULT_SLOW_MS
     latency_unit: str = "auto"  # "auto": ms, but seconds for a field named like request_time
+    aliases: tuple[str, ...] = ()  # words of a question that mean this instance, beside its own names
 
     @property
     def api_base(self) -> str:
@@ -313,6 +315,41 @@ class TimeSettings:
     day_first: bool = True  # 12/11 is 12 November
 
 
+INTENT_WORDS: dict[str, tuple[str, ...]] = {
+    "count": (
+        "bao nhiêu", "mấy lần", "mấy lỗi", "số lượng", "số lần", "đếm", "tổng số", "tần suất",
+        "how many", "how much", "number of", "count", "how often",
+    ),
+    "compare": (
+        "so với", "so sánh", "thay đổi", "khác gì", "khác nhau", "khác biệt", "tăng", "giảm", "nhiều hơn", "ít hơn",
+        "tệ hơn", "what changed", "compare", "compared", "difference", "differ", "different", "versus", "vs",
+        "more than", "increase", "increased", "decrease", "worse", "better", "than before", "before and after",
+    ),
+    "root_cause": (
+        "nguyên nhân", "do đâu", "tại đâu", "hỏng trước", "hỏng đầu tiên", "dịch vụ nào", "service nào",
+        "root cause", "broke first", "which service", "what is causing", "what's causing", "causing", "cause of",
+        "incident", "outage",
+    ),
+    "error_summary": (
+        "lỗi gì", "lỗi nào", "những lỗi", "các lỗi", "loại lỗi", "tổng hợp", "thống kê", "tóm tắt", "phổ biến",
+        "hay gặp", "nhiều nhất", "which errors", "what errors", "main errors", "top errors", "most common",
+        "common errors", "summary", "summarize", "overview", "kinds of errors",
+    ),
+    "follow_flow": (
+        "bước nào", "từng bước", "lần lại", "go wrong", "goes wrong", "went wrong", "breaks", "what happened",
+    ),
+    "search": (
+        "log", "logs", "dòng log", "show me", "cho xem", "cho tôi xem", "liệt kê", "list", "find", "tìm", "search",
+    ),
+    "trace_code": ("hành trình", "đi qua đâu", "đi tới đâu", "đi đến đâu", "history of"),
+    # not intents of their own: "why" about the whole system asks for the root cause, about one thing for its flow
+    "why": ("tại sao", "vì sao", "sao lại", "why"),
+    "whole_system": ("hệ thống", "toàn bộ", "system", "everything"),
+}  # fmt: skip
+# other words for an environment, read when one of the two is the name of a configured one
+ENVIRONMENT_WORDS = (("prod", "production"), ("dev", "development"), ("staging", "stg", "stage"))
+
+
 @dataclass(frozen=True)
 class AskConfig:
     """The ``ask`` tool: a plain-language question answered with TypeSafe's Jev model choosing what to look at."""
@@ -328,6 +365,8 @@ class AskConfig:
     language: str = "en"  # "en" or "vi": the language of the summary text
     code_patterns: tuple[str, ...] = ()  # regexes finding order or transaction codes in a question
     time: TimeSettings = TimeSettings()
+    # words of a question that say what it asks for, by intent (see graylog_mcp.ask.intent)
+    intent_words: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: dict(INTENT_WORDS))
 
     @property
     def enabled(self) -> bool:
@@ -514,6 +553,7 @@ _INSTANCE_KEYS = {
     "timezone",
     "message_api",
     "aggregation_api",
+    "aliases",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
 _REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
@@ -527,7 +567,7 @@ _TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instance
 _CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
     "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
-    "code_patterns", "time",
+    "code_patterns", "time", "intent_words",
 }  # fmt: skip
 _TIME_PARTS = ("morning", "noon", "afternoon", "evening", "night")
 _TIME_KEYS = {*_TIME_PARTS, "week_start", "date_order"}
@@ -770,6 +810,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         if value is not None and (not isinstance(value, str) or not re.fullmatch(_LABEL, value)):
             raise ConfigError(f"{where}.{key}: use letters, digits, '_', '-' or '.'")
         labels[key] = value
+    if not isinstance(data.get("aliases", []), list):
+        raise ConfigError(f"{where}.aliases: expected a list of words")
+    aliases = _str_list(f"{where}.aliases", data.get("aliases", []))
     return InstanceConfig(
         name=name,
         url=url,
@@ -804,6 +847,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         technical_error_query=inv["technical_error_query"],
         slow_ms=inv["slow_ms"],
         latency_unit=inv["latency_unit"],
+        aliases=aliases,
         **apis,
     )
 
@@ -1159,7 +1203,21 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
         language=language,
         code_patterns=patterns,
         time=_parse_time(data.get("time", {})),
+        intent_words=_parse_intent_words(data.get("intent_words", {})),
     )
+
+
+def _parse_intent_words(data: Any) -> dict[str, tuple[str, ...]]:
+    """The built-in words, each list replaced by the one the config gives for it."""
+    if not isinstance(data, dict):
+        raise ConfigError("ask.intent_words: expected a table")
+    _check_keys("ask.intent_words", data, set(INTENT_WORDS))
+    words = dict(INTENT_WORDS)
+    for key, value in data.items():
+        if not isinstance(value, list):
+            raise ConfigError(f"ask.intent_words.{key}: expected a list of words")
+        words[key] = _str_list(f"ask.intent_words.{key}", value)
+    return words
 
 
 def _parse_time(data: Any) -> TimeSettings:

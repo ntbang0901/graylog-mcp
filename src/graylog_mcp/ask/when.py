@@ -120,6 +120,21 @@ _BACK_EN_ONE = _words(rf"(?:in\s+the\s+)?(?:last|past)\s+({_UNIT_EN})")
 _LATELY = _words(r"vua\s+roi|moi\s+day|gan\s+day|just\s+now|right\s+now|recently")
 
 
+_TIME_LIKE = re.compile(
+    r"(?<!\w)(?:"
+    r"\d+\s*(?:m|mins?|h|hrs?|d|ph|phut|gio|tieng|ngay|tuan|thang|minutes?|hours?|days?|weeks?|months?)"
+    rf"|hom|tuan|thang|luc\s+nay|gan\s+day|vua\s+roi|(?:{_PART})\s+(?:nay|qua)|chu\s+nhat|thu\s+\d"
+    rf"|yesterday|today|tonight|ago|since|recently|weeks?|months?|morning|afternoon|evening|night|{_NAMED_DAY}"
+    r")(?!\w)"
+)
+
+
+def mentions_time(text: str) -> bool:
+    """Whether ``text`` holds words of time at all, also ones ``read_time`` cannot place ("tuần rồi", "5m ago"):
+    what tells a question without a period from one whose period was not read."""
+    return _TIME_LIKE.search(strip_marks(fold(unicodedata.normalize("NFC", text)))) is not None
+
+
 def _clock(text: str) -> tuple[int, int, bool] | None:
     """ "9h30", "9 gio", "9:30am", "2pm" as (hour, minute, whether the half of the day is said)."""
     numbers = [int(n) for n in re.findall(r"\d+", text)]

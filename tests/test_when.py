@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from graylog_mcp.ask.when import read_time
+from graylog_mcp.ask.when import mentions_time, read_time
 from graylog_mcp.config import ConfigError, TimeSettings
 from tests.conftest import make_config
 
@@ -245,3 +245,14 @@ def test_time_settings_come_from_the_config():
     for wrong in wrongs:
         with pytest.raises(ConfigError, match=r"ask\.time"):
             make_config(ask={"time": wrong})
+
+
+@pytest.mark.parametrize("question", ["lỗi tuần rồi", "errors 5m ago", "last 24h", "lúc nãy", "since the release"])
+def test_a_time_the_rules_cannot_place_is_still_seen_as_one(question):
+    assert read_time(question, SAIGON, NOW) is None
+    assert mentions_time(question)
+
+
+@pytest.mark.parametrize("question", ["thanh toán lỗi", "đơn ORD-1001 đi qua đâu", "how many errors", "top 5 errors"])
+def test_a_question_without_time_words_mentions_none(question):
+    assert not mentions_time(question)
