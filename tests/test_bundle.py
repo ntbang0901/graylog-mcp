@@ -228,7 +228,10 @@ def test_preview_names_a_changed_url_as_a_security_change(tmp_path):
     config = tmp_path / "config.toml"
     bundle.apply(small(), config)
     view = bundle.preview(small({"instances.prod.url": "https://elsewhere.example.com"}), config)
-    assert any("prod" in line and "elsewhere.example.com" in line and "token" in line for line in view.security)
+    assert view.security == [
+        "prod: URL https://prod.graylog.test -> https://elsewhere.example.com;"
+        " the token saved for it will be sent there"
+    ]
 
 
 def test_preview_names_loosened_tls_and_provider_data(tmp_path):
@@ -251,7 +254,8 @@ def test_an_instance_that_would_share_another_ones_saved_token_is_refused(tmp_pa
 def test_a_new_environment_handed_a_token_already_saved_is_a_security_change(tmp_path):
     secrets.save("GRAYLOG_STAGING_TOKEN", "fake-staging-token")
     view = bundle.preview(small({"instances.staging": {"url": "https://collector.example.com"}}), tmp_path / "c.toml")
-    assert any("staging" in s and "GRAYLOG_STAGING_TOKEN" in s and "collector.example.com" in s for s in view.security)
+    new = "staging: a new environment; the secret already saved in GRAYLOG_STAGING_TOKEN goes to https://collector.example.com"
+    assert [s for s in view.security if s.startswith("staging:")] == [new]
 
 
 def test_preview_names_what_masks_less_or_hands_over_more(tmp_path):
