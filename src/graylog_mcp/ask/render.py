@@ -1,13 +1,23 @@
-"""Fixed sentences of the answer in English and Vietnamese. No generated prose: Jev only chooses."""
+"""Fixed sentences of the answer in English and Vietnamese. No generated prose: a provider only chooses."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 TEXT: dict[str, dict[str, str]] = {
     "en": {
         "understood": "Understood: {parts}. Say so if this is not what you meant.",
-        "errors_only": "errors only",
+        "errors_any": "all lines",
+        "errors_technical": "technical errors",
+        "errors_business": "business errors",
+        "errors_both": "technical and business errors",
+        "time_read": '"{words}" ({start} to {end})',
+        "no_business_errors": "This instance defines no business errors (business_error_query, or an HTTP status "
+        "field), so only technical errors are counted.",
+        "no_trace_around": "This error has no trace id ({fields}), so its path across services cannot be followed. "
+        "'around' holds the lines of the same source within {seconds} seconds of it: near in time, not one request.",
         "last_hour": "last hour",
         "today": "today",
         "yesterday": "yesterday",
@@ -23,12 +33,67 @@ TEXT: dict[str, dict[str, str]] = {
         "no_flow": "None of its trace ids was found in the logs of this period.",
         "flow": 'The error "{sample}" ({n}x) went through {services}.',
         "first_error": "The first error came from {service}.",
-        "no_code": "No order or transaction code was found in the question. Set ask.code_patterns in the config "
-        "to teach ask what your codes look like.",
+        "no_code": "No order or transaction code was found in the question. Add a [glossary.codes.<name>] with its "
+        "pattern to the config (ask.code_patterns still works) to teach ask what your codes look like.",
+        "term": '"{text}" is understood as {what}; this term does not narrow the search.',
+        "term_filtered": '"{text}" is understood as {what}, filtered by {query}.',
+        "terms_together": "These {n} terms narrow the search together: only lines that match all of them count.",
+        "codes_skipped": "Checked {done} of {n} codes; {k} not checked: {used} Graylog requests used.",
+        "codes_over": "Only the first {most} codes of a question are followed; {k} not checked.",
+        "lines_not_read": "This error was counted but none of its lines was read ({used} Graylog requests used), so "
+        "nothing is known of its path. Ask about this error alone.",
+        "clarify_time": 'The time in your question ("{words}") has not begun yet where {instance} keeps its time '
+        "({zone}). Say the time you mean in that timezone, or how long ago.",
+        "kind_not_applied": "This answer looks at the instance's error query ({query}) only; business errors are "
+        "not part of it.",
+        "flow_not_followed": "The trace of this error was not followed: {used} Graylog requests used. Ask about "
+        "this error alone, or raise limits.max_requests.",
+        "unclear_term": '"{text}" could be {names}; write it with its accents or say more.',
+        "guessed": "Read as a request to {reading}; that is a guess. If you meant something else, ask for it in "
+        "words: {others}.",
+        "clarify_intent": "I could not tell what you want to know. Ask for it in words: {readings}.",
+        "clarify_instance": 'Which environment do you mean by "{words}"? Name one of: {options}.',
+        "clarify_period": "I could not tell which period you mean. Say it as a length of time back, a day or a "
+        'range, for example "in the last 2 hours", "yesterday afternoon" or "from 9h to 11h".',
+        "period_not_read": "The question seems to name a period that could not be read, so the last 24 hours "
+        'were searched. Say it as a length of time back, a day or a range, for example "in the last 2 hours" or '
+        '"yesterday afternoon".',
+        "clarify_where": "Name the environment in the question, one of: {options}. Until it is known nothing of "
+        "the question is handed to a provider, because one of them forbids it (provider_data).",
+        "reading": '{what} ("{ask}")',
+        "intent_follow_flow": "follow one error across services",
+        "intent_error_summary": "list the main errors",
+        "intent_root_cause": "find what broke first",
+        "intent_count": "count",
+        "intent_compare": "compare with the period before",
+        "intent_search": "show log lines",
+        "intent_trace_code": "follow one code",
+        "ask_follow_flow": "where does … go wrong",
+        "ask_error_summary": "what are the main errors of …",
+        "ask_root_cause": "what is the root cause of …",
+        "ask_count": "how many …",
+        "ask_compare": "what changed in …",
+        "ask_search": "show the logs of …",
+        "ask_trace_code": "history of <code>",
+        "no_words": "No word of the question tells the errors apart, so these are the most frequent ones in what "
+        "it covers. Describe the error with a word from its message to follow one.",
+        "words_not_found": "None of the errors in this period holds a word of your description, so these are the "
+        "most frequent ones in what it covers. The logs may use other words, or another language, than the "
+        "question.",
+        "provider_failed": "Provider {provider} was not used ({reason}); this was answered without it.",
     },
     "vi": {
         "understood": "Đã hiểu: {parts}. Nếu chưa đúng ý, hãy nói lại.",
-        "errors_only": "chỉ lỗi",
+        "errors_any": "mọi dòng",
+        "errors_technical": "lỗi kỹ thuật",
+        "errors_business": "lỗi nghiệp vụ",
+        "errors_both": "lỗi kỹ thuật và nghiệp vụ",
+        "time_read": '"{words}" ({start} đến {end})',
+        "no_business_errors": "Instance này chưa định nghĩa lỗi nghiệp vụ (business_error_query, hoặc một field mã "
+        "HTTP), nên chỉ tính lỗi kỹ thuật.",
+        "no_trace_around": "Lỗi này không có trace id ({fields}) nên không lần theo được đường đi qua các dịch vụ. "
+        "'around' là các dòng cùng nguồn trong vòng {seconds} giây quanh lỗi: gần nhau về thời gian, không phải một "
+        "request.",
         "last_hour": "1 giờ qua",
         "today": "hôm nay",
         "yesterday": "hôm qua",
@@ -44,8 +109,52 @@ TEXT: dict[str, dict[str, str]] = {
         "no_flow": "Không tìm thấy trace id nào của lỗi này trong log của khoảng thời gian này.",
         "flow": 'Lỗi "{sample}" ({n} lần) đi qua {services}.',
         "first_error": "Lỗi đầu tiên xuất hiện ở {service}.",
-        "no_code": "Không tìm thấy mã đơn hàng hay mã giao dịch trong câu hỏi. Khai báo ask.code_patterns trong "
-        "cấu hình để ask nhận ra dạng mã của bạn.",
+        "no_code": "Không tìm thấy mã đơn hàng hay mã giao dịch trong câu hỏi. Khai báo [glossary.codes.<tên>] kèm "
+        "pattern trong cấu hình (ask.code_patterns vẫn dùng được) để ask nhận ra dạng mã của bạn.",
+        "term": 'Đã hiểu "{text}" là {what}; thuật ngữ này không thu hẹp phép tìm.',
+        "term_filtered": 'Đã hiểu "{text}" là {what}, lọc theo {query}.',
+        "terms_together": "{n} thuật ngữ này cùng thu hẹp phép tìm: chỉ tính các dòng khớp tất cả.",
+        "codes_skipped": "Đã kiểm tra {done}/{n} mã; còn {k} mã chưa kiểm tra vì đã dùng {used} request Graylog.",
+        "codes_over": "Mỗi câu hỏi chỉ lần theo {most} mã đầu tiên; còn {k} mã chưa kiểm tra.",
+        "lines_not_read": "Lỗi này mới được đếm, chưa đọc được dòng nào của nó (đã dùng {used} request Graylog), "
+        "nên chưa biết gì về đường đi của nó. Hãy hỏi riêng về lỗi này.",
+        "clarify_time": 'Thời điểm trong câu hỏi ("{words}") chưa tới theo giờ của {instance} ({zone}). Hãy nêu '
+        "thời điểm theo múi giờ đó, hoặc nói cách đây bao lâu.",
+        "kind_not_applied": "Câu trả lời này chỉ xét truy vấn lỗi của instance ({query}); lỗi nghiệp vụ không nằm "
+        "trong đó.",
+        "flow_not_followed": "Chưa lần theo trace của lỗi này vì đã dùng {used} request Graylog. Hãy hỏi riêng về "
+        "lỗi này, hoặc tăng limits.max_requests.",
+        "unclear_term": '"{text}" có thể là {names}; hãy gõ có dấu hoặc nói rõ hơn.',
+        "guessed": "Tôi hiểu đây là yêu cầu {reading}; đó là phỏng đoán. Nếu ý bạn khác, hãy hỏi rõ: {others}.",
+        "clarify_intent": "Tôi chưa rõ bạn muốn biết điều gì. Hãy hỏi rõ: {readings}.",
+        "clarify_instance": 'Bạn muốn nói môi trường nào khi viết "{words}"? Hãy nêu một trong: {options}.',
+        "clarify_period": "Tôi chưa rõ bạn muốn nói khoảng thời gian nào. Hãy nêu một khoảng lùi về trước, một ngày "
+        'hoặc một khoảng, ví dụ "trong 2 giờ qua", "chiều hôm qua" hoặc "từ 9h đến 11h".',
+        "period_not_read": "Câu hỏi có vẻ nêu một khoảng thời gian mà tôi không đọc được, nên đã tìm trong 24 giờ "
+        'qua. Hãy nêu một khoảng lùi về trước, một ngày hoặc một khoảng, ví dụ "trong 2 giờ qua" hoặc "chiều hôm '
+        'qua".',
+        "clarify_where": "Hãy nêu môi trường trong câu hỏi, một trong: {options}. Khi chưa biết môi trường thì không "
+        "phần nào của câu hỏi được chuyển cho nhà cung cấp, vì có môi trường cấm điều đó (provider_data).",
+        "reading": '{what} ("{ask}")',
+        "intent_follow_flow": "lần theo một lỗi qua các dịch vụ",
+        "intent_error_summary": "liệt kê các lỗi chính",
+        "intent_root_cause": "tìm thứ hỏng đầu tiên",
+        "intent_count": "đếm",
+        "intent_compare": "so sánh với khoảng thời gian trước đó",
+        "intent_search": "xem các dòng log",
+        "intent_trace_code": "tra một mã",
+        "ask_follow_flow": "… lỗi ở bước nào",
+        "ask_error_summary": "các lỗi chính của … là gì",
+        "ask_root_cause": "nguyên nhân gốc của … là gì",
+        "ask_count": "có bao nhiêu …",
+        "ask_compare": "… thay đổi gì so với trước",
+        "ask_search": "xem log của …",
+        "ask_trace_code": "hành trình của <mã>",
+        "no_words": "Không có từ nào trong câu hỏi giúp phân biệt các lỗi, nên đây là các lỗi nhiều nhất trong phạm "
+        "vi được hỏi. Hãy mô tả lỗi bằng một từ có trong message của nó để lần theo một lỗi.",
+        "words_not_found": "Không lỗi nào trong khoảng thời gian này chứa từ nào trong mô tả của bạn, nên đây là các "
+        "lỗi nhiều nhất trong phạm vi được hỏi. Log có thể dùng từ khác, hoặc ngôn ngữ khác, với câu hỏi.",
+        "provider_failed": "Không dùng được nhà cung cấp {provider} ({reason}); câu này được trả lời không có nó.",
     },
 }
 
@@ -54,6 +163,24 @@ def say(language: str, key: str, **values: Any) -> str:
     return TEXT[language][key].format(**values)
 
 
-def understood(language: str, instance: str | None, time: str, errors_only: bool) -> str:
-    parts = [p for p in (instance, say(language, time), say(language, "errors_only") if errors_only else None) if p]
-    return say(language, "understood", parts=", ".join(parts))
+def understood(language: str, instance: str, time: str, errors: str) -> str:
+    """The first line of every answer. ``time`` is already in words; ``errors`` is one of understood.ERRORS."""
+    return say(language, "understood", parts=", ".join((instance, time, say(language, f"errors_{errors}"))))
+
+
+def readings(language: str, intents: Sequence[str]) -> list[dict[str, str]]:
+    """Ways a question may be meant, each with how to ask for it."""
+    return [
+        {"intent": name, "what": say(language, f"intent_{name}"), "ask": say(language, f"ask_{name}")}
+        for name in intents
+    ]
+
+
+def reading_list(language: str, items: Sequence[dict[str, str]]) -> str:
+    return "; ".join(say(language, "reading", what=r["what"], ask=r["ask"]) for r in items)
+
+
+def time_read(language: str, words: str, start: datetime, end: datetime) -> str:
+    """A range read from the question: the words, then the range they were taken as."""
+    last = end.strftime("%H:%M" if end.date() == start.date() else "%Y-%m-%d %H:%M")
+    return say(language, "time_read", words=words, start=start.strftime("%Y-%m-%d %H:%M"), end=last)

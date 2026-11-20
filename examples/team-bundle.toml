@@ -1,0 +1,121 @@
+# graylog-mcp team bundle: the shared settings of a team, without secrets.
+# Import it with: graylog-mcp bundle import <this file>
+
+timezone = "Asia/Ho_Chi_Minh"
+
+[bundle]
+format = 1
+name = "acme"
+description = "Acme payments team"
+
+[limits]
+default_limit = 50
+max_limit = 500
+max_value_chars = 2000
+max_message_chars = 20000
+max_output_chars = 24000
+search_output_chars = 12000
+message_output_chars = 4000
+context_output_chars = 8000
+max_groups = 100
+sample_concurrency = 4
+scan_concurrency = 8
+max_requests = 20
+
+[redaction]
+packs = ["vn"]
+vn_cmnd = false
+sensitive_fields = ["national_id"]
+exclude_fields = ["token_count"]
+allow = ["^noreply@example\\.com$"]
+
+[[redaction.patterns]]
+name = "order_token"
+pattern = "OTK-[A-Z0-9]{16}"
+replacement = "[ORDER_TOKEN]"
+
+[stacktrace]
+app_packages = ["com.example", "/srv/myapp/"]
+max_frames = 8
+max_app_frames = 25
+
+[investigation]
+trace_fields = ["trace_id", "traceId", "correlation_id", "request_id", "X-Request-ID"]
+service_fields = ["service", "application_name", "source"]
+error_query = "level:<=3"
+default_fields = ["timestamp", "source", "level", "message"]
+message_lookup_range = "30d"
+group_fields = { exception = "exception_class", logger = "logger_name", source = "source" }
+version_fields = ["app_version", "version", "build", "git_commit", "image_tag"]
+latency_fields = ["took_ms", "duration_ms", "elapsed_ms", "response_time_ms"]
+endpoint_fields = ["route", "http_route", "path", "request_path", "uri", "url_path", "endpoint"]
+status_fields = ["http_status", "status_code", "response_status", "status"]
+business_error_query = ""
+technical_error_query = ""
+slow_ms = [1000, 3000, 10000]
+latency_unit = "auto"
+change_query = "(message:Started AND message:\"running for\") OR \"Shutting down\" OR \"Graceful shutdown\" OR SIGTERM"
+
+[instances.prod]
+url = "https://graylog.example.com"
+description = "Production"
+
+[instances.staging]
+url = "https://graylog-staging.example.com"
+description = "Staging, deployed on every merge to main"
+auth = "basic"
+verify_tls = false
+error_query = "level:ERROR OR level:FATAL"
+
+[presets.payment_errors]
+description = "Errors from the payment services, grouped by exception"
+tool = "error_summary"
+args = { query = "service:payment", range = "1h" }
+
+[presets.slow_requests]
+description = "Requests slower than 2s"
+tool = "search_logs"
+args = { query = "took_ms:>2000", range = "30m", fields = ["timestamp", "source", "path", "took_ms"] }
+
+[presets.health]
+description = "Quick health scan: high and critical rules"
+tool = "scan"
+args = { range = "1h", min_severity = "high" }
+
+[glossary.terms.payment]
+description = "payment service"
+aliases = ["thanh toán", "payment"]
+query = "service:payment"
+
+[glossary.terms.refund]
+aliases = ["hoàn tiền", "refund"]
+keywords = ["refund"]
+preset = "payment_errors"
+
+[glossary.codes.order]
+pattern = "ORD-\\d+"
+fields = ["order_id"]
+
+[scan]
+disable = ["auth_failures"]
+exclude = "logger_name:HealthCheck OR \"GET /health\""
+
+[scan.rules.connectivity]
+min_count = 30
+
+[scan.rules.card_declined]
+description = "Bank declines"
+query = "service:payment AND message:\"declined\""
+severity = "high"
+growth = 2.0
+min_count = 20
+per_traffic = true
+traffic_query = "service:payment"
+baseline_shift = "7d"
+group_by = "bank_code"
+tags = ["payment"]
+
+[scan.rules.ledger_mismatch]
+query = "\"ledger mismatch\""
+severity = "critical"
+instances = ["prod"]

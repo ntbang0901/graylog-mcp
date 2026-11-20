@@ -6,7 +6,110 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
 ### Added
+- ChatGPT web, off by default: `[http.oauth]` serves OAuth 2.1 (dynamic registration, PKCE) on a port of its
+  own, for a tunnel the user runs; the admin page and `/status` are not on it. A client gets a token only after
+  someone types a one-time pairing code shown on this machine (admin page, Connect; or `graylog-mcp pair`), may
+  redirect only to `allowed_redirects`, and sees only the environments with `remote_access = true`, which a
+  repository's own file, a group or `[environments]` cannot set. Tokens are kept as hashes; a refresh token works
+  once. `graylog-mcp pair --list` and `--revoke` (and the admin page) list and unpair clients.
+- MCP prompts for a task, for people who are not developers: `find_error` (a problem in their own words),
+  `trace_code` (an order code or trace id), `check_after_change` (a release or a test run) and `ticket_evidence`
+  (log evidence for a bug ticket, in Markdown), beside `scan`. A team adds its own in `[prompts.<name>]` (`text`
+  with `{argument}` placeholders, `arguments` with optional defaults), checked when the config loads and carried
+  by a team bundle. The instructions tell the model to call `ask` first with such a question, repeat how it was
+  understood, ask back on `clarify` and answer in the asker's language.
+- A guide in Vietnamese for business analysts and testers: `docs/huong-dan-ba-qa.md`.
+- The admin page asks in plain words: on Logs, a question opens the view it describes, with how it was read as
+  chips to edit (environment, time range, kind of error, glossary terms); a code opens its journey across
+  services; the glossary's terms and the presets are a click away; *What was sent* lists what each model
+  provider was handed for the question. A trace and a message copy as Markdown for a ticket. The Playground's
+  arguments are a form as well as JSON. A Providers screen declares, orders, tests and removes the providers of
+  ask and saves their keys.
+- Team bundles: `graylog-mcp bundle export --name acme` writes the settings a team shares (environments, fields,
+  error queries, redaction, presets, scan rules, the glossary, the `[ask]` settings that choose no destination)
+  without any secret, variable name, local path, proxy, `[http]`, personal default or provider; `graylog-mcp
+  bundle import` previews what is added, changed and removed (apart: a changed URL, `verify_tls = false`,
+  `provider_data`, and settings the user's own file hides), then writes `teams/<name>.toml` and includes it below
+  the user's own settings. The admin page's Config file screen does both. A bundle carries a format number; a
+  newer one, or one setting a key outside the list, is refused at import and when the config loads.
+- `graylog-mcp login` also asks for the username of a basic-auth environment whose `username_env` is not set yet.
+- `ask` needs no model and no key. Rules read what a question asks for ("how many", "so với", "nguyên nhân", "xem
+  log", a code), and which environment it names ("ở prod", "on production", an instance's `aliases`), beside the
+  time, the kind of error, the glossary's terms and codes. Words that name what is asked are read for sure; an
+  error word or a term alone is a guess, answered as such with the other readings and how to ask for them
+  (`guessed`); a question nothing can be read from is asked back with up to three `readings`; a word that fits
+  several environments is asked back with them (`options`). `[ask.intent_words]` replaces any of the built-in
+  word lists.
+- Without a provider that may see the logs, `ask` matches the described error by the words of the question
+  (`scored_by: "rules"`); when no error holds a word, it lists the most frequent ones and says so.
+- Providers of `ask` are configured, optional and ordered: `[ask.providers.<name>]` with `kind` `jev` (TypeSafe
+  System One), `openai` (any OpenAI-compatible Chat Completions endpoint, https or http on this machine) or
+  `command` (a program on this machine: JSON on stdin, JSON on stdout), `can` (`understand`, `score`) and
+  `provider_order`. A provider is asked only for what the rules left open; the next one only when the one before
+  failed; a failed provider is named in `provider_failures` and the rules answer. Whatever a provider replies, only
+  a choice it was offered, a probability or plain words are kept, and the environment is chosen only among the
+  instances a word of the question fits. A repository's own config file, and what it includes from inside the
+  repository, may not declare or order providers, but may turn them all off (`provider_order = []`); a central
+  file it includes from outside may do either.
+- `provider_data` on an instance, a group or `[environments.<e>]` says what of a question may be handed to a
+  provider: `none`, `question_only` or `question_and_logs` (the default). Until the environment of a question is
+  known the strictest setting of all instances applies, to the scoring too, and when a provider would have been
+  needed `ask` asks for the environment rather than pick one.
+- `aliases` on an instance, a group or `[environments.<e>]` are other words for it in a question; the levels add
+  up, and a word that fits several instances is asked back.
+- `cost.provider_requests` and `cost.providers` in an `ask` answer count the requests and the bytes sent to each
+  provider.
+- A followed error also gets each kind of error counted apart (`by_kind`) when the question said only "errors".
+- `ask` reads time phrases itself, in Vietnamese (with or without accents) and English, as an exact range in the
+  instance's timezone: a length of time back ("15 phút qua", "last 2 hours"), a day, a part of a day ("sáng nay",
+  "yesterday afternoon"), a week or month, clock times ("từ 9h đến 11h", "lúc 9h tối qua", "since 9am") and dates
+  ("ngày 12/11", "từ 12/11 đến 15/11", "ngày 12 tháng 11"). A phrase only half understood ("vài ngày qua", a date
+  that does not exist, a bare "12/11") is not read, and the provider is asked instead. `[ask.time]` sets the hours
+  of the parts of the day, the first day of the week and the order of day and month.
+- `ask` fills one structure with what it understood, rules first: the time phrase and the kind of error are read
+  without the provider, which is then asked only for what is left (the intent, and the environment when several
+  exist). `understood` names where each part came from (`sources`), `ran` is the Graylog query that ran, and the
+  summary shows the time as typed with the range it was taken as.
+- `ask` counts errors by kind when the question says only "errors" (`result.by_kind`), says so when the instance
+  defines no business errors or when the tool it used takes no kind of error (the error summary, the root cause
+  analysis, the comparison), answers "show me the lines about …" with a search (`intent` `search`), and for an
+  error without a trace id returns the lines of the same source around it (`around`) instead of only a hint.
+- `ask` keeps to `max_requests`: the codes of one question share the count, a code that could no longer be
+  followed whole is listed in `skipped_codes` and named in the summary ("Checked 2 of 3 codes; 1 not checked: 15/20
+  Graylog requests used."), an error's trace is not followed when fewer than three requests are left, and `cost`
+  carries `graylog_cap`.
+- A glossary term's query is checked with Graylog before anything runs: a broken one is named with its term and
+  its config key.
+- `[limits] max_requests` (20) caps the Graylog requests of one `trace_request` or `ask` call. Close to it the
+  optional reads are dropped, the business error marks first, then the last line of a long trace and the look into a
+  wider range, and `note` or `hint` says what was left out and how many requests were used.
+- The words of a question say which errors it means: a bare "lỗi" or "error" is technical and business errors alike,
+  "timeout" or "exception" technical ones, "bị từ chối" or "declined" business ones. The lists are built in and
+  `[glossary.error_words]` (`either`, `technical`, `business`) replaces any of them.
+- A `[glossary]` section names the team's business terms (`aliases`, an optional `query`, `keywords`, `preset`) and
+  the shapes of its codes (`pattern`, `fields`), each optionally limited to some `instances`. One alias given to two
+  terms of the same instance stops the load with both names. An alias matches whole words, with or without its
+  accents, and whichever vowel carries the tone mark ("hoá đơn" and "hóa đơn").
+- `describe(what="glossary")` lists the glossary, for one instance when `instance` is given.
+- `trace_request` looks a code up in the fields its glossary entry names (`[glossary.codes.<name>] fields`) before
+  searching the text, so a number that also appears in unrelated lines leads only to its own requests; `code` in the
+  result names the kind of code and the fields that held it. A code found in its field on lines without any trace id
+  returns those lines (`strategy` is `code_field`).
+- `ask` reads the glossary: the `query` of a term in the question is ANDed into the search, `understood.topics` lists
+  the term and the summary says how it was read (a term with only `keywords` or a `preset` is named as not narrowing
+  the search; several queries narrow together); words typed without accents that fit two terms are named, not
+  guessed (`understood.unclear`); codes are found with `[glossary.codes]` as well as `ask.code_patterns`.
+- `trace_request` takes a business code (an order or transaction number): when the messages holding it carry a trace
+  id, it lists the requests the code went through (`traces`), details the one with an error or the most services
+  (`shown_trace`) and returns the messages that hold the code without any trace id (`unlinked`).
+- `trace_request` marks business errors (`business_error_query`, by default HTTP 4xx) apart from technical ones,
+  with the same definitions as the admin page's Logs screen: `error` on each such line, `business_errors` per
+  service and step, and `first_business_error`. `error_queries` names the queries used.
+- When `trace_request` finds nothing, it looks once in a wider range and says how many messages match there and when
+  the newest was logged (`suggestions`).
 - Each tool call is now recorded when it starts and when it ends, with who called it (the conversation: a Codex
   session, the HTTP session, else the server process; the client's tool call id; the client), the Graylog requests it
   sent (path, redacted query, wait, duration, status, retries) and the first 2,000 characters of its redacted result.
@@ -55,6 +158,35 @@ All notable changes to this project are documented here. The format follows
   environment.
 
 ### Changed
+- `ask` is always declared; it was listed only with a TypeSafe key. With a key saved and no `provider_order`, Jev
+  is still the provider for both tasks, but it is no longer asked what the rules read for sure: "how many errors?"
+  sends it nothing, and a question that names no period covers the last 24 hours instead of the period Jev picked.
+  `provider_order = []` turns it off while the key stays saved.
+- A provider that cannot be reached, refuses the key or replies nothing readable no longer fails `ask`: the rules
+  answer and the summary names the provider.
+- `cost.jev_requests` is replaced by `cost.provider_requests`, and `understood.sources` names the provider that
+  chose a part (`jev` for the built-in one) or `guess` for a reading the rules only guessed.
+- The split of "errors" by kind costs one Graylog request a kind; it went through the search for why a count is
+  zero.
+- `ask`'s `understood` has a new shape: `errors` (`any`, `technical`, `business`, `both`) replaces `errors_only`,
+  `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
+  `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.
+- `ask` looks for the described error over the whole range: every error line when one read holds them, else the
+  newest lines of six equal parts of the range, joined with every exception of the range and its exact count where
+  the instance has the field of `group_fields.exception` (`matches` then carry `exception` and `exception_count`;
+  `estimated` marks a match's own count scaled from the sample, written "~" in the summary). At most half of the
+  size cap goes to `matches` (`matches_omitted`). It was the newest 500 error lines.
+- "last week" and "tuần trước" in an `ask` question are the previous calendar week (the provider read them as the
+  last 7 days); "past week" and "tuần qua" are the last 7 days.
+- Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),
+  and where two patterns match overlapping text the longer match is the code.
+- `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is
+  now the request they belong to (`strategy` is `business_code`) with the list of such requests, not every message
+  holding the text. Messages without any trace id are returned as before (`full_text`); `search_logs` remains the
+  tool for every line that holds a text.
+- In a trace, `errors` and `first_error` now follow the instance's technical error query (HTTP 5xx or `error_query`,
+  or `technical_error_query`) instead of the log level alone: a 5xx line logged at INFO counts, and the result names
+  the queries in `error_queries`.
 - The admin page is built from `ui/` (Vite, Preact and `@preact/signals`, strict TypeScript, one component per screen)
   into `src/graylog_mcp/admin/static/` (`index.html` plus committed hashed files in `assets/`), and is served from
   there; the wheel, Docker and the tests need no Node. The Content-Security-Policy no longer allows inline scripts
@@ -77,6 +209,17 @@ All notable changes to this project are documented here. The format follows
   `GRAYLOG_MCP_USAGE_SESSION_DAYS` and `GRAYLOG_MCP_USAGE_MAX_MB` change the limits.
 
 ### Fixed
+- `ask` reads "since this morning" and "từ sáng nay" from the start of the morning to now, not to noon.
+- A repository's own config file can no longer test a model provider or be saved from the admin page with a
+  setting it may not decide (the providers of `ask`, `[http.oauth]`, `remote_access`).
+- A table cell copied as Markdown takes a log line's links, images, HTML and emphasis literally.
+- `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
+  is read from the question as typed, and only the redacted question is sent to TypeSafe.
+- An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.
+- A trace longer than `limit` no longer loses its errors: `trace_request` adds its error lines (the earliest `limit`
+  of each kind, at least 50) and the last line to the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
+  left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the
+  rest. `note` says which of the two cut the timeline, the read limit or the size budget.
 - Redaction now masks a secret after a field name ending in a wildcard (`password*:value`), as in a query a suggested
   fix rewrote.
 - A metric over no values, which Graylog 5.2 and later return as the text `NaN` or `-Infinity`, now reads as no

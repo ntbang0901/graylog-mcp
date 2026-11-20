@@ -6,13 +6,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from graylog_mcp import secrets
-from graylog_mcp.tools import App
 from graylog_mcp.toolspecs.spec import FromTime, Instance, Range, Streams, ToolSpec, ToTime, single, switched
 
 
 class TraceRequestArgs(BaseModel):
-    trace_id: Annotated[str, Field(description="Correlation / request / trace id to follow")]
+    trace_id: Annotated[
+        str,
+        Field(description="Correlation / request / trace id to follow, or a business code (order, transaction number)"),
+    ]
     range: Range = "24h"
     from_time: FromTime = None
     to_time: ToTime = None
@@ -24,9 +25,12 @@ class TraceRequestArgs(BaseModel):
 TRACE_REQUEST = ToolSpec(
     "trace_request",
     "Trace request",
-    "Follow one request across services: searches the configured trace fields (falls back to full "
-    "text) on all streams and returns a chronological timeline, per-service steps with durations, "
-    "and the first error.",
+    "Follow one request across services, by its correlation / request / trace id or by a business code such as "
+    "an order or transaction number: searches the configured trace fields (then the fields the glossary names "
+    "for that kind of code, then full text) on all "
+    "streams and returns a chronological timeline, per-service steps with durations, and the first error. A "
+    "code found in several requests lists them in 'traces' and details the one in 'shown_trace'; call again "
+    "with another trace id to see it.",
     TraceRequestArgs,
     single("trace_request"),
 )
@@ -101,20 +105,17 @@ class AskArgs(BaseModel):
     instance: Instance = None
 
 
-def _has_typesafe_key(app: App | None) -> bool:
-    return bool(app.jev if app is not None else secrets.get("TYPESAFE_API_KEY"))
-
-
 ASK = ToolSpec(
     "ask",
     "Ask",
     "Answer a plain-language question such as 'why did checkout fail on prod this morning?': finds the "
     "error the question describes, follows its trace across services, and states what it understood "
-    "(environment, period) so it can be corrected. Asks back when the question is too vague. "
-    "Sends TypeSafe the question and redacted, size-capped error text (250 characters each); "
-    "never raw logs.",
+    "(environment, period, kind of error, the team's terms) and the query it ran, so it can be corrected. What "
+    "is asked, the environment, time phrases in Vietnamese or English, the glossary's terms and codes are read "
+    "by rule; a reading that is only a guess is said to be one, and a question too vague is asked back with the "
+    "ways it could be meant. Needs no model. When the user has configured a provider, it is asked only for what "
+    "the rules left open, and gets the redacted question and, unless the environment forbids it "
+    "(provider_data), redacted error text of 250 characters each; never raw logs.",
     AskArgs,
     single("ask"),
-    # declared only with a TypeSafe key: without one nothing is ever sent to TypeSafe
-    enabled=_has_typesafe_key,
 )

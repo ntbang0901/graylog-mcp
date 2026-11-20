@@ -5,8 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from graylog_mcp import usage
+from graylog_mcp import tools, usage
 from graylog_mcp.usage_store import store
+from tests.conftest import make_config
 from tests.fake_graylog import FakeGraylog
 from tests.test_regressions import _add
 
@@ -115,3 +116,14 @@ async def test_bad_requests_are_refused_and_reads_are_recorded_apart(explorer):
     assert call["source"] == "explorer" and call["conversation"] == "explorer"
     assert call["args"]["query"] == "source:acme-api"
     assert "explorer_traces" not in {t["tool"] for t in usage.summarize(24)["tools"]}  # not one of the model's
+
+
+def test_error_queries_follow_the_status_field_and_the_config():
+    cfg = make_config().instance(None)
+    assert tools.error_queries(cfg, None) == (None, cfg.error_query)
+    assert tools.error_queries(cfg, "http_status") == (
+        "http_status:[400 TO 499]",
+        f"http_status:[500 TO 599] OR ({cfg.error_query})",
+    )
+    own = make_config(investigation={"business_error_query": "message:declined", "technical_error_query": "level:<=2"})
+    assert tools.error_queries(own.instance(None), "http_status") == ("message:declined", "level:<=2")

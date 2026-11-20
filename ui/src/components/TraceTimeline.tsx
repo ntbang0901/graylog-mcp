@@ -5,10 +5,12 @@ import {
     type ExplorerMessage,
     type TraceAnswer,
 } from "../explorer";
+import { traceMarkdown } from "../markdown";
+import { toast } from "../store";
 import type { Json } from "../scripts/types";
 import { JsonTree } from "./JsonTree";
 import { Marks } from "./Marks";
-import { num, plural } from "./UI";
+import { AsyncButton, num, plural } from "./UI";
 
 export function LevelBadge({ level }: { level: unknown }) {
     const lv = levelOf(level);
@@ -72,6 +74,32 @@ export function TraceTimeline({
                     · {plural(services.length, "service")}:{" "}
                     {services.join(", ")}
                 </span>
+                <span class="spacer" />
+                <AsyncButton
+                    class="btn sm ghost"
+                    title="Copy the trace as a table for a ticket"
+                    run={async () => {
+                        await navigator.clipboard.writeText(
+                            traceMarkdown({
+                                trace: d.trace,
+                                instance: d.instance,
+                                range: d.range,
+                                total: d.total,
+                                duration_ms: d.duration_ms,
+                                lines: d.messages.map((m) => ({
+                                    time: String(m.ts ?? ""),
+                                    offset_ms: m.offset_ms,
+                                    service: m.service || "-",
+                                    level: levelOf(m.level).word,
+                                    message: m.message,
+                                })),
+                            }),
+                        );
+                        toast("Copied as Markdown");
+                    }}
+                >
+                    Copy as Markdown
+                </AsyncButton>
             </div>
             <div class="lg-tline">
                 {d.messages.map((m, i) => {

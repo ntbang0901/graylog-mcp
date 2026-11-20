@@ -11,7 +11,7 @@ from graylog_mcp.toolspecs.spec import Instance, ToolSpec, single, switched
 
 class DescribeArgs(BaseModel):
     what: Annotated[
-        Literal["instances", "streams", "fields", "presets", "scan_rules"],
+        Literal["instances", "streams", "fields", "presets", "scan_rules", "glossary"],
         Field(description="What to list; 'instances' by default"),
     ] = "instances"
     contains: Annotated[str | None, Field(description="fields: only names containing this text")] = None
@@ -27,7 +27,9 @@ DESCRIBE = ToolSpec(
     "and active redaction rules. 'streams': streams (id, title, description) the token can read. 'fields': "
     "field names (and types where available), plus the configured trace fields and error query; use before "
     "writing queries on unfamiliar logs. 'presets': named queries from the configuration. 'scan_rules': scan "
-    "rules with their query, condition, severity and tags.",
+    "rules with their query, condition, severity and tags. 'glossary': the team's business terms (aliases, the "
+    "query and keywords each stands for) and the shapes of its codes; read it when the user names a product, a "
+    "flow or a code.",
     DescribeArgs,
     switched(
         "what",
@@ -37,6 +39,7 @@ DESCRIBE = ToolSpec(
             "fields": "list_fields",
             "presets": "list_presets",
             "scan_rules": "list_scan_rules",
+            "glossary": "list_glossary",
         },
     ),
     switch="what",

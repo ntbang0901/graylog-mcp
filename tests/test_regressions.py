@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from graylog_mcp import tools
+from graylog_mcp import tools, trace
 from graylog_mcp.config import ConfigError, parse_config
 from graylog_mcp.redact import Redactor
 from graylog_mcp.shaping import dumps
@@ -38,8 +38,8 @@ async def test_trace_service_names_are_masked(make_app):
     app, fake = make_app()
     fake.messages = []
     _add(fake, service="bob@example.com token=abc123secret", trace_id="T1", card=4111111111111111)
-    trace = await tools.trace_request(app, "T1", range="1h")
-    text = dumps(trace)
+    found = await trace.trace_request(app, "T1", range="1h")
+    text = dumps(found)
     assert "bob@example.com" not in text and "abc123secret" not in text
     search = await tools.search_logs(app, query="trace_id:T1", range="1h", fields=["*"])
     assert search["messages"][0]["card"] == "[CARD]"

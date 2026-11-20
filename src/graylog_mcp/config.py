@@ -14,12 +14,14 @@ import difflib
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from graylog_mcp.glossary import alias_key
 from graylog_mcp.scanrules import BUILTIN_SCAN_RULES
 
 
@@ -92,6 +94,7 @@ class Limits:
     max_groups: int = 100
     sample_concurrency: int = 4
     scan_concurrency: int = 8
+    max_requests: int = 20  # Graylog requests of one trace_request or ask call before optional work is dropped
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,7 @@ class InstanceConfig:
     environment: str | None = None  # e.g. "prod"
     token: str | None = None
     username: str | None = None
+    username_env: str | None = None  # name of the variable holding the username of basic auth, when not written
     password: str | None = None
     verify_tls: bool = True
     ca_bundle: str | None = None
@@ -155,6 +159,9 @@ class InstanceConfig:
     technical_error_query: str = ""  # empty: a status from 500 to 599, or error_query
     slow_ms: tuple[int, ...] = DEFAULT_SLOW_MS
     latency_unit: str = "auto"  # "auto": ms, but seconds for a field named like request_time
+    aliases: tuple[str, ...] = ()  # words of a question that mean this instance, beside its own names
+    provider_data: str = "question_and_logs"  # one of PROVIDER_DATA: what ask may hand to a provider here
+    remote_access: bool = False  # offered to the clients paired over [http.oauth]
 
     @property
     def api_base(self) -> str:
@@ -165,12 +172,100 @@ class InstanceConfig:
         return ZoneInfo(self.timezone)
 
 
+def _applies(instances: tuple[str, ...], inst: InstanceConfig) -> bool:
+    """``instances`` names instances, groups or environments; empty means everywhere."""
+    if not instances:
+        return True
+    names = {inst.name.lower(), (inst.group or "").lower(), (inst.environment or "").lower()} - {""}
+    return any(i.lower() in names for i in instances)
+
+
+@dataclass(frozen=True)
+class GlossaryTerm:
+    """A word of the team's own (see graylog_mcp.glossary) and what it stands for in the logs."""
+
+    name: str
+    aliases: tuple[str, ...]  # as written in the config
+    description: str = ""
+    query: str = ""  # Lucene filter ANDed into a search; empty: the term filters nothing
+    keywords: tuple[str, ...] = ()  # plain words to match log text with
+    preset: str | None = None
+    instances: tuple[str, ...] = ()  # only on these instances, groups or environments; empty: everywhere
+
+    def applies_to(self, inst: InstanceConfig) -> bool:
+        return _applies(self.instances, inst)
+
+
+@dataclass(frozen=True)
+class CodeKind:
+    """What one kind of business code (an order, a transaction) looks like."""
+
+    name: str
+    pattern: str
+    fields: tuple[str, ...] = ()  # fields holding the code, searched before full text
+    description: str = ""
+    instances: tuple[str, ...] = ()
+
+    def applies_to(self, inst: InstanceConfig) -> bool:
+        return _applies(self.instances, inst)
+
+
+DEFAULT_ERROR_WORDS = ("lỗi", "error", "errors", "fail", "failed", "failure", "thất bại", "sự cố", "bug")
+DEFAULT_TECHNICAL_WORDS = (
+    "exception", "timeout", "time out", "crash", "sập", "treo", "lỗi hệ thống", "5xx", "stack trace",
+    "connection refused", "không kết nối được",
+)  # fmt: skip
+DEFAULT_BUSINESS_WORDS = (
+    "bị từ chối", "từ chối", "declined", "rejected", "không hợp lệ", "invalid", "validation", "4xx",
+)  # fmt: skip
+
+
+@dataclass(frozen=True)
+class ErrorWords:
+    """The words of a question that say which errors it is about."""
+
+    either: tuple[str, ...] = DEFAULT_ERROR_WORDS  # technical and business alike
+    technical: tuple[str, ...] = DEFAULT_TECHNICAL_WORDS
+    business: tuple[str, ...] = DEFAULT_BUSINESS_WORDS
+
+
+@dataclass(frozen=True)
+class Glossary:
+    terms: dict[str, GlossaryTerm] = field(default_factory=dict)
+    codes: dict[str, CodeKind] = field(default_factory=dict)
+    error_words: ErrorWords = ErrorWords()
+
+    def terms_for(self, inst: InstanceConfig) -> list[GlossaryTerm]:
+        return [t for t in self.terms.values() if t.applies_to(inst)]
+
+    def codes_for(self, inst: InstanceConfig) -> list[CodeKind]:
+        return [c for c in self.codes.values() if c.applies_to(inst)]
+
+
 @dataclass(frozen=True)
 class Preset:
     name: str
     description: str
     tool: str
     args: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PromptArgument:
+    name: str
+    description: str = ""
+    default: str | None = None  # None: the user must give it
+
+
+@dataclass(frozen=True)
+class TeamPrompt:
+    """A prompt of the team's own: ``text`` with ``{argument}`` placeholders, offered next to the built-in ones."""
+
+    name: str
+    text: str
+    title: str = ""
+    description: str = ""
+    arguments: tuple[PromptArgument, ...] = ()
 
 
 SEVERITIES = ("critical", "high", "medium", "low")
@@ -207,10 +302,7 @@ class ScanRule:
     builtin: bool = False
 
     def applies_to(self, inst: InstanceConfig) -> bool:
-        if not self.instances:
-            return True
-        names = {inst.name.lower(), (inst.group or "").lower(), (inst.environment or "").lower()} - {""}
-        return any(i.lower() in names for i in self.instances)
+        return _applies(self.instances, inst)
 
 
 @dataclass(frozen=True)
@@ -218,6 +310,23 @@ class ScanConfig:
     rules: dict[str, ScanRule] = field(default_factory=dict)  # enabled rules, built-in and configured
     exclude: str | None = None  # noise dropped from every rule
     disabled: tuple[str, ...] = ()
+
+
+CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
+
+
+@dataclass(frozen=True)
+class OAuthConfig:
+    """[http.oauth]: the channel for a client on the internet (ChatGPT web), served on a port of its own that
+    a tunnel the user runs forwards to."""
+
+    enabled: bool = False
+    public_url: str = ""  # the tunnel's https address, without a path
+    host: str = "127.0.0.1"
+    port: int = 8766
+    allowed_redirects: tuple[str, ...] = (CHATGPT_REDIRECT,)
+    access_minutes: int = 60
+    refresh_days: int = 7
 
 
 @dataclass(frozen=True)
@@ -229,26 +338,100 @@ class HttpConfig:
     allowed_hosts: tuple[str, ...] = ()
     # whether a shared server may read a repository folder named by a client; None: only on a loopback address
     repo_paths: bool | None = None
+    oauth: OAuthConfig = OAuthConfig()
+
+
+@dataclass(frozen=True)
+class TimeSettings:
+    """How ``ask`` reads time phrases (see graylog_mcp.ask.when). Parts of the day are hours, the end excluded."""
+
+    morning: tuple[int, int] = (6, 12)
+    noon: tuple[int, int] = (11, 14)
+    afternoon: tuple[int, int] = (12, 18)
+    evening: tuple[int, int] = (18, 24)
+    night: tuple[int, int] = (22, 6)  # ends on the next day
+    week_start: int = 0  # 0 Monday .. 6 Sunday
+    day_first: bool = True  # 12/11 is 12 November
+
+
+INTENT_WORDS: dict[str, tuple[str, ...]] = {
+    "count": (
+        "bao nhiêu", "mấy lần", "mấy lỗi", "số lượng", "số lần", "đếm", "tổng số", "tần suất",
+        "how many", "how much", "number of", "count", "how often",
+    ),
+    "compare": (
+        "so với", "so sánh", "thay đổi", "khác gì", "khác nhau", "khác biệt", "tăng", "giảm", "nhiều hơn", "ít hơn",
+        "tệ hơn", "what changed", "compare", "compared", "difference", "differ", "different", "versus", "vs",
+        "more than", "increase", "increased", "decrease", "worse", "better", "than before", "before and after",
+    ),
+    "root_cause": (
+        "nguyên nhân", "do đâu", "tại đâu", "hỏng trước", "hỏng đầu tiên", "dịch vụ nào", "service nào",
+        "root cause", "broke first", "which service", "what is causing", "what's causing", "causing", "cause of",
+        "incident", "outage",
+    ),
+    "error_summary": (
+        "lỗi gì", "lỗi nào", "những lỗi", "các lỗi", "loại lỗi", "tổng hợp", "thống kê", "tóm tắt", "phổ biến",
+        "hay gặp", "nhiều nhất", "which errors", "what errors", "main errors", "top errors", "most common",
+        "common errors", "summary", "summarize", "overview", "kinds of errors",
+    ),
+    "follow_flow": (
+        "bước nào", "từng bước", "lần lại", "go wrong", "goes wrong", "went wrong", "breaks",
+    ),
+    "search": (
+        "log", "logs", "dòng log", "show me", "cho xem", "cho tôi xem", "liệt kê", "list", "find", "tìm", "search",
+    ),
+    "trace_code": ("hành trình", "đi qua đâu", "đi tới đâu", "đi đến đâu", "history of"),
+    # not intents of their own: "why" about the whole system asks for the root cause, about one thing for its flow
+    "why": ("tại sao", "vì sao", "sao lại", "why"),
+    "whole_system": ("hệ thống", "toàn bộ", "system", "everything"),
+}  # fmt: skip
+# other words for an environment, read when one of the two is the name of a configured one
+ENVIRONMENT_WORDS = (("prod", "production"), ("dev", "development"), ("staging", "stg", "stage"))
+
+
+# what of a question on an instance may be handed to a provider of ask, the strictest first
+PROVIDER_DATA = ("none", "question_only", "question_and_logs")
+PROVIDER_TASKS = ("understand", "score")
+# where a part of ask's reading came from when no provider gave it: read by rule, a rule's guess, given by the
+# caller, the default, or named in the question but not placed
+ASK_OWN_SOURCES = ("rules", "guess", "caller", "default", "unread")
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """A model ``ask`` may ask for what its rules could not read (see graylog_mcp.ask.providers)."""
+
+    name: str
+    kind: str  # "jev" (TypeSafe System One), "openai" (a compatible endpoint) or "command" (a program on this machine)
+    can: tuple[str, ...] = PROVIDER_TASKS
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    api_key: str | None = field(default=None, repr=False)
+    command: tuple[str, ...] = ()
+    timeout: float = 30.0  # seconds
 
 
 @dataclass(frozen=True)
 class AskConfig:
-    """The ``ask`` tool: a plain-language question answered with TypeSafe's Jev model choosing what to look at."""
+    """The ``ask`` tool: a plain-language question read by rule, and by the providers listed here for the rest.
 
-    api_key: str | None = field(default=None, repr=False)  # None: ask is off
+    ``api_key`` to ``base_url`` are the settings of the TypeSafe Jev provider, kept where they always were."""
+
+    api_key: str | None = field(default=None, repr=False)
     api_key_env: str = "TYPESAFE_API_KEY"
     model: str = "jev-latest"
     base_url: str = "https://api.typesafe.ai"
+    providers: tuple[ProviderConfig, ...] = ()  # in the order they are asked; none: the rules alone
     min_confidence: float = 0.6  # below this, ask returns a clarifying question instead of guessing
     relevance: float = 0.5  # an error group scoring lower than this is not what the user described
-    max_candidates: int = 30  # error groups scored in one Jev request
-    send_chars: int = 250  # characters of each group's sample sent to Jev
+    max_candidates: int = 30  # error groups scored in one request to a provider
+    send_chars: int = 250  # characters of each group's sample sent to a provider
     language: str = "en"  # "en" or "vi": the language of the summary text
     code_patterns: tuple[str, ...] = ()  # regexes finding order or transaction codes in a question
-
-    @property
-    def enabled(self) -> bool:
-        return self.api_key is not None
+    time: TimeSettings = TimeSettings()
+    # words of a question that say what it asks for, by intent (see graylog_mcp.ask.intent)
+    intent_words: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: dict(INTENT_WORDS))
 
 
 @dataclass(frozen=True)
@@ -282,6 +465,7 @@ class Config:
     redaction: RedactionConfig = RedactionConfig()
     stacktrace: StacktraceConfig = StacktraceConfig()
     presets: dict[str, Preset] = field(default_factory=dict)
+    prompts: dict[str, TeamPrompt] = field(default_factory=dict)
     http: HttpConfig = HttpConfig()
     source: str = "env"
     groups: dict[str, GroupInfo] = field(default_factory=dict)
@@ -295,6 +479,7 @@ class Config:
     out_of_scope: dict[str, str] = field(default_factory=dict)  # instance left out -> its group
     focus: Focus = Focus()
     ask: AskConfig = AskConfig()
+    glossary: Glossary = Glossary()
     scan: ScanConfig = field(default_factory=lambda: _parse_scan({}))
     ui_links: bool = True  # results link to the admin page's log explorer while one runs on this machine
 
@@ -389,6 +574,8 @@ _TOP_KEYS = {
     "scan",
     "http",
     "ask",
+    "glossary",
+    "prompts",
     "repos",
 }
 # what [repos."<repository>"] may set for one repository (a central config naming repositories it cannot read)
@@ -429,17 +616,34 @@ _INSTANCE_KEYS = {
     "timezone",
     "message_api",
     "aggregation_api",
+    "aliases",
+    "provider_data",
+    "remote_access",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
 _REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
-_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
+_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths", "oauth"}
+_OAUTH_KEYS = {"enabled", "public_url", "host", "port", "allowed_redirects", "access_minutes", "refresh_days"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
+_GLOSSARY_KEYS = {"terms", "codes", "error_words"}
+_ERROR_WORD_KEYS = {"either", "technical", "business"}
+_TERM_KEYS = {"aliases", "description", "query", "keywords", "preset", "instances"}
+_CODE_KEYS = {"pattern", "fields", "description", "instances"}
 _ASK_KEYS = {
     "api_key_env", "model", "base_url", "min_confidence", "relevance", "max_candidates", "send_chars", "language",
-    "code_patterns",
+    "code_patterns", "time", "intent_words", "providers", "provider_order",
 }  # fmt: skip
+_PROVIDER_KEYS = {
+    "jev": {"kind", "can", "base_url", "model", "api_key_env", "timeout"},
+    "openai": {"kind", "can", "base_url", "model", "api_key_env", "timeout"},
+    "command": {"kind", "can", "command", "timeout"},
+}
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+_TIME_PARTS = ("morning", "noon", "afternoon", "evening", "night")
+_TIME_KEYS = {*_TIME_PARTS, "week_start", "date_order"}
+_WEEK_STARTS = {"monday": 0, "sunday": 6}
 MAX_BASELINE_PERIODS = 10
 _SCAN_RULE_KEYS = {f for f in ScanRule.__dataclass_fields__ if f not in ("name", "builtin")}
 
@@ -614,7 +818,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     auth = data.get("auth")
     if auth is None:
         auth = "basic" if ("password_env" in data or "username" in data or "username_env" in data) else "token"
-    if auth not in {"token", "basic"}:
+    if auth not in ("token", "basic"):  # a tuple: a list given here is refused, not a TypeError
         raise ConfigError(f"{where}.auth: expected 'token' or 'basic'")
     token = username = password = None
     unavailable = None
@@ -678,6 +882,15 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         if value is not None and (not isinstance(value, str) or not re.fullmatch(_LABEL, value)):
             raise ConfigError(f"{where}.{key}: use letters, digits, '_', '-' or '.'")
         labels[key] = value
+    if not isinstance(data.get("aliases", []), list):
+        raise ConfigError(f"{where}.aliases: expected a list of words")
+    aliases = _str_list(f"{where}.aliases", data.get("aliases", []))
+    provider_data = data.get("provider_data", InstanceConfig.provider_data)
+    if provider_data not in PROVIDER_DATA:
+        raise ConfigError(f"{where}.provider_data: expected one of {', '.join(PROVIDER_DATA)}")
+    remote_access = data.get("remote_access", False)
+    if not isinstance(remote_access, bool):
+        raise ConfigError(f"{where}.remote_access: expected true or false")
     return InstanceConfig(
         name=name,
         url=url,
@@ -689,6 +902,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         auth=auth,
         token=token,
         username=username,
+        username_env=data["username_env"] if auth == "basic" and "username_env" in data else None,
         password=password,
         verify_tls=verify,
         ca_bundle=ca_bundle,
@@ -712,6 +926,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         technical_error_query=inv["technical_error_query"],
         slow_ms=inv["slow_ms"],
         latency_unit=inv["latency_unit"],
+        aliases=aliases,
+        provider_data=provider_data,
+        remote_access=remote_access,
         **apis,
     )
 
@@ -798,6 +1015,64 @@ def _port(value: Any) -> int:
     if port > 65535:
         raise ConfigError(f"http.port: {port} is not a valid TCP port")
     return port
+
+
+_PROMPT_KEYS = {"title", "description", "text", "arguments"}
+
+
+def _parse_prompts(data: Any) -> dict[str, TeamPrompt]:
+    """[prompts.<name>]: text with {argument} placeholders; [prompts.<name>.arguments] names each argument with
+    its description, or a table of description and default (an argument with a default may be left out)."""
+    import string
+
+    from graylog_mcp.prompts import BUILT_IN  # local import: prompts imports the server's SDK
+
+    if not isinstance(data, dict):
+        raise ConfigError("prompts: expected a table of [prompts.<name>]")
+    out = {}
+    for name, item in data.items():
+        where = f"prompts.{name}"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise ConfigError(f"{where}: names may only contain letters, digits, '_' and '-'")
+        if name in BUILT_IN:
+            raise ConfigError(f"{where}: {name!r} is a built-in prompt; choose another name")
+        if not isinstance(item, dict):
+            raise ConfigError(f"{where}: expected a table")
+        _check_keys(where, item, _PROMPT_KEYS)
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ConfigError(f"{where}.text: expected the prompt's text")
+        raw_args = item.get("arguments", {})
+        if not isinstance(raw_args, dict):
+            raise ConfigError(f'{where}.arguments: expected a table of <argument> = "description"')
+        arguments = []
+        for arg, spec in raw_args.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", arg):
+                raise ConfigError(f"{where}.arguments.{arg}: names may only contain letters, digits and '_'")
+            if isinstance(spec, str):
+                arguments.append(PromptArgument(arg, spec))
+            elif isinstance(spec, dict) and set(spec) <= {"description", "default"}:
+                default = spec.get("default")
+                default = None if default is None else str(default)
+                arguments.append(PromptArgument(arg, str(spec.get("description", "")), default))
+            else:
+                raise ConfigError(f"{where}.arguments.{arg}: expected a description, or {{ description, default }}")
+        declared = {a.name for a in arguments}
+        try:
+            fields = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(text) if f is not None]
+        except ValueError as exc:
+            raise ConfigError(f"{where}.text: {exc} (write {{{{ and }}}} for a literal brace)") from None
+        known = ", ".join(sorted(declared)) or "none"
+        for placeholder, spec, conv in fields:
+            if placeholder not in declared or spec or conv:
+                raise ConfigError(
+                    f"{where}.text: {{{placeholder}}} is not one of its arguments ({known}); "
+                    "write {{ and }} for a literal brace"
+                )
+        out[name] = TeamPrompt(
+            name, text, str(item.get("title", "")), str(item.get("description", "")), tuple(arguments)
+        )
+    return out
 
 
 def _parse_presets(data: Any) -> dict[str, Preset]:
@@ -903,6 +1178,91 @@ def parse_scan_rule(name: str, data: Any, base: dict[str, Any] | None = None, bu
     return ScanRule(**out)
 
 
+def _tables(where: str, data: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
+        raise ConfigError(f"{where}: expected a table of [{where}.<name>]")
+    return data
+
+
+def _parse_glossary(data: Any, presets: dict[str, Preset], legacy_patterns: tuple[str, ...]) -> Glossary:
+    """``legacy_patterns``: ``ask.code_patterns``, the older place for the shapes of codes."""
+    if not isinstance(data, dict):
+        raise ConfigError("glossary: expected a table")
+    _check_keys("glossary", data, _GLOSSARY_KEYS)
+    terms = {}
+    for name, item in _tables("glossary.terms", data.get("terms", {})).items():
+        where = f"glossary.terms.{name}"
+        _check_keys(where, item, _TERM_KEYS)
+        aliases = _str_list(f"{where}.aliases", item.get("aliases", []))
+        if not aliases:
+            raise ConfigError(f"{where}.aliases: expected at least one alias")
+        for alias in aliases:
+            if not any(c.isalnum() for c in alias):
+                raise ConfigError(f"{where}.aliases: {alias!r} has no letter or digit")
+        query = _check_query(f"{where}.query", item["query"]) if "query" in item else ""
+        keywords = _str_list(f"{where}.keywords", item.get("keywords", []))
+        preset = item.get("preset")
+        if preset is not None and preset not in presets:
+            known = ", ".join(sorted(presets)) or "none configured"
+            raise ConfigError(f"{where}.preset: unknown preset {preset!r}; available: {known}")
+        if not (query or keywords or preset):
+            raise ConfigError(f"{where}: set query, keywords or preset (a term with none of them does nothing)")
+        terms[name] = GlossaryTerm(
+            name=name,
+            aliases=aliases,
+            description=str(item.get("description", "")),
+            query=query,
+            keywords=keywords,
+            preset=preset,
+            instances=_str_list(f"{where}.instances", item.get("instances", [])),
+        )
+    codes = {}
+    for name, item in _tables("glossary.codes", data.get("codes", {})).items():
+        where = f"glossary.codes.{name}"
+        _check_keys(where, item, _CODE_KEYS)
+        pattern = item.get("pattern")
+        if not isinstance(pattern, str):
+            raise ConfigError(f"{where}.pattern: expected a regular expression")
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(f"{where}.pattern: {pattern!r} is not a regular expression ({exc})") from None
+        if compiled.search(""):
+            raise ConfigError(f"{where}.pattern: {pattern!r} matches empty text")
+        codes[name] = CodeKind(
+            name=name,
+            pattern=pattern,
+            fields=_str_list(f"{where}.fields", item.get("fields", [])),
+            description=str(item.get("description", "")),
+            instances=_str_list(f"{where}.instances", item.get("instances", [])),
+        )
+    for n, pattern in enumerate(legacy_patterns, 1):
+        codes.setdefault(f"ask_code_{n}", CodeKind(name=f"ask_code_{n}", pattern=pattern))
+    said = data.get("error_words", {})
+    if not isinstance(said, dict):
+        raise ConfigError("glossary.error_words: expected a table")
+    _check_keys("glossary.error_words", said, _ERROR_WORD_KEYS)
+    for key, value in said.items():
+        if not isinstance(value, list):
+            raise ConfigError(f"glossary.error_words.{key}: expected a list of words")
+    error_words = ErrorWords(**{key: _str_list(f"glossary.error_words.{key}", value) for key, value in said.items()})
+    return Glossary(terms=terms, codes=codes, error_words=error_words)
+
+
+def _check_aliases(glossary: Glossary, instances: dict[str, InstanceConfig]) -> None:
+    """One alias means one term wherever both apply: the same words must not read as two things."""
+    for inst in instances.values():
+        owner: dict[str, str] = {}
+        for term in glossary.terms_for(inst):
+            for alias in term.aliases:
+                other = owner.setdefault(alias_key(alias), term.name)
+                if other != term.name:
+                    raise ConfigError(
+                        f"glossary: alias {alias!r} belongs to both terms {other!r} and {term.name!r} on instance "
+                        f"{inst.name!r}; give each alias to one term, or limit the terms with instances"
+                    )
+
+
 def _parse_scan(data: Any) -> ScanConfig:
     if not isinstance(data, dict):
         raise ConfigError("scan: expected a table")
@@ -939,18 +1299,86 @@ def _unit_float(where: str, value: Any) -> float:
     return float(value)
 
 
-def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
-    """``from_repo``: the table comes from a repository's own file, which must not choose where the key and the
-    error text are sent, nor which environment variable is sent as the key."""
+def _repo_files(source: Path, root: Path | None) -> list[dict[str, Any]]:
+    """What a repository's own files hold: the config file when it is one, and what it includes from inside
+    the repository. A user or central file it includes from outside is not the repository's, and neither is a
+    file outside that includes one."""
+    source = source.resolve()
+    root = root.resolve() if root is not None else None
+    # outside any git repository (an unpacked archive) a project config still speaks for the folder it lies in
+    folder = source.parent if source.name in PROJECT_CONFIG_NAMES else None
+
+    def owned(path: Path) -> bool:
+        inside = [base for base in (root, folder) if base is not None]
+        return path.name in PROJECT_CONFIG_NAMES or any(path.is_relative_to(base) for base in inside)
+
+    tables: list[dict[str, Any]] = []
+    pending, seen = [source], {source}
+    while pending:
+        path = pending.pop()
+        try:
+            with path.open("rb") as fh:
+                data = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+            continue  # read_config_file has already said what is wrong with it
+        if owned(path):
+            tables.append(data)
+        includes = data.get("include", [])
+        for item in [includes] if isinstance(includes, str) else includes if isinstance(includes, list) else []:
+            try:
+                inner = (path.parent / Path(item).expanduser()).resolve()
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            if inner not in seen and inner.is_file():
+                seen.add(inner)
+                pending.append(inner)
+    return tables
+
+
+def _has_key(data: Any, key: str) -> bool:
+    if isinstance(data, dict):
+        return key in data or any(_has_key(v, key) for v in data.values())
+    return False
+
+
+def _refuse_remote_in_repo(files: Sequence[dict[str, Any]]) -> None:
+    """A repository's own file must not open an environment to the internet: cloning one is not consenting."""
+    for data in files:
+        http = data.get("http")
+        if isinstance(http, dict) and "oauth" in http:
+            raise ConfigError(
+                "http.oauth: not allowed in a repository's own config file (it opens a channel from the "
+                "internet); set it in your user config"
+            )
+        if _has_key({k: v for k, v in data.items() if k in ("instances", "groups")}, "remote_access"):
+            raise ConfigError(
+                "remote_access: not allowed in a repository's own config file (it offers an environment to "
+                "clients on the internet); set it in your user config"
+            )
+
+
+def check_repository_files(files: Sequence[dict[str, Any]]) -> None:
+    """What a repository's own files may not set: where the API key and the questions are sent, which
+    environment variable is sent as the key, which program runs, and the channel from the internet. Turning
+    every provider off is theirs to ask for: it only keeps things on the machine."""
+    _refuse_remote_in_repo(files)
+    for data in files:
+        table = data.get("ask")
+        if not isinstance(table, dict):
+            continue
+        for name in ("base_url", "api_key_env", "providers", "provider_order"):
+            if name in table and not (name == "provider_order" and table[name] == []):
+                raise ConfigError(
+                    f"ask.{name}: not allowed in a repository's own config file (it would decide where the API "
+                    "key and the questions go, or which program runs); set it in your user config or a central "
+                    "config instead"
+                )
+
+
+def _parse_ask(data: Any) -> AskConfig:
     if not isinstance(data, dict):
         raise ConfigError("ask: expected a table")
     _check_keys("ask", data, _ASK_KEYS)
-    for name in ("base_url", "api_key_env") if from_repo else ():
-        if name in data:
-            raise ConfigError(
-                f"ask.{name}: not allowed in a repository's own config file (it would decide where the API key "
-                "goes); set it in your user config or a central config instead"
-            )
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
@@ -970,18 +1398,139 @@ def _parse_ask(data: Any, from_repo: bool = False) -> AskConfig:
     model = data["model"] if "model" in data else secrets.get(ASK_MODEL_VAR) or AskConfig.model
     if not isinstance(model, str) or not model:
         raise ConfigError("ask.model: expected a model name")
+    jev = ProviderConfig("jev", "jev", base_url=base_url.rstrip("/"), model=model, api_key_env=env)
     return AskConfig(
         api_key=secrets.get(env),
         api_key_env=env,
         model=model,
         base_url=base_url.rstrip("/"),
+        providers=_parse_providers(data, jev),
         min_confidence=_unit_float("ask.min_confidence", data.get("min_confidence", AskConfig.min_confidence)),
         relevance=_unit_float("ask.relevance", data.get("relevance", AskConfig.relevance)),
         max_candidates=_positive_int("ask.max_candidates", data.get("max_candidates", AskConfig.max_candidates)),
         send_chars=_positive_int("ask.send_chars", data.get("send_chars", AskConfig.send_chars)),
         language=language,
         code_patterns=patterns,
+        time=_parse_time(data.get("time", {})),
+        intent_words=_parse_intent_words(data.get("intent_words", {})),
     )
+
+
+def _parse_providers(ask: dict[str, Any], jev: ProviderConfig) -> tuple[ProviderConfig, ...]:
+    """The providers in the order they are asked. ``jev``: the TypeSafe settings of ``[ask]`` itself, which a
+    provider of kind "jev" starts from and which alone, with a key, are the provider when none is listed."""
+    from graylog_mcp import secrets
+
+    declared = ask.get("providers", {})
+    if not isinstance(declared, dict):
+        raise ConfigError("ask.providers: expected a table of [ask.providers.<name>]")
+    if "provider_order" not in ask:
+        if declared:
+            raise ConfigError(
+                f"ask.providers declares {', '.join(declared)} but ask.provider_order is missing: list the "
+                "providers to use in the order to ask them, or [] for none"
+            )
+        key = secrets.get(jev.api_key_env)
+        return (replace(jev, api_key=key),) if key else ()
+    order = ask["provider_order"]
+    if not isinstance(order, list) or not all(isinstance(name, str) for name in order):
+        raise ConfigError("ask.provider_order: expected a list of provider names, e.g. ['jev']")
+    providers = []
+    for name in order:
+        if order.count(name) > 1:
+            raise ConfigError(f"ask.provider_order: {name!r} is listed twice")
+        if name not in declared:
+            known = ", ".join(declared) or "none"
+            raise ConfigError(f"ask.provider_order: {name!r} is not declared in [ask.providers] (declared: {known})")
+        providers.append(_parse_provider(name, declared[name], jev))
+    return tuple(providers)
+
+
+def _parse_provider(name: str, data: Any, jev: ProviderConfig) -> ProviderConfig:
+    from graylog_mcp import secrets
+
+    where = f"ask.providers.{name}"
+    if not re.fullmatch(_LABEL, name):
+        raise ConfigError(f"{where}: a provider's name may only contain letters, digits, '_', '-', '.'")
+    if name in ASK_OWN_SOURCES:
+        # an answer says where each part of its reading came from: a provider so named would pass for the rules
+        raise ConfigError(f"{where}: the name {name!r} is reserved; choose another, e.g. 'gateway'")
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: expected a table")
+    kind = data.get("kind")
+    if kind not in _PROVIDER_KEYS:
+        raise ConfigError(f"{where}.kind: expected one of {', '.join(_PROVIDER_KEYS)}")
+    _check_keys(where, data, _PROVIDER_KEYS[kind])
+    can = data.get("can", list(PROVIDER_TASKS))
+    if not isinstance(can, list) or not can or not set(can) <= set(PROVIDER_TASKS):
+        raise ConfigError(f"{where}.can: expected a list of {' and/or '.join(PROVIDER_TASKS)}")
+    timeout = data.get("timeout", 60 if kind == "command" else 30)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 300:
+        raise ConfigError(f"{where}.timeout: expected seconds from 1 to 300")
+    common: dict[str, Any] = {"name": name, "kind": kind, "can": tuple(t for t in PROVIDER_TASKS if t in can)}
+    common["timeout"] = float(timeout)
+    if kind == "command":
+        command = data.get("command")
+        if not isinstance(command, list) or not command or not all(isinstance(a, str) and a for a in command):
+            raise ConfigError(
+                f"{where}.command: expected the program and its arguments as a list, e.g. ['acme-llm', '--json']"
+            )
+        return ProviderConfig(command=tuple(command), **common)
+    defaults = jev if kind == "jev" else ProviderConfig(name, kind)
+    base_url, model = data.get("base_url", defaults.base_url), data.get("model", defaults.model)
+    if not isinstance(base_url, str) or not base_url:
+        raise ConfigError(f"{where}.base_url: expected the URL of the endpoint, e.g. https://llm.example.com/v1")
+    url = urlparse(base_url)
+    local = kind == "openai" and url.scheme == "http" and url.hostname in _LOOPBACK
+    if url.scheme != "https" and not local:
+        allowed = "https://, or http:// on this machine (127.0.0.1, localhost)" if kind == "openai" else "https://"
+        raise ConfigError(f"{where}.base_url: must start with {allowed}")
+    if not isinstance(model, str) or not model:
+        raise ConfigError(f"{where}.model: expected a model name")
+    env = data.get("api_key_env", defaults.api_key_env)
+    if env:
+        env = check_env_name(env, f"{where}.api_key_env")
+    return ProviderConfig(
+        base_url=base_url.rstrip("/"), model=model, api_key_env=env, api_key=secrets.get(env) if env else None, **common
+    )
+
+
+def _parse_intent_words(data: Any) -> dict[str, tuple[str, ...]]:
+    """The built-in words, each list replaced by the one the config gives for it."""
+    if not isinstance(data, dict):
+        raise ConfigError("ask.intent_words: expected a table")
+    _check_keys("ask.intent_words", data, set(INTENT_WORDS))
+    words = dict(INTENT_WORDS)
+    for key, value in data.items():
+        if not isinstance(value, list):
+            raise ConfigError(f"ask.intent_words.{key}: expected a list of words")
+        words[key] = _str_list(f"ask.intent_words.{key}", value)
+    return words
+
+
+def _parse_time(data: Any) -> TimeSettings:
+    if not isinstance(data, dict):
+        raise ConfigError("ask.time: expected a table")
+    _check_keys("ask.time", data, _TIME_KEYS)
+    values: dict[str, Any] = {}
+    for part in _TIME_PARTS:
+        if part not in data:
+            continue
+        hours = data[part]
+        whole = isinstance(hours, list) and len(hours) == 2 and all(type(h) is int and 0 <= h <= 24 for h in hours)
+        # only the night runs past midnight
+        if not whole or hours[0] == hours[1] or (part != "night" and hours[0] > hours[1]):
+            raise ConfigError(f"ask.time.{part}: expected [first hour, last hour] from 0 to 24, e.g. [6, 12]")
+        values[part] = (hours[0], hours[1])
+    if "week_start" in data:
+        if data["week_start"] not in _WEEK_STARTS:
+            raise ConfigError("ask.time.week_start: expected 'monday' or 'sunday'")
+        values["week_start"] = _WEEK_STARTS[data["week_start"]]
+    if "date_order" in data:
+        if data["date_order"] not in ("DMY", "MDY"):
+            raise ConfigError("ask.time.date_order: expected 'DMY' or 'MDY'")
+        values["day_first"] = data["date_order"] == "DMY"
+    return TimeSettings(**values)
 
 
 def _parse_http(data: Any) -> HttpConfig:
@@ -1004,13 +1553,61 @@ def _parse_http(data: Any) -> HttpConfig:
         auth_token=token,
         allowed_hosts=_str_list("http.allowed_hosts", data.get("allowed_hosts", [])),
         repo_paths=repo_paths,
+        oauth=_parse_oauth(data.get("oauth", {})),
+    )
+
+
+def _redirect_ok(url: str) -> bool:
+    parts = urlsplit(url)
+    local = parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")
+    return (parts.scheme == "https" or local) and bool(parts.hostname) and not parts.fragment
+
+
+def _parse_oauth(data: Any) -> OAuthConfig:
+    where = "http.oauth"
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: expected a table")
+    _check_keys(where, data, _OAUTH_KEYS)
+    enabled = data.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"{where}.enabled: expected true or false")
+    public_url = data.get("public_url", "")
+    if not isinstance(public_url, str):
+        raise ConfigError(f"{where}.public_url: expected a string")
+    public_url = public_url.strip().rstrip("/")
+    parts = urlsplit(public_url)
+    if public_url and (parts.scheme != "https" or not parts.hostname or parts.path or parts.query or parts.fragment):
+        raise ConfigError(
+            f"{where}.public_url: expected the tunnel's https address alone, e.g. https://logs.example.com"
+        )
+    if enabled and not public_url:
+        raise ConfigError(f"{where}.public_url: required when enabled: the https address your tunnel forwards")
+    redirects = _str_list(f"{where}.allowed_redirects", data.get("allowed_redirects", [CHATGPT_REDIRECT]))
+    for url in redirects:
+        if not _redirect_ok(url):
+            raise ConfigError(f"{where}.allowed_redirects: {url!r} is not an https address")
+    access = _positive_int(f"{where}.access_minutes", data.get("access_minutes", OAuthConfig.access_minutes))
+    refresh = _positive_int(f"{where}.refresh_days", data.get("refresh_days", OAuthConfig.refresh_days))
+    if access > 1440 or refresh > 90:
+        raise ConfigError(f"{where}: access_minutes is at most 1440 (a day), refresh_days at most 90")
+    host = data.get("host", OAuthConfig.host)
+    if not isinstance(host, str) or not host:
+        raise ConfigError(f"{where}.host: expected an address")
+    return OAuthConfig(
+        enabled=enabled,
+        public_url=public_url,
+        host=host,
+        port=_port(data.get("port", OAuthConfig.port)),
+        allowed_redirects=redirects,
+        access_minutes=access,
+        refresh_days=refresh,
     )
 
 
 _LABEL = r"[A-Za-z0-9_.-]+"
-# keys a group may set for all of its environments
+# keys a group may set for all of its environments; remote_access is decided per environment (dev is not prod)
 _GROUP_SHARED_KEYS = (_INSTANCE_KEYS - {"url", "description", "group", "environment", "token_env", "username_env",
-                      "password_env", "username"})  # fmt: skip
+                      "password_env", "username", "remote_access"})  # fmt: skip
 _GROUP_KEYS = _GROUP_SHARED_KEYS | {"description", "default_environment", "environments", "repos"}
 _ENVIRONMENT_KEYS = _GROUP_SHARED_KEYS | {"description"}
 
@@ -1034,7 +1631,16 @@ def _with_env_defaults(inst: dict[str, Any], env_defaults: dict[str, dict[str, A
     merged = {**shared, **inst}
     if isinstance(shared.get("group_fields"), dict) and isinstance(inst.get("group_fields"), dict):
         merged["group_fields"] = {**shared["group_fields"], **inst["group_fields"]}
+    _add_aliases(merged, shared, inst)
     return merged
+
+
+def _add_aliases(merged: dict[str, Any], *levels: dict[str, Any]) -> None:
+    """Words for an environment, for a group and for one instance are all words for that instance: unlike the
+    other settings, a narrower level adds to them instead of replacing them."""
+    said = [level["aliases"] for level in levels if isinstance(level.get("aliases"), list)]
+    if len(said) > 1:
+        merged["aliases"] = list(dict.fromkeys(word for words in said for word in words))
 
 
 def _expand_groups(
@@ -1074,6 +1680,7 @@ def _expand_groups(
             merged = {**shared, **edata}
             if isinstance(shared.get("group_fields"), dict) and isinstance(edata.get("group_fields"), dict):
                 merged["group_fields"] = {**shared["group_fields"], **edata["group_fields"]}
+            _add_aliases(merged, shared, edata)
             merged = _with_env_defaults(merged, env_defaults, env)
             env_label = str((env_defaults.get(env) or {}).get("description") or env)
             merged.setdefault("description", f"{desc} ({env_label})" if desc else f"{group} {env_label}")
@@ -1228,8 +1835,14 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
-    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    """Apply ``include = "path"`` (or a list): included files first, this file on top. A file with a ``[bundle]``
+    table is a team bundle, checked again here so that one edited by hand still sets shared settings only."""
     data = dict(data)
+    if "bundle" in data:
+        from graylog_mcp.bundle import check_bundle
+
+        check_bundle(data, str(seen[-1]) if seen else "config")
+        del data["bundle"]
     includes = data.pop("include", [])
     if isinstance(includes, str):
         includes = [includes]
@@ -1492,6 +2105,13 @@ def parse_config(
     for inst in instances.values():
         if inst.group and inst.group not in groups:
             groups[inst.group] = GroupInfo(inst.group)
+    presets = _parse_presets(data.get("presets", {}))
+    repo_root = repo.root if repo is not None else None
+    if from_file:
+        check_repository_files(_repo_files(Path(source), repo_root))
+    ask = _parse_ask(data.get("ask", {}))
+    glossary = _parse_glossary(data.get("glossary", {}), presets, ask.code_patterns)
+    _check_aliases(glossary, instances)  # before the scope narrows them: a clash is a mistake wherever it runs
 
     default_group = data.get("default_group")
     default_environment = data.get("default_environment")
@@ -1559,13 +2179,12 @@ def parse_config(
         limits=_parse_limits(data.get("limits", {})),
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),
-        presets=_parse_presets(data.get("presets", {})),
+        presets=presets,
+        prompts=_parse_prompts(data.get("prompts", {})),
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
-        # a project config by name too: outside any git repository (an unpacked archive) own_file is false
-        ask=_parse_ask(
-            data.get("ask", {}), from_repo=own_file or (from_file and Path(source).name in PROJECT_CONFIG_NAMES)
-        ),
+        ask=ask,
+        glossary=glossary,
         source=source,
         ui_links=_parse_ui_links(data.get("ui_links", "auto")),
     )

@@ -132,6 +132,20 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 - `trace_request` — follows a correlation/request/trace id through the configured `trace_fields` on all
   streams (falls back to full text); returns a cross-service timeline, per-service steps with durations
   and the first error.
+  - A business code (an order or transaction number) works too: when the messages holding it carry a trace id,
+    the result lists the requests the code went through (`traces`, at most 10), details the one with an error or
+    the most services (`shown_trace`) and adds the messages that hold the code without a trace id (`unlinked`).
+    A code whose shape the [glossary](#glossary-your-teams-words) knows is looked up in the fields named there
+    before the text is searched, so a number that also appears in unrelated lines leads only to its own requests;
+    `code` names the kind of code and the fields that held it.
+  - Business errors (`business_error_query`, by default HTTP 4xx) are marked apart from technical ones, with the
+    same definitions as the Logs screen: `error` on the line, `business_errors` per service and step,
+    `first_business_error`.
+  - A trace longer than `limit` keeps its error lines (the earliest `limit` of each kind, at least 50) and its
+    last line next to the earliest messages; `hidden` counts what is left out.
+  - A request whose services log the id under different trace fields is followed through all of them.
+  - When nothing is found, one look in a wider range says how many messages match there and when the newest was
+    logged (`suggestions`).
 - `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
   disappeared or shrank, normalised per hour.
 
@@ -268,6 +282,54 @@ Writing rules that are fast and accurate:
 Learned fixes live in `~/.config/graylog-mcp/learned.json`, per instance; the admin page (Activity > Learned) shows
 each one with its counts, weight and whether it applies by itself, and forgets one on request. `GRAYLOG_MCP_LEARN=off` stops learning and applying learned fixes; the deterministic fixes stay.
 
+## Glossary: your team's words
+
+People who know the business say "thanh toán", "refund" or "order ORD-1001", not `service:payment`. The glossary
+is where a team writes down once what its words stand for in the logs:
+
+```toml
+[glossary.terms.payment]
+description = "payment service"
+aliases = ["thanh toán", "payment"]
+query = "service:payment"            # ANDed into the search when a question names the term
+
+[glossary.terms.refund]
+aliases = ["hoàn tiền", "refund"]
+keywords = ["refund"]                # the English words the logs use for it
+preset = "refund_errors"             # optional: one of your [presets] about this term
+
+[glossary.codes.order]
+pattern = 'ORD-\d+'
+fields = ["order_id"]                # searched before the text
+```
+
+A term needs `aliases` and at least one of `query`, `keywords` and `preset`. Only `query` narrows a search today;
+`keywords` and `preset` are listed for the model of a chat client, which can search for the words or run the preset
+itself. How a question is read:
+
+- An alias matches as whole words, whatever the case and spacing: "refund" does not match "refunded".
+- The longest phrase wins: with both "cổng thanh toán" and "thanh toán" in the glossary, a question about "cổng
+  thanh toán" names only the first.
+- Accents are optional when typing: "thanh toan" matches "thanh toán". Words typed with accents only match the
+  alias with those accents, and words typed without any that fit two terms are reported, not guessed. Both places
+  of a tone mark are the same word: "hoá đơn" and "hóa đơn" need one alias.
+- One alias means one term: the same alias on two terms of one instance stops the load, naming both. Systems that
+  use one word for different things limit each term with `instances` (instance, group or environment names), as
+  scan rules do.
+
+Who reads it:
+
+- **`describe(what="glossary")`** lists it, so the model of a chat client can turn the user's words into the
+  right query itself.
+- **`trace_request`** looks a code up in the `fields` of its kind before searching the text. A bare number such as
+  `100200` also appears in durations, amounts and ids of other things; in `order_id` it is only the order.
+- **`ask`** turns a term into a filter and says so in its answer, and finds codes by their `pattern`
+  (see [below](#ask-in-plain-language)).
+
+Keep an alias to what its term really covers. "Checkout" usually spans more than the payment service; pointing it
+at `service:payment` gives answers that look right and miss logs. The line "… is understood as …" in `ask`'s answer
+is where a wrong mapping shows.
+
 ## Ask in plain language
 
 For people who do not write Lucene or know field names. `ask` takes a question, works out what it means, finds the
@@ -279,41 +341,273 @@ ask("Thanh toán bị lỗi timeout trên prod trong 1 giờ qua, đi qua nhữn
 ask("How many errors were there yesterday?")
 ```
 
-It is **off by default**. Bring your own key: run `graylog-mcp login --ask` (it asks for the key without echoing
-it, tests it with one request and saves it in `~/.config/graylog-mcp/secrets.toml`), or set `TYPESAFE_API_KEY` in the
-environment, then restart the server. Without a key the tool is not even listed and nothing leaves the machine.
-`--model NAME` and `--base-url https://...` on the same command save your choice of model and endpoint (a key for
-another account or a proxy of your own); the environment variables `GRAYLOG_MCP_ASK_MODEL` and
-`GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model` in a config file wins over both. The endpoint must speak
-TypeSafe's System One API (`POST /v1/systemone`). `graylog-mcp logout --ask` forgets the saved key, model and
-endpoint.
-The default model is TypeSafe's Jev, reached over HTTPS at `https://api.typesafe.ai`. It only chooses: the answer is built
-from the existing tools and fixed sentences, and starts with a line such as "Understood: prod, last hour, errors
-only" so the asker can correct it.
+It **needs no model and no key**: the question is read by rule, and with no provider configured nothing leaves
+the machine but the read-only requests to Graylog. A model is an option you add (see [Providers](#providers)); it
+is then asked only for what the rules could not read. Either way the answer is built from the existing tools and
+fixed sentences, and starts with what was understood, so the asker can correct it:
 
-**What is sent to TypeSafe**: the question, the names and descriptions of your configured instances, and up to
-`max_candidates` (30) error messages, each redacted like every other output and cut to `send_chars` (250) characters.
-Never raw logs, field values the redactor masks, or anything from the Graylog token. Graylog itself is still only
-read (GET and the read-only searches).
+```
+Understood: prod, "trong 15 phút qua" (2026-11-19 10:15 to 10:30), technical and business errors.
+"thanh toán" is understood as payment service, filtered by service:payment.
+```
 
-When the question is too vague ("Is the system ok?") `ask` returns a `clarify` text instead of guessing; when
-nothing in the period matches it says so with the best score; when two errors match about equally it lists them.
-An error without a trace id gets a hint instead of a flow. `cost` in the result counts the requests made.
+**What is read by rule.** Six things are read from the question itself:
+
+| Read by rule | Examples | Set in |
+|---|---|---|
+| What is asked | "how many", "bao nhiêu": a count; "so với", "what changed": a comparison; "nguyên nhân", "which service broke first": the root cause; "các lỗi chính", "top errors": a summary; "xem log", "show me": log lines; a code: its history | `[ask.intent_words]` |
+| The environment | "ở prod", "on production", "shop dev", an alias such as "môi trường thật" | instance names, groups, `aliases` |
+| Time, as an exact range in the instance's timezone | "15 phút qua", "last 2 hours", "sáng nay", "yesterday afternoon", "tuần trước", "từ 9h đến 11h", "lúc 9h tối qua", "since 9am", "ngày 12/11", "từ 12/11 đến 15/11", "ngày 12 tháng 11" | `[ask.time]` |
+| Kind of error | "lỗi" or "error" alone: technical and business; "timeout", "exception", "sập": technical; "bị từ chối", "declined", "invalid": business | `[glossary.error_words]` |
+| The team's terms | "thanh toán" as `service:payment` | `[glossary.terms]` |
+| Codes | `ORD-1001` | `[glossary.codes]` |
+
+Time phrases work with or without Vietnamese accents (in a question typed with accents, a bare word stays what
+it is: "ngay" is not "ngày"). "Last week" and "tuần trước" are the previous calendar week, "past week" and "tuần
+qua" the last 7 days; a single clock time ("lúc 9h") is half an hour either side, and an hour said with its part
+of the day is the hour of that part ("9h tối" is 21:00); a day without a year is the last such day. A phrase that
+is only half understood is not read at all, because a wrong period is searched in silence: "vài ngày qua" (how
+many?), a date that does not exist, or "12/11" with nothing saying it is a day (write "ngày 12/11", or add the
+year; alone it is as much a share as "3/4"). A question that names no period covers the last 24 hours, and the
+first line says so. One whose words of time the rules cannot place ("tuần rồi", "5m ago") is passed to a provider
+when there is one, which picks one of five periods (asked back when it is unsure); without one the last 24 hours
+are searched and the summary says a period was named but not read.
+
+**Sure, guessed, or asked back.** Words that name what is asked ("how many", "so với", "nguyên nhân") are read for
+sure, and no provider is asked about them. A question with only an error word ("thanh toán bị timeout") is most
+likely about following that error, and one with only a term of the team ("thanh toán hôm nay") about its log
+lines: those readings are **guesses**. With a provider the guess is checked with it. Without one the question is
+answered as guessed, `guessed` in the result names the reading and the others it could be, and the summary says
+how to ask for those ("Read as a request to follow one error across services; that is a guess. If you meant
+something else, ask for it in words: list the main errors ("what are the main errors of …"); …"). A question
+nothing can be read from ("Is the system ok?") is asked back: `clarify`, with up to three `readings`.
+
+The environment: named by the caller, else read from the question, else the default one. Words narrow each other
+("shop prod"). A word that still fits several instances ("prod" when two groups have one and none is the default
+group), or words that exclude each other ("prod and dev"), are not guessed: `clarify` lists the instances in
+`options`. A provider, when there is one, is asked to choose only among those; it is never asked for an
+environment the question does not name. `aliases = ["môi trường thật"]` adds words for an instance; set on a
+group or on `[environments.prod]` they are words for all of its instances, and the levels add up. "production",
+"development" and "stg" are known for environments named `prod`, `dev` and `staging`.
+
+On 90 questions written by another hand than the rules', without sight of them
+(`tests/data/held_questions.py`), the rules read what is asked right in 86%; the 66 they read for sure are all
+right, the guesses about half. The environment is read right in all of them. These are sample questions with
+neutral names, not questions collected from users.
+
+Technical and business errors are the instance's own definitions (`technical_error_query`, `business_error_query`;
+by default the error query or HTTP 5xx, and HTTP 4xx). The kind is applied to counts, searches and the search for
+a described error; a count of "errors" gives both kinds apart (`result.by_kind`). An instance that defines no
+business errors is counted on technical ones and the summary says so. The error summary, the root cause analysis
+and the comparison look at the instance's `error_query` alone: when the question named business errors, the
+summary says they are not part of that answer.
+
+`understood` in the result holds the same reading as data, with where each part came from (`sources`: `rules`,
+`guess`, `caller`, `default`, or the name of the provider that chose it), and `ran` is the Graylog query that ran.
+
+**Which error is meant.** Without a provider that may see the logs, the error groups of the period are matched by
+the words of the question: a group that holds one of them is a match, its score the share of the words it holds
+(`scored_by: "rules"`). Words that only carry the sentence, or that were read as the time, the environment or what
+is asked, are not looked for; a term's `keywords` are. When no group holds a word, which is usual for a question
+in Vietnamese about logs in English, the most frequent errors of the period are listed and the summary says the
+words were not found: give the terms your team uses English `keywords` in the glossary, or add a provider. With a
+provider that may score, it judges each group against the question (`scored_by` names it); when nothing in the
+period matches it says so with the best score. Either way, two errors that match about equally are listed, not
+picked between. A question about "errors" also gets each kind counted apart (`by_kind`).
+
+An error without a trace id cannot be followed across services: `around` then holds the lines of the same source
+within 30 seconds of it, and the hint says they are near in time, not one request. `cost` in the result counts the
+requests made, next to the cap (`graylog_cap`, from `[limits] max_requests`, 20), and what each provider was sent
+(`provider_requests`, and `providers` with the requests and bytes sent to each). A question that would go past the
+cap is answered in part and says what it left out: "Checked 2 of 3 codes; 1 not checked: 15/20 Graylog requests
+used."
+
+`ask` reads the [glossary](#glossary-your-teams-words) itself, and hands nothing of it to a provider: the `query` of a term named in the
+question is ANDed into the search, `understood.topics` lists the term, and the summary says how it was read
+("thanh toán" is understood as payment service, filtered by service:payment). A term without a `query` is named
+too, with the note that it does not narrow the search. Two terms with a `query` narrow together (only lines
+matching both count), and the summary says so. Words typed without accents that fit two terms are not guessed: the
+summary names both. Codes are found with `[glossary.codes]`, and a question about a code is not narrowed by a term,
+because a code's history crosses services.
 
 ```toml
 [ask]
-# api_key_env = "TYPESAFE_API_KEY"   # name of the variable, never the key
 # language = "en"                    # "en" or "vi": the language of the summary text
-# min_confidence = 0.6               # below this, ask asks back
-# relevance = 0.5                    # an error group scoring lower is "not what you described"
-# code_patterns = ['ORD-\d+']        # lets "what happened to order ORD-123?" find the code
-# model, base_url, max_candidates, send_chars
+# min_confidence = 0.6               # a provider's choice below this is asked back
+# relevance = 0.5                    # an error group a provider scores lower is "not what you described"
+# code_patterns = ['ORD-\d+']        # older name of [glossary.codes]: lets "what happened to order ORD-123?" find the code
+# max_candidates, send_chars         # error groups looked at, and characters of each a provider may see
+
+[ask.intent_words]                   # a key given here replaces the built-in list of that key
+# count = ["bao nhiêu", "how many"]  # also compare, root_cause, error_summary, follow_flow, search, trace_code
+
+[ask.time]
+# morning = [6, 12]                  # hours of "sáng" / "morning"; also noon [11, 14], afternoon [12, 18],
+#                                    # evening [18, 24], night [22, 6]
+# week_start = "monday"              # or "sunday"
+# date_order = "DMY"                 # "MDY": 11/12 is 12 November
+
+[glossary.error_words]               # a key given here replaces the built-in list of that key
+# either = ["lỗi", "error", "failed"]
+# technical = ["timeout", "exception"]
+# business = ["bị từ chối", "declined"]
 ```
 
-Limits: the error groups come from the newest 500 error messages of the period, and the traces of one error are
-looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
-(`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
-`api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
+How the described error is found: every error line of the period when one read (`max_limit`, 500) holds them all;
+else the newest lines of six equal parts of the period, so an error from its first hour is still a candidate.
+Where the instance has the field of `group_fields.exception`, one aggregation adds every exception of the period,
+also one no sampled line showed, with its exact count (`exception_count` on a match: the lines with that
+exception, whatever their message). The count of a match itself is exact when every line was read; otherwise it is
+scaled from the sample, marked `estimated` and written with a "~" in the summary. Set that field to what your logs
+use (`graylog-mcp detect` suggests it). At most half of the size cap goes to the matches (`matches_omitted` counts
+the rest). The traces of one error are looked up in one query of at most 500
+messages. The trace and service fields are the instance's (`trace_fields`, `service_fields`).
+
+### Providers
+
+A provider is a model `ask` may ask for what its rules left open. None is needed, none is built in as a
+requirement, and you can list several. It can be given two tasks (`can`):
+
+- **understand**: choose what a question asks for, its period and its environment from lists the server gives,
+  and give English words for the error it describes;
+- **score**: judge which of the error groups of the period the question describes. This is the task that sees
+  text from the logs.
+
+A provider only chooses. Whatever it replies, `ask` keeps a choice only when it is one of those offered, a
+probability only from 0 to 1, and words only when they are plain words: nothing a model writes becomes a field,
+a filter or a query.
+
+| `kind` | What it is | Settings |
+|---|---|---|
+| `jev` | TypeSafe's System One API (`POST /v1/systemone`) | `api_key_env`, `model`, `base_url` (https) |
+| `openai` | Any OpenAI-compatible Chat Completions endpoint: a gateway, a model served on this machine, a hosted API | `base_url` (https, or http on `127.0.0.1` / `localhost`), `model`, `api_key_env` (optional) |
+| `command` | A program on this machine, for instance a command-line client you are signed in to | `command` (the program and its arguments, as a list), `timeout` |
+
+```toml
+[ask]
+provider_order = ["local", "jev"]     # who is asked first; [] turns every provider off
+
+[ask.providers.local]
+kind = "openai"
+base_url = "http://127.0.0.1:4000/v1"
+model = "acme-default"
+# api_key_env = "ACME_GATEWAY_KEY"    # the name of the variable; leave out for an endpoint without a key
+can = ["understand", "score"]         # the default
+
+[ask.providers.jev]
+kind = "jev"
+can = ["score"]
+
+[ask.providers.cli]
+kind = "command"
+command = ["acme-llm", "--json"]
+can = ["understand"]
+# timeout = 60                        # seconds; 30 for the two HTTP kinds
+```
+
+| `provider_order` | What happens |
+|---|---|
+| absent, and no `[ask.providers]` | As before this option existed: with a TypeSafe key saved, Jev is the one provider, for both tasks; without a key, the rules alone |
+| `[]` | The rules alone, also when a key is still saved |
+| a list | Those providers, in that order, each for what it `can`. A name that `[ask.providers]` does not declare is a configuration error, and so is `[ask.providers]` without a `provider_order` |
+
+The first provider that can do a task is asked. The next one is asked **only when the one before failed**: it
+could not be reached, answered an error, or replied nothing `ask` could read. A valid but unsure answer is not
+taken to a second provider; `ask` asks back instead. So the text of one question reaches one place, unless that
+place is down. A provider that fails never fails the question: the rules answer, `provider_failures` names the
+provider and why, and the summary says so. A provider whose key is missing is such a failure, not a server that
+does not start.
+
+**The TypeSafe key.** `graylog-mcp login --ask` asks for the key without echoing it, tests it with one request
+and saves it in `~/.config/graylog-mcp/secrets.toml` (or set `TYPESAFE_API_KEY` in the environment), then restart
+the server. `--model NAME` and `--base-url https://...` on the same command save your choice of model and
+endpoint; `GRAYLOG_MCP_ASK_MODEL` and `GRAYLOG_MCP_ASK_BASE_URL` do the same, and `[ask] model`, `base_url` and
+`api_key_env` in a config file win over both. A provider of kind `jev` starts from these settings.
+`graylog-mcp logout --ask` forgets the saved key, model and endpoint.
+
+**What a provider is handed**, and what each environment allows. `provider_data` on an instance (or on a group,
+or on `[environments.prod]` for every group's prod) says what of a question about it may be handed over:
+
+| `provider_data` | Handed to a provider |
+|---|---|
+| `"none"` | Nothing. The rules and the glossary still answer |
+| `"question_only"` | The redacted question and the lists to choose from (the kinds of question, five periods, and the names and descriptions of the instances a word of the question fits). Enough to understand; scoring is then done by rule, with the English words an `openai` or `command` provider gives for the error (Jev chooses and scores, it gives no words) |
+| `"question_and_logs"` (default) | Also up to `max_candidates` (30) error groups, each as service, exception and message, redacted like every other output and cut to `send_chars` (250) characters |
+
+Never raw logs, field values the redactor masks, anything from the glossary, or anything from the Graylog token.
+Graylog itself is still only read (GET and the read-only searches). Until the environment of a question is known
+(named by the caller, read from the question, or chosen by a provider among the instances its words fit), the
+strictest setting of all your instances applies to everything the question hands over, the scoring too: the
+default instance is where the search runs, not what the asker said. When that strictest setting is `"none"` and a
+provider would have been needed to understand the question, `ask` asks you to name the environment rather than
+pick one. `cost.providers` in every answer says how many requests and bytes went to each provider for that
+question. A provider cannot be named `rules`, `guess`, `caller`, `default` or `unread`: those are what
+`understood.sources` calls the parts no provider chose.
+
+**A command as a provider.** The program is started for each request, without a shell, with the environment of
+the server (so it finds its own login; it also sees what the server sees). It reads one JSON document on standard
+input and writes one on standard output; what it writes to standard error is dropped. After `timeout` seconds it
+is stopped together with whatever it started (on Windows only the program itself), and its reply may be at most
+1 MB.
+
+```
+stdin   {"version": 1,
+         "state": "thanh toán bị gì",                       # or {"request": "...", "candidates": ["...", ...]}
+         "questions": {"intent": {"type": "choice", "instructions": "What does the request ask for?",
+                                  "criteria": {"count": "The user asks how many ...", "search": "..."}},
+                       "c0": {"type": "noul", "instructions": "Is candidates[0] directly related to ...?"},
+                       "keywords": {"type": "words", "instructions": "Which words would a log line ...?", "max": 8}}}
+stdout  {"answers": {"intent": {"choice": "search", "confidence": 0.8},
+                     "c0": {"noul": 0.9},
+                     "keywords": {"words": ["payment", "declined"]}}}
+```
+
+A `choice` answers with one key of `criteria`, a `noul` with the probability that the statement holds, `words`
+with at most `max` plain words. An `openai` endpoint is told the same in one message and must reply with the same
+JSON; text around it (a code fence, a sentence, a `<think>` block) is skipped. The `openai` kind has been tested
+against a stand-in that speaks the Chat Completions format, not yet against a served model.
+
+A repository's own `.graylog-mcp.toml`, and what it includes from inside the repository, may set the other `[ask]`
+keys but not `base_url`, `api_key_env`, `providers` or a `provider_order` that names one, which decide where the
+key and the questions go and which program runs: set those in your user config, or in a central file the
+repository's file includes from outside it. `provider_order = []` is the exception: a repository may turn every
+provider off. It can also set `provider_data`, `send_chars` and `max_candidates`, which decide how much your own
+provider is handed, like the other settings of a file you [trust](#one-repository-several-environments).
+
+## Prompts for a task
+
+A chat client lists the server's prompts (in Claude Code: `/mcp__graylog__find_error`, ...); picking one fills in
+the steps, and the person only types their own words. The built-in ones start from words and codes, never from a
+query, and ask the model to answer in the language the person wrote in:
+
+| Prompt | Arguments | What the model is asked to do |
+|---|---|---|
+| `scan` | `target`, `range` (1h) | one scan, confirm each finding, report a table ([Scan rules](#scan-rules)) |
+| `find_error` | `description`, `environment`, `when` | ask with the words as they are; repeat how it understood them; ask back on `clarify`; the best match, then its trace |
+| `trace_code` | `code`, `environment`, `when` (24h) | trace_request with the code; the step that failed |
+| `check_after_change` | `change`, `since` (30m), `environment` | compare_periods split at the change, then scan; what is new or grew |
+| `ticket_evidence` | `problem`, `environment`, `when` (1h) | ask or trace_request, then the ticket text in Markdown: summary, period, counts, sample, steps, the query that ran |
+
+A team adds its own in the config, and a [team bundle](#share-a-team-setup) carries them:
+
+```toml
+[prompts.release_check]
+title = "Kiểm tra sau release"
+description = "Errors of one service since its release"
+text = "Check {service} on {environment} since {since}: compare_periods with split_at at the release, then scan."
+arguments = { service = "the service released", environment = { default = "prod" }, since = { default = "30m" } }
+```
+
+`{name}` is filled with the argument of that name; an argument without `default` is required; `{{` and `}}` are
+literal braces (a Lucene range `{a TO b}` is written `{{a TO b}}`). A text naming an argument it does not declare,
+a format (`{x:>5}`, `{x.name}`), an unmatched brace, or a prompt taking a built-in name is refused when the config
+loads. A prompt is only text sent to the model: it runs nothing, and the tools work the same without it. A shared
+server offers the prompts of its default config.
+
+The server's instructions also tell the model how to treat a question from someone who is not a developer:
+call `ask` first with their words, say how it understood them, ask back what `clarify` asks, follow a code with
+`trace_request`, and answer in their language. A guide for business analysts and testers, in Vietnamese, covers
+the admin page and these prompts: [docs/huong-dan-ba-qa.md](docs/huong-dan-ba-qa.md).
 
 ## Root cause analysis
 
@@ -442,7 +736,7 @@ rest: several instances, token or basic auth, TLS verification and CA bundle, pr
 `trace_fields`, `error_query` (because `level` is a syslog number or a string depending on how logs are
 shipped), `app_packages`, how request logs read (`endpoint_fields`, `status_fields`, `business_error_query`,
 `technical_error_query`, `slow_ms`, `latency_unit`, for the Logs screen of the admin UI), `ui_links`, redaction
-packs and custom patterns, presets and limits. Secrets are never
+packs and custom patterns, presets, the [glossary](#glossary-your-teams-words) and limits. Secrets are never
 written in the file; it names the environment variable that holds them (`token_env`, `password_env`).
 The file is validated at startup and any mistake (unknown key, bad regex, unknown timezone, missing
 secret) stops the server with a precise message.
@@ -458,7 +752,8 @@ in the repo gets the same setup. Tokens stay out of the file: each instance name
 **Only use this with repositories you trust.** The file is applied as it is, with no approval step, and with the
 shared server, opening a client in the repository is enough. Its `url`, `proxy`, `verify_tls` and `*_env` settings
 decide where a saved secret is sent and which one, `include` can pull in other files, `[redaction]` can switch masking
-off, `repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
+off, `provider_data` and `[ask] send_chars` decide how much of the logs a provider you configured for `ask` is handed,
+`repos` decides which folders get a `.mcp.json`, and `[http]` can open the server to the network. Read a file you
 did not write before you run `start`, `init` or `install` there, or open a client in that repository.
 
 ```toml
@@ -528,6 +823,7 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 | `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). |
 | `graylog-mcp install claude-code --trace` | Opt-in: adds two hooks to your Claude Code settings (`~/.claude/settings.json`, or `.claude/settings.local.json` with `--scope project`) so the admin page groups calls by conversation, subagent and turn. They record hashed ids only, never the prompt's text. `--untrace` takes them out; your own hooks are kept. The admin page's Connect screen has the same switch. |
 | `graylog-mcp ui` | Local admin web UI (below). |
+| `graylog-mcp bundle export\|import` | Share a team's settings without secrets ([below](#share-a-team-setup)). |
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
@@ -560,6 +856,16 @@ Clients that do not start the server inside the repository (Claude Desktop) need
   - *All logs*: the newest messages, 100 a page, each opening on its fields with the stack trace folded. Graylog
     pages at most the newest 10,000: narrow the range or the query for older ones.
 
+  Above them, **Ask in plain words** takes a question as [ask](#ask-in-plain-language) does ("thanh toán lỗi
+  trong 15 phút qua ở prod") and opens the view it describes, with how it was read as chips (environment, time
+  range, kind of error, each glossary term) that change the view when edited, without asking again. A question
+  it cannot place is asked back with its options. The best match follows its trace (*Follow its journey*), every
+  match opens *Its lines in Logs*. **Follow a code** takes an order code, a transaction id or a trace id and shows
+  its journey across services. The glossary's terms are chips that narrow the query, and *Open a preset* runs one
+  of the `[presets]`. *What was sent* lists what was handed to each model provider for the last question, as
+  redacted as the provider got it (empty when none was asked). On *By trace* and on an opened message, *Copy as
+  Markdown* copies the trace as a table, or the message and its fields, for a ticket.
+
   The bar on top picks the environment, query, streams and range (*last 1h* or from … to …). *Save view* keeps a
   view in this browser's favourites, *Recent from the agent* reopens what the model searched, *Open in Graylog*
   runs the same search there, and the auto refresh (off, 30 s, 1 or 5 minutes) pauses while the browser tab is
@@ -574,10 +880,15 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 - **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
   mask your sample text;
 - **Playground**: run any tool against any environment and see the exact output, its size and an
-  approximate token count;
+  approximate token count; its arguments are a form (a field per argument, a list of choices where the tool
+  takes one) or the JSON, each following the other;
+- **Providers**: the [providers](#providers) of ask, their order, what each may do (`can`), a key saved per
+  provider, *Test* (one fixed sample question, nothing of yours) and *Use no provider*. It refuses to write a
+  repository's own `.graylog-mcp.toml`, which may not choose providers;
 - **Connect**: a tab per client (Claude Code first), each a three-step stack; snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file** (reached from the status bar, the command palette or the *Raw file* button): edit the TOML with line
-  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup.
+  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup. Below it, **Team
+  bundle** exports the [shared settings](#share-a-team-setup) as a file, and previews and imports one.
 
 An **environment picker** in the top bar carries one environment across Overview, Activity, Playground and Log fields.
 **Settings** (the gear, or <kbd>,</kbd>) picks the colour scheme (Slate, Midnight, Graphite, Catppuccin), light or dark, and density.
@@ -620,6 +931,38 @@ history like any address. `ui_links = "off"` at the top of the config file turns
 `*_env` settings hold the **name** of a variable (`GRAYLOG_PROD_TOKEN`), never the secret: a value that is not
 a valid variable name is refused, and never echoed back, since it is most likely a secret typed into the wrong
 field.
+
+### Share a team setup
+
+One person who has everything set up exports the part a team shares; the others import it and only save their
+own tokens:
+
+```bash
+graylog-mcp bundle export --name acme -o acme.toml   # what was left out is listed on stderr
+graylog-mcp bundle import acme.toml                  # shows what changes, then asks
+graylog-mcp login                                    # each person's own tokens or passwords
+```
+
+A bundle holds the environments (URL, description, group, aliases, `auth`, `verify_tls`, `provider_data`), log
+fields, error queries, `[limits]`, `[redaction]`, `[stacktrace]`, `[investigation]`, presets, `[scan]`, the
+glossary, the team's [prompts](#prompts-for-a-task), and the settings of `[ask]` that choose no destination (`language`, `send_chars`, `max_candidates`,
+`min_confidence`, `relevance`, `time`, `intent_words`, `code_patterns`). It never holds a token, a password, a
+username, the name of a variable holding a secret, a local path (`repos`, `ca_bundle`), `proxy`, `[http]`,
+`focus`, `only_groups`, the `default_*` choices, `ui_links`, nor any setting that decides where data goes
+(`[ask] api_key_env`, `model`, `base_url`, `providers`, `provider_order`). Exporting refuses a value that looks
+like a secret (a private key, a JWT, a bearer or basic credential, a password in a URL).
+
+Importing writes `teams/<name>.toml` beside your config file (`~/.config/graylog-mcp/config.toml`, or `--config`)
+and adds it first to the file's `include`, so everything in your own file stays in force. The preview lists every
+setting added, changed and removed; apart, the changes that decide where a token or log text goes (a URL of an
+environment you already have, `verify_tls = false`, `provider_data`, a new environment whose secret is already
+saved, a redaction that hides less, a larger limit), and the settings your own file sets differently. Nothing is
+written until you confirm (`--yes` in a script). Variables for the secrets are named by the server after each
+environment (`GRAYLOG_PAYMENT_PROD_TOKEN`, `_USERNAME`, `_PASSWORD`), never by the bundle, and `graylog-mcp
+login` asks for each; a bundle whose two environments would share one is refused. A bundle with a key outside this list, or of a newer format than this
+version reads, is refused; so is a team file edited by hand to add one, when the config loads. Importing a newer
+version of the bundle replaces the team file and keeps a `.bak`; if the config would no longer load, both files
+are put back.
 
 ## Groups and your own environments
 
@@ -871,6 +1214,54 @@ graylog-mcp installed, the remote written by `connect` applies. Registered for e
 runs in (`${PWD}`), so list repositories by name in `repos`, or use `connect --project` for the ones listed by
 remote.
 
+## ChatGPT web
+
+ChatGPT connects only to a server on the internet, over HTTPS, signing in with OAuth. graylog-mcp can be that
+server for the person running it, with everything **off by default**:
+
+```toml
+# ~/.config/graylog-mcp/config.toml (your own config: a repository's file may set none of this)
+[http.oauth]
+enabled = true
+public_url = "https://logs-you.example.com"    # the https address of your tunnel
+# port = 8766                                   # the port the tunnel forwards to, apart from the local one
+# allowed_redirects = ["https://chatgpt.com/connector_platform_oauth_redirect"]
+# access_minutes = 60                           # an access token's life (at most 1440)
+# refresh_days = 7                              # a refresh token's life (at most 90)
+
+[instances.dev]
+url = "https://graylog-dev.example.com"
+remote_access = true                            # each environment ChatGPT may read, one by one
+```
+
+1. Run a tunnel you are allowed to use (cloudflared, ngrok, ChatGPT's own Secure MCP Tunnel) from `public_url`
+   to `127.0.0.1:8766`. graylog-mcp never starts one, nor anything that opens a port to the internet.
+2. Start the server over HTTP (`graylog-mcp start`, or `serve --transport streamable-http`); it serves the
+   channel on its own port beside the local one. Changes to `[http.oauth]` or `remote_access` take a restart.
+3. In ChatGPT (developer mode), add a connector with `https://logs-you.example.com/mcp` and OAuth. ChatGPT
+   registers itself and opens a page asking for a **pairing code**: make one on the admin page (Connect, *ChatGPT
+   web*, *New pairing code*) or with `graylog-mcp pair`, and type it there.
+
+What protects it:
+
+- The channel's port serves the MCP endpoint, the OAuth endpoints and the pairing page, nothing else: the admin
+  page and `/status` are on the local port only, whatever Host header the tunnel sends. Every MCP request needs
+  a token.
+- A client gets a token only after someone types a code shown on this machine: 8 characters, one use, 10
+  minutes; five wrong tries cancel the request, and twenty wrong codes in ten minutes, across requests, void
+  every code still waiting. A client may register to the `allowed_redirects` only, with at most 4 KB of
+  metadata; its name is shown cut to 80 characters.
+- A paired client sees only the environments with `remote_access = true`: the others are not listed, and an
+  error names none of them. A group, `[environments]` and a repository's own file cannot set it.
+- Access tokens last an hour; a refresh token works once and is replaced. `~/.config/graylog-mcp/oauth.json`
+  (owner-only) keeps the paired clients and hashes of the tokens and codes, never the tokens themselves.
+  `graylog-mcp pair --list` lists the clients, `--revoke ID` (or `all`) unpairs, as does the admin page.
+- Activity records a call over the channel with the paired client's name; the server log, each pairing, refresh
+  and wrong code.
+
+What it cannot protect: the redacted results go to OpenAI. Turn this on for an environment whose logs may leave
+the company that way, with a strict [redaction](#configuration) profile (`profile = "pii"` or `"strict"`).
+
 ## Testing
 
 ```bash
@@ -910,8 +1301,11 @@ src/graylog_mcp/
   redact.py     core rules, country packs, Luhn / IBAN checks
   shaping.py    field selection, truncation, stack traces, line grouping, output budget
   tools.py      tool implementations
+  trace.py      following one request or one business code across services
+  glossary.py   the team's business terms and code shapes, matched in a question
   rca.py        root cause analysis: onsets, change detection, service map, ranking
-  ask/          the optional `ask` tool: Jev client, question understanding, error groups and flow, fixed texts
+  ask/          the `ask` tool: the rules that read a question (time, intent, environment), what was understood,
+                error candidates and flow, the optional providers (Jev, OpenAI-compatible, a command), fixed texts
   operations.py every operation in one table: what presets, the admin page and usage know by name
   toolspecs/    the tools a model sees, each declared once: its arguments and the operations it runs
   server.py     model instructions, and the MCP tools built from those declarations

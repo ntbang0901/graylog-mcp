@@ -18,6 +18,7 @@ context_output_chars = 8000          # context_around
 max_groups = 100
 sample_concurrency = 4
 scan_concurrency = 8               # Graylog requests in flight during one scan
+max_requests = 20                  # Graylog requests of one trace_request or ask call; near it, optional work is dropped and named
 
 [redaction]
 packs = ["vn"]                       # vn (phone, CCCD), us (SSN), eu (IBAN), uk (NINO), in (Aadhaar, PAN)
@@ -72,6 +73,9 @@ ca_bundle = "/etc/ssl/certs/internal-ca.pem"
 timeout = 30
 max_concurrency = 16                 # requests in flight to this Graylog, across every call and session
 retries = 2                          # after connection errors, 429 and 502/503/504
+# aliases = ["môi trường thật"]      # other words for it in a question to ask ("production" is known for "prod")
+# provider_data = "none"             # what ask may hand to a provider about this instance: "none",
+#                                    # "question_only" or "question_and_logs" (default); README: Providers
 
 [instances.staging]
 url = "https://graylog-staging.example.com"
@@ -99,6 +103,67 @@ args = { query = "took_ms:>2000", range = "30m", fields = ["timestamp", "source"
 description = "Quick health scan: high and critical rules"
 tool = "scan"
 args = { range = "1h", min_severity = "high" }
+
+# The team's own MCP prompts (README: Prompts for a task), next to the built-in scan, find_error, trace_code,
+# check_after_change and ticket_evidence. {name} is filled with an argument; {{ and }} are literal braces.
+[prompts.release_check]
+title = "Kiểm tra sau release"
+description = "Errors of one service since its release"
+text = """Check {service} on {environment} since {since}: compare_periods with split_at at the release, then \
+scan. Answer in the user's language, in plain words."""
+arguments = { service = "the service released", environment = { default = "prod" }, since = { description = "when it was released", default = "30m" } }
+
+# The team's own words (README: Glossary). ask and trace_request read them; describe(what="glossary") lists them
+# for the model of a chat client.
+[glossary.terms.payment]
+description = "payment service"      # how the answer names what the word was read as
+aliases = ["thanh toán", "payment"]  # matched as whole words, with or without accents; the longest phrase wins
+query = "service:payment"            # ANDed into the search when a question names the term
+
+[glossary.terms.refund]
+aliases = ["hoàn tiền", "refund"]
+keywords = ["refund"]                # the English words the logs use for it (listed for the model; no filter)
+preset = "payment_errors"            # optional: one of the [presets] above about this term
+# instances = ["prod"]               # only on these instances, groups or environments
+
+[glossary.codes.order]
+pattern = 'ORD-\d+'                  # what the code looks like
+fields = ["order_id"]                # searched before the text: a number alone also matches unrelated lines
+
+# Words that say which errors a question means. A key given here replaces the built-in list of that key.
+# [glossary.error_words]
+# business = ["bị từ chối", "declined", "hết hạn mức"]
+
+# How ask reads time phrases (README: Ask in plain language).
+# [ask.time]
+# morning = [6, 12]                  # also noon, afternoon, evening, night
+# week_start = "monday"              # or "sunday"
+# date_order = "DMY"                 # "MDY": 11/12 is 12 November
+
+# Words that say what a question asks for. A key given here replaces the built-in list of that key:
+# count, compare, root_cause, error_summary, follow_flow, search, trace_code.
+# [ask.intent_words]
+# count = ["bao nhiêu", "how many", "số lượng"]
+
+# ask needs no model. A provider is asked only for what the rules could not read (README: Providers). These keys
+# belong in your own or a central config: a repository's own file may not set them.
+# [ask]
+# provider_order = ["local", "jev"]  # who is asked first; [] turns every provider off, also with a key saved
+#
+# [ask.providers.local]              # any OpenAI-compatible endpoint
+# kind = "openai"
+# base_url = "http://127.0.0.1:4000/v1"   # https, or http on this machine
+# model = "acme-default"
+# api_key_env = "ACME_GATEWAY_KEY"   # the NAME of the variable; leave out for an endpoint without a key
+#
+# [ask.providers.jev]                # TypeSafe System One; the key comes from graylog-mcp login --ask
+# kind = "jev"
+# can = ["score"]                    # "understand" and/or "score"; both when left out
+#
+# [ask.providers.cli]                # a program on this machine: JSON on stdin, JSON on stdout
+# kind = "command"
+# command = ["acme-llm", "--json"]
+# can = ["understand"]
 
 # Scan rules (README: Scan rules). Built-in rules: crash, resource_exhaustion, error_spike, new_error_types,
 # http_5xx, connectivity, database, auth_failures.
@@ -134,6 +199,13 @@ port = 8000
 path = "/mcp"
 auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"
 # allowed_hosts = ["mcp.example.com"]  # enables Host header (DNS rebinding) checks
+
+# ChatGPT web, off by default (README: ChatGPT web). Your own config only; each environment it may read also sets
+# remote_access = true.
+# [http.oauth]
+# enabled = true
+# public_url = "https://logs-you.example.com"  # your tunnel's https address, forwarding to the port below
+# port = 8766
 
 # A shared server on a VM serving the team: settings of repositories it knows by identity (git remote or name),
 # since it cannot read their .graylog-mcp.toml. See "A server for the team on a VM" in the README.
