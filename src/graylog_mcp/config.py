@@ -133,6 +133,7 @@ class InstanceConfig:
     environment: str | None = None  # e.g. "prod"
     token: str | None = None
     username: str | None = None
+    username_env: str | None = None  # name of the variable holding the username of basic auth, when not written
     password: str | None = None
     verify_tls: bool = True
     ca_bundle: str | None = None
@@ -857,6 +858,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         auth=auth,
         token=token,
         username=username,
+        username_env=data["username_env"] if auth == "basic" and "username_env" in data else None,
         password=password,
         verify_tls=verify,
         ca_bundle=ca_bundle,
@@ -1653,8 +1655,14 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def resolve_includes(data: dict[str, Any], base_dir: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
-    """Apply ``include = "path"`` (or a list): included files first, this file on top."""
+    """Apply ``include = "path"`` (or a list): included files first, this file on top. A file with a ``[bundle]``
+    table is a team bundle, checked again here so that one edited by hand still sets shared settings only."""
     data = dict(data)
+    if "bundle" in data:
+        from graylog_mcp.bundle import check_bundle
+
+        check_bundle(data, str(seen[-1]) if seen else "config")
+        del data["bundle"]
     includes = data.pop("include", [])
     if isinstance(includes, str):
         includes = [includes]

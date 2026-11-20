@@ -32,12 +32,13 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from graylog_mcp import __version__, explorer, explorer_traces, operations, rca, recover, tools, ui_links, usage
+from graylog_mcp import __version__, bundle, explorer, explorer_traces, operations, rca, recover, tools, ui_links, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp import usage_conversations as conversations
 from graylog_mcp.client import GraylogError, QueryError
 from graylog_mcp.config import (
     ENV_NAME,
+    PROJECT_CONFIG_NAMES,
     Config,
     ConfigError,
     detect_repo,
@@ -897,6 +898,38 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         return JSONResponse({"ok": True, "backup": str(backup) if backup else None})
 
+    # ------------------------------------------------------------------ team bundle
+
+    def _bundle_target() -> Path:
+        # a repository's file is the repository's: a team bundle goes into the user's own config
+        return bundle.user_config_path() if state.path.name in PROJECT_CONFIG_NAMES else state.path
+
+    async def bundle_export(request: Request) -> Response:
+        name = request.query_params.get("name", "")
+        try:
+            text, dropped = bundle.export_file(state.path, name, request.query_params.get("description", ""))
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, "text": text, "dropped": dropped, "filename": f"{name}.toml"})
+
+    async def bundle_preview(request: Request) -> Response:
+        body = await _body(request)
+        target = _bundle_target()
+        try:
+            view = bundle.preview(bundle.read_bundle(str(body.get("text") or "")), target)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, **view.as_dict(), "config_path": str(target)})
+
+    async def bundle_import(request: Request) -> Response:
+        body = await _body(request)
+        target = _bundle_target()
+        try:
+            view = bundle.apply(bundle.read_bundle(str(body.get("text") or "")), target)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, **view.as_dict(), "config_path": str(target)})
+
     # ------------------------------------------------------------------ setup checklist (graylog-mcp start)
 
     def _folders() -> list[Path]:
@@ -1079,6 +1112,9 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
+        Route("/api/bundle/export", bundle_export),
+        Route("/api/bundle/preview", bundle_preview, methods=["POST"]),
+        Route("/api/bundle/import", bundle_import, methods=["POST"]),
         Route("/api/setup", get_setup),
         Route("/api/setup/claude", setup_claude, methods=["POST"]),
         Route("/api/setup/trace", get_trace),

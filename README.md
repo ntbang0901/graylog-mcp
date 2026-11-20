@@ -788,6 +788,7 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 | `graylog-mcp install <client>` | Registers the server in `claude-code` (`.mcp.json`), `cursor`, `vscode` or `claude-desktop`, merging with existing entries and keeping a `.bak`. Tokens are referenced as `${VAR}` / `${env:VAR}`, never written (Claude Desktop gets placeholders unless `--with-secrets`). |
 | `graylog-mcp install claude-code --trace` | Opt-in: adds two hooks to your Claude Code settings (`~/.claude/settings.json`, or `.claude/settings.local.json` with `--scope project`) so the admin page groups calls by conversation, subagent and turn. They record hashed ids only, never the prompt's text. `--untrace` takes them out; your own hooks are kept. The admin page's Connect screen has the same switch. |
 | `graylog-mcp ui` | Local admin web UI (below). |
+| `graylog-mcp bundle export\|import` | Share a team's settings without secrets ([below](#share-a-team-setup)). |
 
 `graylog-mcp ui` opens a page on `127.0.0.1` with:
 
@@ -837,7 +838,8 @@ Clients that do not start the server inside the repository (Claude Desktop) need
   approximate token count;
 - **Connect**: a tab per client (Claude Code first), each a three-step stack; snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file** (reached from the status bar, the command palette or the *Raw file* button): edit the TOML with line
-  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup.
+  numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup. Below it, **Team
+  bundle** exports the [shared settings](#share-a-team-setup) as a file, and previews and imports one.
 
 An **environment picker** in the top bar carries one environment across Overview, Activity, Playground and Log fields.
 **Settings** (the gear, or <kbd>,</kbd>) picks the colour scheme (Slate, Midnight, Graphite, Catppuccin), light or dark, and density.
@@ -880,6 +882,37 @@ history like any address. `ui_links = "off"` at the top of the config file turns
 `*_env` settings hold the **name** of a variable (`GRAYLOG_PROD_TOKEN`), never the secret: a value that is not
 a valid variable name is refused, and never echoed back, since it is most likely a secret typed into the wrong
 field.
+
+### Share a team setup
+
+One person who has everything set up exports the part a team shares; the others import it and only save their
+own tokens:
+
+```bash
+graylog-mcp bundle export --name acme -o acme.toml   # what was left out is listed on stderr
+graylog-mcp bundle import acme.toml                  # shows what changes, then asks
+graylog-mcp login                                    # each person's own tokens or passwords
+```
+
+A bundle holds the environments (URL, description, group, aliases, `auth`, `verify_tls`, `provider_data`), log
+fields, error queries, `[limits]`, `[redaction]`, `[stacktrace]`, `[investigation]`, presets, `[scan]`, the
+glossary, and the settings of `[ask]` that choose no destination (`language`, `send_chars`, `max_candidates`,
+`min_confidence`, `relevance`, `time`, `intent_words`, `code_patterns`). It never holds a token, a password, a
+username, the name of a variable holding a secret, a local path (`repos`, `ca_bundle`), `proxy`, `[http]`,
+`focus`, `only_groups`, the `default_*` choices, `ui_links`, nor any setting that decides where data goes
+(`[ask] api_key_env`, `model`, `base_url`, `providers`, `provider_order`). Exporting refuses a value that looks
+like a secret (a private key, a JWT, a bearer or basic credential, a password in a URL).
+
+Importing writes `teams/<name>.toml` beside your config file (`~/.config/graylog-mcp/config.toml`, or `--config`)
+and adds it first to the file's `include`, so everything in your own file stays in force. The preview lists every
+setting added, changed and removed; apart, the changes that decide where a token or log text goes (a URL of an
+environment you already have, `verify_tls = false`, `provider_data`), and the settings your own file sets
+differently. Nothing is written until you confirm (`--yes` in a script). Variables for the secrets are named by
+the server after each environment (`GRAYLOG_PAYMENT_PROD_TOKEN`, `_USERNAME`, `_PASSWORD`), never by the bundle,
+and `graylog-mcp login` asks for each. A bundle with a key outside this list, or of a newer format than this
+version reads, is refused; so is a team file edited by hand to add one, when the config loads. Importing a newer
+version of the bundle replaces the team file and keeps a `.bak`; if the config would no longer load, both files
+are put back.
 
 ## Groups and your own environments
 

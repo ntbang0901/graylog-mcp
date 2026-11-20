@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Team bundles: `graylog-mcp bundle export --name acme` writes the settings a team shares (environments, fields,
+  error queries, redaction, presets, scan rules, the glossary, the `[ask]` settings that choose no destination)
+  without any secret, variable name, local path, proxy, `[http]`, personal default or provider; `graylog-mcp
+  bundle import` previews what is added, changed and removed (apart: a changed URL, `verify_tls = false`,
+  `provider_data`, and settings the user's own file hides), then writes `teams/<name>.toml` and includes it below
+  the user's own settings. The admin page's Config file screen does both. A bundle carries a format number; a
+  newer one, or one setting a key outside the list, is refused at import and when the config loads.
+- `graylog-mcp login` also asks for the username of a basic-auth environment whose `username_env` is not set yet.
 - `ask` needs no model and no key. Rules read what a question asks for ("how many", "so với", "nguyên nhân", "xem
   log", a code), and which environment it names ("ở prod", "on production", an instance's `aliases`), beside the
   time, the kind of error, the glossary's terms and codes. Words that name what is asked are read for sure; an

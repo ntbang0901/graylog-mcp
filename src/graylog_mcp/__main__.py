@@ -266,7 +266,7 @@ def _version(argv: list[str]) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers", "version",
+    "ui", "connect", "headers", "version", "bundle",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
     "hook",  # internal: what Claude Code runs once 'install claude-code --trace' added the hooks
 )  # fmt: skip
@@ -288,6 +288,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp login --ask                save your API key for the ask tool (--model, --base-url)
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords (--ask: the ask tool's key)
        graylog-mcp repo list|add|remove       repositories served by each group
+       graylog-mcp bundle export|import       share a team's settings, without secrets
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
@@ -506,10 +507,21 @@ def _login(argv: list[str]) -> int:
         return 2
     saved = 0
     for inst in targets:
-        if not inst.secret_env:
+        secret_env = inst.secret_env
+        if not secret_env:
             continue
+        if inst.username_env and not secrets.get(inst.username_env):
+            # a team bundle names the variable, so this machine has no username for it yet
+            username = (input if sys.stdin.isatty() else lambda p: sys.stdin.readline())(
+                f"username for {inst.name} ({inst.url}), Enter to skip: "
+            ).strip()
+            if not username:
+                continue
+            secrets.save(inst.username_env, username)
+            print(f"  ✓ saved as {inst.username_env}")
+            inst = dataclasses.replace(inst, username=username)
         kind = "password" if inst.auth == "basic" else "token"
-        current = secrets.source(inst.secret_env)
+        current = secrets.source(secret_env)
         if current and not args.instances:
             print(f"✓ {inst.name}: {kind} already {'in the environment' if current == 'env' else 'saved'}")
             continue
@@ -528,9 +540,9 @@ def _login(argv: list[str]) -> int:
                 print(f"  ✗ {result['error']}")
                 if not sys.stdin.isatty() or input("  save anyway? [y/N]: ").strip().lower() not in ("y", "yes"):
                     continue
-        where = secrets.save(inst.secret_env, value)
+        where = secrets.save(secret_env, value)
         saved += 1
-        print(f"  ✓ saved as {inst.secret_env} in {where}")
+        print(f"  ✓ saved as {secret_env} in {where}")
     if not saved and not args.instances:
         print("nothing to save" if targets else "no instance configured")
     return 0
@@ -647,6 +659,82 @@ def _repo(argv: list[str]) -> int:
     except (ConfigError, ValueError) as exc:
         print(f"graylog-mcp repo: {exc}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _print_preview(view: Any, config_path: Path) -> None:
+    print(f"team bundle {view.name} -> {view.team_file}")
+    print(f"  {len(view.added)} new, {len(view.changed)} changed, {len(view.removed)} removed settings")
+    for sign, paths in (("+", view.added), ("~", view.changed), ("-", view.removed)):
+        for path in paths:
+            print(f"  {sign} {path}")
+    if view.security:
+        print("check these: they decide where a token or log text goes")
+        for line in view.security:
+            print(f"  ! {line}")
+    if view.shadowed:
+        print(f"your own {config_path.name} sets these differently, and yours stay in force:")
+        for path in view.shadowed:
+            print(f"  = {path}")
+    if view.include_added:
+        print(f'include "teams/{view.name}.toml" will be added to {config_path}')
+
+
+def _bundle(argv: list[str]) -> int:
+    from graylog_mcp import bundle
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp bundle",
+        description="Share the settings of a team (environments, fields, queries, glossary...) without secrets",
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    out = sub.add_parser("export", help="write the shared part of your config as a team bundle")
+    out.add_argument("--name", required=True, help="the team's name, such as acme")
+    out.add_argument("--description", default="")
+    out.add_argument("--config", "-c", help="the config to export (default: the one the server uses here)")
+    out.add_argument("--output", "-o", help="file to write (default: standard output)")
+    into = sub.add_parser("import", help="show what a team bundle changes, then add it to your config")
+    into.add_argument("file")
+    into.add_argument("--config", "-c", help="your config file (default: ~/.config/graylog-mcp/config.toml)")
+    into.add_argument("--yes", "-y", action="store_true", help="import without asking")
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "export":
+            source = Path(args.config).expanduser() if args.config else default_config_path()
+            if source is None or not source.is_file():
+                print("graylog-mcp bundle: no config file to export (set one up first)", file=sys.stderr)
+                return 2
+            text, dropped = bundle.export_file(source, args.name, args.description)
+            if dropped:
+                print(f"left out (personal, secret or local): {', '.join(dropped)}", file=sys.stderr)
+            if args.output:
+                Path(args.output).write_text(text, encoding="utf-8")
+                print(f"✓ wrote {args.output}", file=sys.stderr)
+            else:
+                sys.stdout.write(text)
+            return 0
+        target = Path(args.config).expanduser() if args.config else bundle.user_config_path()
+        try:
+            text = Path(args.file).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"graylog-mcp bundle: cannot read {args.file}: {exc}", file=sys.stderr)
+            return 2
+        team = bundle.read_bundle(text)
+        _print_preview(bundle.preview(team, target), target)
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print("nothing written: run again with --yes to import")
+                return 1
+            if input("import? [y/N]: ").strip().lower() not in ("y", "yes"):
+                print("nothing written")
+                return 1
+        view = bundle.apply(team, target)
+    except ConfigError as exc:
+        print(f"graylog-mcp bundle: {exc}", file=sys.stderr)
+        return 2
+    print(f"✓ imported {view.name} into {view.team_file}")
+    if view.logins:
+        print(f"next: graylog-mcp login {' '.join(view.logins)}")
     return 0
 
 
@@ -1373,6 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
         "login": _login,
         "logout": _logout,
         "repo": _repo,
+        "bundle": _bundle,
         "doctor": _doctor,
         "detect": _detect,
         "install": _install,
