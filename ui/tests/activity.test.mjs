@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 
 // The Activity screen's state and address, loaded in Node the way store.test.mjs loads the store.
 const output = await mkdtemp(join(tmpdir(), "graylog-admin-activity-"));
@@ -14,12 +14,7 @@ for (const name of modules) {
         new URL(`../src/${name}.ts`, import.meta.url),
         "utf8",
     );
-    const { outputText } = ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ESNext,
-            target: ts.ScriptTarget.ES2022,
-        },
-    });
+    const outputText = stripTypeScriptTypes(source);
     let javascript = outputText.replaceAll(
         '"@preact/signals"',
         JSON.stringify(import.meta.resolve("@preact/signals")),
