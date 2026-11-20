@@ -32,8 +32,7 @@ export function Connect() {
         selected = tabs.find((t) => t.id === tab) || tabs[0],
         snippet = selected
             ? (data?.[selected.key]?.[selected.scope] as
-                  | ClientSnippet
-                  | undefined)
+                  ClientSnippet | undefined)
             : undefined;
     useEffect(() => {
         if (currentPage.value !== "connect" || !state.value) return;
