@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
 ### Added
 - ChatGPT web, off by default: `[http.oauth]` serves OAuth 2.1 (dynamic registration, PKCE) on a port of its
   own, for a tunnel the user runs; the admin page and `/status` are not on it. A client gets a token only after
@@ -108,54 +110,6 @@ All notable changes to this project are documented here. The format follows
   service and step, and `first_business_error`. `error_queries` names the queries used.
 - When `trace_request` finds nothing, it looks once in a wider range and says how many messages match there and when
   the newest was logged (`suggestions`).
-
-### Changed
-- `ask` is always declared; it was listed only with a TypeSafe key. With a key saved and no `provider_order`, Jev
-  is still the provider for both tasks, but it is no longer asked what the rules read for sure: "how many errors?"
-  sends it nothing, and a question that names no period covers the last 24 hours instead of the period Jev picked.
-  `provider_order = []` turns it off while the key stays saved.
-- A provider that cannot be reached, refuses the key or replies nothing readable no longer fails `ask`: the rules
-  answer and the summary names the provider.
-- `cost.jev_requests` is replaced by `cost.provider_requests`, and `understood.sources` names the provider that
-  chose a part (`jev` for the built-in one) or `guess` for a reading the rules only guessed.
-- The split of "errors" by kind costs one Graylog request a kind; it went through the search for why a count is
-  zero.
-- `ask`'s `understood` has a new shape: `errors` (`any`, `technical`, `business`, `both`) replaces `errors_only`,
-  `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
-  `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.
-- `ask` looks for the described error over the whole range: every error line when one read holds them, else the
-  newest lines of six equal parts of the range, joined with every exception of the range and its exact count where
-  the instance has the field of `group_fields.exception` (`matches` then carry `exception` and `exception_count`;
-  `estimated` marks a match's own count scaled from the sample, written "~" in the summary). At most half of the
-  size cap goes to `matches` (`matches_omitted`). It was the newest 500 error lines.
-- "last week" and "tuần trước" in an `ask` question are the previous calendar week (the provider read them as the
-  last 7 days); "past week" and "tuần qua" are the last 7 days.
-- Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),
-  and where two patterns match overlapping text the longer match is the code.
-- `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is
-  now the request they belong to (`strategy` is `business_code`) with the list of such requests, not every message
-  holding the text. Messages without any trace id are returned as before (`full_text`); `search_logs` remains the
-  tool for every line that holds a text.
-- In a trace, `errors` and `first_error` now follow the instance's technical error query (HTTP 5xx or `error_query`,
-  or `technical_error_query`) instead of the log level alone: a 5xx line logged at INFO counts, and the result names
-  the queries in `error_queries`.
-
-### Fixed
-- `ask` reads "since this morning" and "từ sáng nay" from the start of the morning to now, not to noon.
-- A repository's own config file can no longer test a model provider or be saved from the admin page with a
-  setting it may not decide (the providers of `ask`, `[http.oauth]`, `remote_access`).
-- A table cell copied as Markdown takes a log line's links, images, HTML and emphasis literally.
-- `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
-  is read from the question as typed, and only the redacted question is sent to TypeSafe.
-- An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.
-- A trace longer than `limit` no longer loses its errors: `trace_request` adds its error lines (the earliest `limit`
-  of each kind, at least 50) and the last line to the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
-  left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the
-  rest. `note` says which of the two cut the timeline, the read limit or the size budget.
-
-## [0.5.0] - 2026-11-18
-
-### Added
 - Each tool call is now recorded when it starts and when it ends, with who called it (the conversation: a Codex
   session, the HTTP session, else the server process; the client's tool call id; the client), the Graylog requests it
   sent (path, redacted query, wait, duration, status, retries) and the first 2,000 characters of its redacted result.
@@ -204,6 +158,35 @@ All notable changes to this project are documented here. The format follows
   environment.
 
 ### Changed
+- `ask` is always declared; it was listed only with a TypeSafe key. With a key saved and no `provider_order`, Jev
+  is still the provider for both tasks, but it is no longer asked what the rules read for sure: "how many errors?"
+  sends it nothing, and a question that names no period covers the last 24 hours instead of the period Jev picked.
+  `provider_order = []` turns it off while the key stays saved.
+- A provider that cannot be reached, refuses the key or replies nothing readable no longer fails `ask`: the rules
+  answer and the summary names the provider.
+- `cost.jev_requests` is replaced by `cost.provider_requests`, and `understood.sources` names the provider that
+  chose a part (`jev` for the built-in one) or `guess` for a reading the rules only guessed.
+- The split of "errors" by kind costs one Graylog request a kind; it went through the search for why a count is
+  zero.
+- `ask`'s `understood` has a new shape: `errors` (`any`, `technical`, `business`, `both`) replaces `errors_only`,
+  `time` is an object (`from`, `to` and `words` when read from the question, `choice` when the provider chose), and
+  `sources` is new. "Errors" now means the instance's technical and business error queries, not `error_query` alone.
+- `ask` looks for the described error over the whole range: every error line when one read holds them, else the
+  newest lines of six equal parts of the range, joined with every exception of the range and its exact count where
+  the instance has the field of `group_fields.exception` (`matches` then carry `exception` and `exception_count`;
+  `estimated` marks a match's own count scaled from the sample, written "~" in the summary). At most half of the
+  size cap goes to `matches` (`matches_omitted`). It was the newest 500 error lines.
+- "last week" and "tuần trước" in an `ask` question are the previous calendar week (the provider read them as the
+  last 7 days); "past week" and "tuần qua" are the last 7 days.
+- Codes in an `ask` question are followed in the order they appear in the question (they were grouped by pattern),
+  and where two patterns match overlapping text the longer match is the code.
+- `trace_request` with a text that is not a trace id: when the messages holding it carry a trace id, the result is
+  now the request they belong to (`strategy` is `business_code`) with the list of such requests, not every message
+  holding the text. Messages without any trace id are returned as before (`full_text`); `search_logs` remains the
+  tool for every line that holds a text.
+- In a trace, `errors` and `first_error` now follow the instance's technical error query (HTTP 5xx or `error_query`,
+  or `technical_error_query`) instead of the log level alone: a 5xx line logged at INFO counts, and the result names
+  the queries in `error_queries`.
 - The admin page is built from `ui/` (Vite, Preact and `@preact/signals`, strict TypeScript, one component per screen)
   into `src/graylog_mcp/admin/static/` (`index.html` plus committed hashed files in `assets/`), and is served from
   there; the wheel, Docker and the tests need no Node. The Content-Security-Policy no longer allows inline scripts
@@ -226,6 +209,17 @@ All notable changes to this project are documented here. The format follows
   `GRAYLOG_MCP_USAGE_SESSION_DAYS` and `GRAYLOG_MCP_USAGE_MAX_MB` change the limits.
 
 ### Fixed
+- `ask` reads "since this morning" and "từ sáng nay" from the start of the morning to now, not to noon.
+- A repository's own config file can no longer test a model provider or be saved from the admin page with a
+  setting it may not decide (the providers of `ask`, `[http.oauth]`, `remote_access`).
+- A table cell copied as Markdown takes a log line's links, images, HTML and emphasis literally.
+- `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
+  is read from the question as typed, and only the redacted question is sent to TypeSafe.
+- An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.
+- A trace longer than `limit` no longer loses its errors: `trace_request` adds its error lines (the earliest `limit`
+  of each kind, at least 50) and the last line to the earliest messages, `first_error` is set even when the error lies beyond the limit, `hidden` counts the messages
+  left out, and a timeline cut to the size budget keeps errors and the first and last line of each step before the
+  rest. `note` says which of the two cut the timeline, the read limit or the size budget.
 - Redaction now masks a secret after a field name ending in a wildcard (`password*:value`), as in a query a suggested
   fix rewrote.
 - A metric over no values, which Graylog 5.2 and later return as the text `NaN` or `-Infinity`, now reads as no
