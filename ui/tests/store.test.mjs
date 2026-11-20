@@ -4,7 +4,8 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+// TypeScript 7 has no JavaScript compiler API; Node erases the types itself
+import { stripTypeScriptTypes } from "node:module";
 
 // Load the real TypeScript modules in Node; shared state must require no browser globals.
 const output = await mkdtemp(join(tmpdir(), "graylog-admin-store-"));
@@ -13,12 +14,7 @@ for (const name of ["store", "api", "router"]) {
         new URL(`../src/${name}.ts`, import.meta.url),
         "utf8",
     );
-    const { outputText } = ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ESNext,
-            target: ts.ScriptTarget.ES2022,
-        },
-    });
+    const outputText = stripTypeScriptTypes(source);
     const javascript = outputText
         .replaceAll('"./store"', '"./store.mjs"')
         .replaceAll('"./api"', '"./api.mjs"')
