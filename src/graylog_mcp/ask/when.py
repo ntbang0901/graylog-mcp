@@ -346,9 +346,10 @@ def _read(q: _Question) -> TimeSpan | None:
             used.append((m.end(), m.end() + after.end()))
         break
 
+    named_part: re.Match[str] | None = None
     if m := q.find(_PART_VI):
         part, day = part or _PARTS[m.group(1)], day or q.today - timedelta(days=_DAYS["hom " + m.group(2).split()[-1]])
-        used.append(m.span())
+        named_part = m
     elif part is None and (m := q.find(_PART_EN)):
         if m.group(5):
             part, day = "night", q.today
@@ -356,7 +357,12 @@ def _read(q: _Question) -> TimeSpan | None:
             part, day = "night", q.today - timedelta(days=1)
         else:
             part, day = _PARTS[m.group(2)], q.today - timedelta(days=m.group(1) == "yesterday")
-        used.append(m.span())
+        named_part = m
+    if named_part is not None:
+        # "since this morning" asked in the afternoon runs to now, not to noon
+        lead = q.before(_SINCE_BEFORE, named_part.start()) if clock is None else None
+        since = since or lead is not None
+        used.append((lead.start() if lead else named_part.start(), named_part.end()))
     if day is None and (m := q.find(_DAY)):
         day, since = q.today - timedelta(days=_DAYS[" ".join(m.group(2).split())]), bool(m.group(1))
         used.append(m.span())
@@ -387,6 +393,7 @@ def _read(q: _Question) -> TimeSpan | None:
             raise _Unreadable
     elif part is not None and day is not None:
         start, end = q.part(part, day)
+        end = q.now if since else end
     elif back := _length_back(q):
         seconds, span = back
         start, end, used = q.back(q.now, seconds), q.now, [span]

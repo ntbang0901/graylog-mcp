@@ -179,6 +179,23 @@ def test_a_phrase_not_read_yet_is_left_to_the_provider(question):
     assert read_time(question, SAIGON, NOW) is None
 
 
+@pytest.mark.parametrize(
+    ("question", "end"),
+    [
+        ("since this morning", "15:00"),
+        ("từ sáng nay", "15:00"),
+        ("từ sáng hôm qua", "15:00"),
+        ("this morning", "12:00"),
+        ("sáng nay", "12:00"),
+    ],
+)
+def test_a_part_of_the_day_after_since_runs_to_now(question, end):
+    afternoon = NOW.replace(hour=15, minute=0)
+    got = read_time(question, SAIGON, afternoon)
+    assert got is not None and got.end == _at(end), got
+    assert "sáng hôm qua" in question or got.start == _at("06:00")
+
+
 def test_the_words_read_are_returned_as_typed():
     assert read_time("Lỗi SÁNG NAY từ 9h đến 10h ở prod", SAIGON, NOW).text == "SÁNG NAY từ 9h đến 10h"
     assert read_time("thanh toán lỗi trong 15 phút qua ở prod", SAIGON, NOW).text == "trong 15 phút qua"
