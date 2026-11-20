@@ -9,7 +9,15 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, parse_config, resolve_includes
+from graylog_mcp.config import (
+    ENV_NAME,
+    PROJECT_CONFIG_NAMES,
+    Config,
+    ConfigError,
+    check_repository_files,
+    parse_config,
+    resolve_includes,
+)
 from graylog_mcp.setup import tomlwrite
 
 HEADER = (
@@ -61,6 +69,8 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
+    if path.name in PROJECT_CONFIG_NAMES:  # else saved here, then refused each time the repository loads it
+        check_repository_files([tomllib.loads(text)])
     _refuse_symlink(path)  # before the backup too, which would copy what the link points to into the repository
     backup = backup_file(path) if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)

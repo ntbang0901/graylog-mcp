@@ -346,6 +346,12 @@ export function Shell({
                 <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z" />
             </svg>
         ),
+        providers: (
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h11M4 12h7M4 17h11" />
+                <path d="M17 9l3 3-3 3" />
+            </svg>
+        ),
         playground: (
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M6 4l14 8-14 8V4z" />
@@ -421,6 +427,7 @@ export function Shell({
                         {nav("envs", "Environments", "db", failing.value)}
                         {nav("fields", "Log fields", "edit")}
                         {nav("redaction", "Redaction", "key")}
+                        {nav("providers", "Providers", "page")}
                     </div>
                     <div class="navgroup">
                         <div class="glabel">Tools</div>

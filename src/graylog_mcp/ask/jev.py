@@ -1,4 +1,5 @@
-"""Client of TypeSafe's System One API (Jev), used by ``ask`` only to choose between options and score relevance.
+"""Client of TypeSafe's System One API (Jev): one of the providers ``ask`` may ask to choose between options
+and to score relevance.
 
 Never shares code with ``client.py``: Graylog stays reachable through GET and the read-only POSTs alone.
 Callers pass text that has already been redacted and size-capped.
@@ -7,46 +8,49 @@ Callers pass text that has already been redacted and size-capped.
 from __future__ import annotations
 
 import asyncio
-import time
+import json
 from typing import Any
 
 import httpx
 
 from graylog_mcp import __version__
-from graylog_mcp.client import GraylogError, spans_recorded
-from graylog_mcp.config import AskConfig
+from graylog_mcp.ask.providers import ProviderError, recorded
+from graylog_mcp.config import ProviderConfig
 
-TIMEOUT_SECONDS = 30.0
 TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests of the CLI emulate TypeSafe here
 
 
-class JevError(GraylogError):
+class JevError(ProviderError):
     pass
 
 
 class JevClient:
-    def __init__(self, cfg: AskConfig, transport: httpx.AsyncBaseTransport | None = None):
-        assert cfg.api_key, "JevClient needs an API key"
+    words = False  # System One chooses and scores; it does not write
+
+    def __init__(self, cfg: ProviderConfig, transport: httpx.AsyncBaseTransport | None = None):
         self.cfg = cfg
-        self.requests = 0
+        self.requests = self.bytes_sent = 0
         self._http = httpx.AsyncClient(
             base_url=cfg.base_url,
             headers={"Authorization": f"Bearer {cfg.api_key}", "User-Agent": f"graylog-mcp/{__version__}"},
-            timeout=TIMEOUT_SECONDS,
+            timeout=cfg.timeout,
             transport=transport or TRANSPORT,
         )
 
-    async def answers(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    async def answers(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """Answers keyed by question name. One retry on a 5xx or a dropped connection."""
-        body = {"model": self.cfg.model, "state": state, "questions": questions}
-        spans, began = spans_recorded.get(), time.monotonic()
-        span: dict[str, Any] = {"service": "jev", "method": "POST", "path": "v1/systemone", "wait_ms": 0}
-        try:
+        if not self.cfg.api_key:
+            raise JevError(f"no API key in {self.cfg.api_key_env}; run graylog-mcp login --ask")
+        body = json.dumps({"model": self.cfg.model, "state": state, "questions": questions}).encode()
+        with recorded(self.cfg.name, "POST", "v1/systemone") as span:
             for attempt in (1, 2):
                 self.requests += 1
-                span["attempts"] = attempt
+                self.bytes_sent += len(body)
+                span["attempts"], span["bytes_sent"] = attempt, len(body) * attempt
                 try:
-                    resp = await self._http.post("/v1/systemone", json=body)
+                    resp = await self._http.post(
+                        "/v1/systemone", content=body, headers={"Content-Type": "application/json"}
+                    )
                 except httpx.HTTPError as exc:
                     span["status"] = "connect"
                     if attempt == 1:
@@ -58,13 +62,6 @@ class JevClient:
                     await asyncio.sleep(0.5)
                     continue
                 break
-        except asyncio.CancelledError:
-            span["status"] = "cancelled"
-            raise
-        finally:
-            if spans is not None:
-                span.update(start_ms=spans.ms_since_start(began), ms=int((time.monotonic() - began) * 1000))
-                spans.add(span)
         if resp.status_code in (401, 403):
             raise JevError(f"TypeSafe refused the API key in {self.cfg.api_key_env}; check or replace it", 401)
         if resp.status_code != 200:

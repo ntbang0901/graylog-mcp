@@ -17,10 +17,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from graylog_mcp import recover, ui_links
-from graylog_mcp.ask.jev import JevClient
+from graylog_mcp.ask.providers import Providers
 from graylog_mcp.backends import TEXT_FIELDS, Graylog
 from graylog_mcp.backends.base import COUNT, MessageQuery, Metric, RawMessage
-from graylog_mcp.client import GraylogError
+from graylog_mcp.client import GraylogError, requests_sent
 from graylog_mcp.config import Config, InstanceConfig
 from graylog_mcp.focus import guess_service, mentions_field, wants_everything
 from graylog_mcp.redact import Redactor
@@ -56,6 +56,19 @@ def phrase(value: Any) -> str:
 
 def escape_field(name: str) -> str:
     return _LUCENE_FIELD_SPECIAL.sub(r"\\\1", name)
+
+
+def requests_left(app: App) -> int:
+    """Graylog requests the current tool call may still send within ``limits.max_requests``. Outside a tool call
+    nothing is counted."""
+    sent = requests_sent.get()
+    return app.config.limits.max_requests - (sent[0] if sent else 0)
+
+
+def requests_used(app: App) -> str:
+    """ "18/20", for the sentence saying why something was left out."""
+    sent = requests_sent.get()
+    return f"{sent[0] if sent else 0}/{app.config.limits.max_requests}"
 
 
 def and_queries(*queries: str | None) -> str:
@@ -97,7 +110,7 @@ class App:
     instances: dict[str, Graylog]
     redactor: Redactor
     focus_cache: dict[str, FocusScope | None] = field(default_factory=dict)
-    jev: JevClient | None = None  # only with a TypeSafe key: the ask tool
+    providers: Providers = field(default_factory=lambda: Providers([]))  # whom ask may ask; none: its rules alone
 
     @classmethod
     def create(
@@ -105,7 +118,7 @@ class App:
         config: Config,
         transport: Any = None,
         graylog: Callable[[InstanceConfig], Graylog] | None = None,
-        jev_transport: Any = None,
+        provider_transport: Any = None,
     ) -> App:
         """``graylog`` supplies the client of each instance (the shared server reuses them across repositories)."""
         make = graylog or (lambda cfg: Graylog(cfg, transport))
@@ -113,7 +126,7 @@ class App:
             config=config,
             instances={name: make(cfg) for name, cfg in config.instances.items()},
             redactor=Redactor(config.redaction),
-            jev=JevClient(config.ask, jev_transport) if config.ask.enabled else None,
+            providers=Providers.create(config.ask.providers, provider_transport),
         )
 
     def gl(self, name: str | None) -> Graylog:
@@ -150,7 +163,7 @@ class App:
 
     async def close(self) -> None:
         closing = [gl.aclose() for gl in self.instances.values()]
-        await asyncio.gather(*closing, *([self.jev.aclose()] if self.jev else []), return_exceptions=True)
+        await asyncio.gather(*closing, self.providers.aclose(), return_exceptions=True)
 
 
 # --------------------------------------------------------------------------- focus
@@ -266,6 +279,18 @@ def _is_error(fields: dict[str, Any]) -> bool:
     if "level" in fields:
         return is_error_level(fields.get("level"))
     return bool(_EXCEPTION_HINT.search(str(fields.get("message", ""))[:500]))
+
+
+def error_queries(cfg: InstanceConfig, status_field: str | None) -> tuple[str | None, str]:
+    """The business and the technical error query of an instance; ``status_field`` is the HTTP status field its
+    logs have, if any. Without a configured query, business errors are status 4xx (None without a status field)
+    and technical ones status 5xx or the error query."""
+    status = escape_field(status_field) if status_field else None
+    business = cfg.business_error_query or (f"{status}:[400 TO 499]" if status else None)
+    technical = cfg.technical_error_query or (
+        f"{status}:[500 TO 599] OR ({cfg.error_query})" if status else cfg.error_query
+    )
+    return business, technical
 
 
 def _ms(a: datetime | None, b: datetime | None) -> int | None:
@@ -569,104 +594,6 @@ async def get_message(
 
 
 # --------------------------------------------------------------------------- investigation tools
-
-
-async def trace_request(
-    app: App,
-    trace_id: str,
-    range: str | None = "24h",
-    from_time: str | None = None,
-    to_time: str | None = None,
-    streams: list[str] | None = None,
-    limit: int | None = 200,
-    instance: str | None = None,
-) -> dict[str, Any]:
-    gl = app.gl(instance)
-    trace_id = trace_id.strip()
-    if not trace_id:
-        raise ToolInputError("trace_id is required")
-    tr = _range(gl, range, from_time, to_time, "24h")
-    stream_ids = await gl.resolve_streams(streams)
-    limit = app.limit(limit)
-    trace_fields = gl.cfg.trace_fields
-    field_query = " OR ".join(f"{escape_field(f)}:{phrase(trace_id)}" for f in trace_fields)
-    strategy = "trace_fields"
-    page = await gl.search(
-        MessageQuery(query=field_query, timerange=tr, streams=stream_ids, sort_order="asc", limit=limit)
-    )
-    if not page.messages:
-        strategy = "full_text"
-        page = await gl.search(
-            MessageQuery(query=phrase(trace_id), timerange=tr, streams=stream_ids, sort_order="asc", limit=limit)
-        )
-    out = _header(gl, tr, trace_id=trace_id, strategy=strategy, total=page.total)
-    if not page.messages:
-        out["hint"] = (
-            f"nothing found in fields {list(trace_fields)} nor as full text; widen the range "
-            "or configure trace_fields for this instance"
-        )
-        out["timeline"] = []
-        return out
-
-    shaper = app.shaper(gl)
-    service_fields = gl.cfg.service_fields
-    times = [parse_graylog_ts(m.fields.get("timestamp")) for m in page.messages]
-    t0 = next((t for t in times if t), None)
-    matched = sorted({f for m in page.messages for f in trace_fields if str(m.fields.get(f, "")) == trace_id})
-
-    services: dict[str, dict[str, Any]] = {}
-    steps: list[dict[str, Any]] = []
-    timeline = []
-    first_error = None
-    for raw, ts in zip(page.messages, times, strict=True):
-        svc = _service(app, raw.fields, service_fields)
-        err = _is_error(raw.fields)
-        entry = shaper.message(raw.fields, raw.index, raw.id, limit=SAMPLE_CHARS)
-        entry = {"t": f"+{_ms(t0, ts) or 0}ms", "service": svc, **entry}
-        timeline.append(entry)
-        if err and first_error is None:
-            first_error = entry
-        s = services.setdefault(svc, {"service": svc, "count": 0, "errors": 0, "first": ts, "last": ts})
-        s["count"] += 1
-        s["errors"] += int(err)
-        s["last"] = ts or s["last"]
-        if steps and steps[-1]["service"] == svc:
-            steps[-1]["count"] += 1
-            steps[-1]["_end"] = ts
-            steps[-1]["errors"] += int(err)
-        else:
-            steps.append({"service": svc, "count": 1, "errors": int(err), "_start": ts, "_end": ts})
-
-    for step in steps:
-        start, end = step.pop("_start"), step.pop("_end")
-        step["start"] = f"+{_ms(t0, start) or 0}ms"
-        step["duration_ms"] = _ms(start, end) or 0
-
-    t_last = next((t for t in reversed(times) if t), None)
-    out["matched_fields"] = matched or None
-    out["duration_ms"] = _ms(t0, t_last)
-    out["services"] = [
-        {
-            "service": s["service"],
-            "count": s["count"],
-            "errors": s["errors"],
-            "first": format_ts(s["first"], gl.cfg.tz) if s["first"] else None,
-            "span_ms": _ms(s["first"], s["last"]),
-        }
-        for s in services.values()
-    ]
-    out["first_error"] = first_error
-    budget = app.budget()
-    _link(app, budget, out, gl, "traces", tr, streams=streams, trace=trace_id)
-    budget.take({k: v for k, v in out.items() if k != "ui"})
-    out["steps"] = budget.fit(steps)
-    out["timeline"] = budget.fit(timeline)
-    out["truncated"] = budget.truncated
-    if page.total is not None and page.total > len(page.messages):
-        out["note"] = (
-            f"showing the earliest {len(page.messages)} of {page.total} messages; narrow the range or raise limit"
-        )
-    return out
 
 
 async def context_around(
@@ -1195,6 +1122,51 @@ async def list_instances(app: App) -> dict[str, Any]:
             out["focus"] = {"status": f"no service matches the repository name {cfg.focus.repo_names[0]!r}; "
                             "set [focus] service in .graylog-mcp.toml"}  # fmt: skip
     out["redaction"] = app.redactor.active_rules
+    return out
+
+
+def list_glossary(app: App, instance: str | None = None) -> dict[str, Any]:
+    """The team's terms and code shapes; with ``instance``, those that apply to it."""
+    glossary = app.config.glossary
+    inst = app.gl(instance).cfg if instance else None
+    terms = [t for t in glossary.terms.values() if inst is None or t.applies_to(inst)]
+    codes = [c for c in glossary.codes.values() if inst is None or c.applies_to(inst)]
+
+    def entry(name: str, **values: Any) -> dict[str, Any]:
+        return {"name": name} | {k: list(v) if isinstance(v, tuple) else v for k, v in values.items() if v}
+
+    budget = app.budget()
+    # the few code shapes first: a long list of terms must not be what leaves them out
+    listed_codes = budget.fit(
+        [
+            entry(c.name, pattern=c.pattern, fields=c.fields, description=c.description, instances=c.instances)
+            for c in codes
+        ]
+    )
+    listed_terms = budget.fit(
+        [
+            entry(
+                t.name,
+                aliases=t.aliases,
+                description=t.description,
+                query=t.query,
+                keywords=t.keywords,
+                preset=t.preset,
+                instances=t.instances,
+            )
+            for t in terms
+        ]
+    )
+    out: dict[str, Any] = {
+        "count": {"terms": len(terms), "codes": len(codes)},
+        "terms": listed_terms,
+        "codes": listed_codes,
+        "truncated": budget.truncated,
+    }
+    if budget.truncated:
+        out["hint"] = "the glossary is longer than one answer: pass instance to list only what applies to it"
+    elif not glossary.terms and not glossary.codes:
+        out["hint"] = "no glossary configured: add [glossary.terms.<name>] and [glossary.codes.<name>] to the config"
     return out
 
 
