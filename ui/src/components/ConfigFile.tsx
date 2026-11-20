@@ -10,6 +10,7 @@ import {
 } from "../store";
 import type { RawConfig } from "../scripts/types";
 import { AsyncButton, Page, modKey, plural } from "./UI";
+import { TeamBundle } from "./TeamBundle";
 interface Validation {
     ok: boolean;
     error?: string;
@@ -207,6 +208,7 @@ export function ConfigFile() {
                     <span class="mono">.bak</span>.
                 </div>
             </div>
+            <TeamBundle />
         </Page>
     );
 }

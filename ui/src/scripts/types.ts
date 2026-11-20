@@ -331,6 +331,24 @@ export interface RawConfig {
     text: string;
     path: string;
 }
+export interface BundleExport {
+    text: string;
+    dropped: string[];
+    filename: string;
+}
+// what importing a team bundle changes (admin/app.py bundle_preview, bundle.Preview)
+export interface BundlePreview {
+    name: string;
+    team_file: string;
+    config_path: string;
+    added: string[];
+    changed: string[];
+    removed: string[];
+    security: string[];
+    shadowed: string[];
+    include_added: boolean;
+    logins: string[];
+}
 
 // /api/breakdown: one environment by service, level and error type
 export interface TopValue {
