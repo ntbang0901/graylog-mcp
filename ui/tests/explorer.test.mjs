@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 
 // The Logs screen's address and request logic, loaded as the real modules; neither needs a browser.
 const output = await mkdtemp(join(tmpdir(), "graylog-admin-explorer-"));
@@ -13,12 +13,7 @@ for (const name of ["explorer", "router"]) {
         new URL(`../src/${name}.ts`, import.meta.url),
         "utf8",
     );
-    const { outputText } = ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ESNext,
-            target: ts.ScriptTarget.ES2022,
-        },
-    });
+    const outputText = stripTypeScriptTypes(source);
     await writeFile(
         join(output, `${name}.mjs`),
         outputText.replaceAll('"./router"', '"./router.mjs"'),

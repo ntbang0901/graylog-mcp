@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
   the environments ChatGPT may read, writes `[http.oauth]` and `remote_access` into your config and restarts the
   server. The card says whether the channel actually answers on its port.
 
+### Fixed
+- The admin page's Logs with an empty search, and `scan` with `exclude` set and no query, no longer send Graylog
+  `(*)`, which it refuses ("'*' or '?' not allowed as first character in WildcardQuery").
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

@@ -126,6 +126,9 @@ def _expand_field_groups(q: str) -> str:
 def compile_query(q: str):
     q = _expand_field_groups(q or "*")
     toks = _tokens(q) or [("term", "*")]
+    # Graylog matches everything only for a whole query of "*"; "(*)" or "* AND x" is a leading wildcard
+    if q.strip() != "*" and any(kind == "term" and val[0] in "*?" for kind, val in toks):
+        raise LuceneError("'*' or '?' not allowed as first character in WildcardQuery")
     pos = 0
 
     def peek():

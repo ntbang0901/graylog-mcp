@@ -15,7 +15,7 @@ from typing import Any
 from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import COUNT, AggResult, MessageQuery, Metric
 from graylog_mcp.timerange import TimeRange, choose_interval, parse_graylog_ts, resolve_range
-from graylog_mcp.tools import App, ToolInputError, error_queries, escape_field, phrase
+from graylog_mcp.tools import App, ToolInputError, and_queries, error_queries, escape_field, phrase
 
 MAX_LIMIT = 500
 MAX_WINDOW = 10_000  # offset + limit: OpenSearch's index.max_result_window by default
@@ -48,8 +48,7 @@ class Scope:
         self.latency_scale = 1000 if unit == "s" else 1  # values are shown in ms
 
     def where(self, *clauses: str | None) -> str:
-        parts = [f"({self.query})"] + [f"({c})" for c in clauses if c]
-        return " AND ".join(parts)
+        return and_queries(self.query, *clauses)
 
     def redact(self, field: str | None, value: Any) -> Any:
         return self.app.redact_key(field or "message", value)

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 
 // The ticket text of a trace and of a message, loaded as the real module.
 const output = await mkdtemp(join(tmpdir(), "graylog-admin-markdown-"));
@@ -12,12 +12,7 @@ const source = await readFile(
     new URL("../src/markdown.ts", import.meta.url),
     "utf8",
 );
-const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-    },
-});
+const outputText = stripTypeScriptTypes(source);
 await writeFile(join(output, "markdown.mjs"), outputText);
 const md = await import(pathToFileURL(join(output, "markdown.mjs")).href);
 after(() => rm(output, { recursive: true, force: true }));
