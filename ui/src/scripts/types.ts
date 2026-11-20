@@ -76,6 +76,7 @@ export interface State {
     profiles: Record<string, string>;
     tools: string[];
     tool_templates: Record<string, Fields>;
+    tool_fields: Record<string, ToolField[]>;
     quick_tools: string[];
     local_timezone: string;
 }
@@ -331,6 +332,24 @@ export interface RawConfig {
     text: string;
     path: string;
 }
+export interface BundleExport {
+    text: string;
+    dropped: string[];
+    filename: string;
+}
+// what importing a team bundle changes (admin/app.py bundle_preview, bundle.Preview)
+export interface BundlePreview {
+    name: string;
+    team_file: string;
+    config_path: string;
+    added: string[];
+    changed: string[];
+    removed: string[];
+    security: string[];
+    shadowed: string[];
+    include_added: boolean;
+    logins: string[];
+}
 
 // /api/breakdown: one environment by service, level and error type
 export interface TopValue {
@@ -380,3 +399,190 @@ export interface LogsView {
     errorsOnly?: boolean;
     column?: string;
 }
+
+// a field of the Playground's form (admin/forms.py arguments)
+export interface ToolField {
+    name: string;
+    control:
+        | "string"
+        | "integer"
+        | "number"
+        | "boolean"
+        | "list"
+        | "choice"
+        | "json";
+    required: boolean;
+    default?: Json;
+    choices?: (string | number | boolean)[];
+    description?: string;
+}
+
+// ------------------------------------------------------------------ the ask box (admin/web_ask.py)
+export type ErrorKind = "any" | "technical" | "business" | "both";
+export interface AskTopic {
+    term: string;
+    matched: string;
+    query?: string;
+    keywords?: string[];
+    preset?: string;
+}
+export interface AskUnderstood {
+    intent: string | null;
+    instance: string | null;
+    time: { from: string; to: string; words: string } | { choice: string };
+    errors: ErrorKind;
+    sources: Record<string, string>;
+    topics?: AskTopic[];
+    codes?: { kind: string; code: string }[];
+    unclear?: { text: string; terms: string[] }[];
+}
+// an error group that fits what the question describes (ask/pipeline.py _match)
+export interface AskMatch {
+    score: number;
+    count: number;
+    first: string | null;
+    last: string | null;
+    sample: string;
+    ref?: string | null;
+    service?: string;
+    exception?: string;
+    exception_count?: number;
+    estimated?: boolean;
+}
+export interface AskResult {
+    summary: string;
+    understood: AskUnderstood;
+    clarify?: string;
+    options?: string[];
+    readings?: { intent: string; what: string; ask: string }[];
+    guessed?: { intent: string; others: string[] };
+    matches?: AskMatch[];
+    matches_omitted?: number;
+    flow?: {
+        trace_id: string;
+        services: Fields[] | null;
+        steps: Fields[];
+        first_error: Fields | null;
+    };
+    traces?: Journey[]; // the trace_code intent: one journey per code
+    hint?: string;
+    result?: Json;
+    by_kind?: Record<string, number>;
+    ran?: string;
+    scored_by?: string;
+    cost: {
+        graylog_requests: number;
+        graylog_cap: number;
+        provider_requests: number;
+        providers?: Record<string, { requests: number; bytes_sent: number }>;
+    };
+    provider_failures?: { provider: string; task?: string; reason: string }[];
+    [more: string]: any;
+}
+// range is "" exactly when from and to are set
+export interface AskView {
+    instance: string;
+    terms: string[];
+    errors: ErrorKind;
+    query: string;
+    notes: string[];
+    range: string;
+    from: string;
+    to: string;
+}
+export interface AskSent {
+    provider: string;
+    task: string;
+    state: Json;
+    questions: Json;
+}
+export interface AskAnswer {
+    result: AskResult;
+    view: AskView | null;
+    sent: AskSent[];
+}
+export interface AskFilters {
+    query: string;
+    notes: string[];
+}
+// one line of a journey's timeline (trace.py trace_request): the message's own fields besides these
+export interface JourneyLine {
+    t: string; // "+123ms" from the first line
+    service: string;
+    ts?: string;
+    source?: string;
+    level?: number | string;
+    message?: string;
+    ref?: string;
+    error?: string;
+    [field: string]: unknown;
+}
+// the trace_request tool's answer, for a trace id or a business code
+export interface Journey {
+    instance: string;
+    range: { from: string; to: string };
+    trace_id: string;
+    strategy?: string; // trace_fields, code_field, full_text or business_code
+    total?: number | null;
+    shown_trace?: string;
+    traces?: {
+        trace_id: string;
+        first?: string | null;
+        last?: string | null;
+        messages?: number;
+        services?: string[];
+        errors?: number;
+    }[];
+    duration_ms?: number | null;
+    services?: { service: string; count: number; errors: number }[];
+    first_error?: JourneyLine | null;
+    timeline?: JourneyLine[];
+    truncated?: boolean;
+    hidden?: number;
+    hint?: string;
+    note?: string;
+    [more: string]: any;
+}
+export interface Vocabulary {
+    terms: {
+        name: string;
+        aliases: string[];
+        description: string;
+        query: string;
+        instances: string[];
+    }[];
+    codes: { name: string; description: string }[];
+    presets: {
+        name: string;
+        tool: string;
+        description: string;
+        args: Fields;
+    }[];
+    errors: ErrorKind[];
+    language: string;
+}
+
+// ------------------------------------------------------------------ the Providers screen (admin/providers_page.py)
+export interface ProviderDeclared {
+    name: string;
+    kind: string;
+    can?: string[];
+    base_url?: string;
+    model?: string;
+    api_key_env?: string;
+    command?: string[];
+    timeout?: number;
+    key_source: "env" | "saved" | null;
+}
+export interface ProvidersListing {
+    editable: boolean;
+    config_path: string;
+    order: string[] | null; // null: no order written, the key of login --ask decides
+    active: string[];
+    declared: ProviderDeclared[];
+    kinds: Record<string, string[]>;
+    error: string | null;
+}
+export type ProviderTest =
+    | { ok: true; ms: number; question: string; answer: Fields }
+    | { ok: false; error: string; ms?: number };

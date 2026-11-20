@@ -11,6 +11,7 @@ import {
     phrase,
 } from "../logs";
 import { openInLogs } from "../explorer-store";
+import { messageMarkdown } from "../markdown";
 import type { Fields, LogLine } from "../scripts/types";
 import { revealRows } from "../scripts/motion";
 import { AsyncButton, Close, Dialog, Icon, Segment, num } from "./UI";
@@ -50,6 +51,17 @@ function searchArgs(v: LogsView, narrow: string, offset = 0) {
         ],
     };
 }
+// what the Markdown says above its table of fields
+const MD_SKIP = [
+    "ref",
+    "streams",
+    "message",
+    "full_message",
+    "timestamp",
+    "ts",
+    "source",
+    "level",
+];
 function LogRow({
     m,
     index,
@@ -201,6 +213,49 @@ function LogRow({
                                     }}
                                 >
                                     Copy ref
+                                </AsyncButton>
+                                <AsyncButton
+                                    class="btn sm ghost"
+                                    title="Copy the message and its fields for a ticket"
+                                    run={async () => {
+                                        await navigator.clipboard.writeText(
+                                            messageMarkdown({
+                                                instance: view.instance,
+                                                ts: m.ts,
+                                                source: detail.source,
+                                                service:
+                                                    view.column &&
+                                                    view.column !== "source" &&
+                                                    detail[view.column] != null
+                                                        ? {
+                                                              field: view.column,
+                                                              value: detail[
+                                                                  view.column
+                                                              ],
+                                                          }
+                                                        : null,
+                                                level: levelOf(detail.level)
+                                                    .word,
+                                                message:
+                                                    detail.full_message ||
+                                                    detail.message ||
+                                                    "",
+                                                fields: Object.fromEntries(
+                                                    Object.entries(
+                                                        detail,
+                                                    ).filter(
+                                                        ([k]) =>
+                                                            !MD_SKIP.includes(
+                                                                k,
+                                                            ),
+                                                    ),
+                                                ),
+                                            }),
+                                        );
+                                        toast("Copied as Markdown");
+                                    }}
+                                >
+                                    Copy as Markdown
                                 </AsyncButton>
                             </div>
                         </>

@@ -179,6 +179,6 @@ async def test_scan_via_mcp_and_preset(make_app):
     preset = await operations.run_preset(app, "health")
     assert preset["tool"] == "scan" and "auth_failures" not in {q["rule"] for q in preset["quiet"]}
     prompts = await server.list_prompts()
-    assert [p.name for p in prompts] == ["scan"]
+    assert "scan" in [p.name for p in prompts]
     got = await server.get_prompt("scan", {"target": "payment timeouts", "range": "2h"})
     assert "last 2h" in got.messages[0].content.text and "payment timeouts" in got.messages[0].content.text

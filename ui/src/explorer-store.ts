@@ -232,6 +232,33 @@ export async function openInLogs(v: {
         trace: null,
         offset: 0,
     };
+    await show(patch);
+}
+// the By trace tab of one trace, over the range it was found in (instants with a zone, as the tools write them)
+export async function openTrace(
+    instance: string,
+    trace: string,
+    window?: { from: string; to: string } | null,
+) {
+    const iso = (s: string | undefined) => {
+            const d = new Date(String(s ?? "").replace(" ", "T"));
+            return isNaN(+d) ? "" : d.toISOString();
+        },
+        from = iso(window?.from),
+        to = iso(window?.to);
+    await show({
+        tab: "traces",
+        instance,
+        trace,
+        q: "",
+        streams: "",
+        range: from && to ? "" : "24h",
+        from: from && to ? from : "",
+        to: from && to ? to : "",
+        offset: 0,
+    });
+}
+async function show(patch: Partial<ExplorerView>) {
     if (isCurrent()) update(patch);
     else {
         view.value = normalView({ ...view.value, ...patch });

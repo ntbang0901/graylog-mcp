@@ -147,11 +147,11 @@ def test_a_single_operation_tool_passes_an_explicit_null_through():
     assert refused is None and args == {"trace_id": "req-7f3a9c", "limit": None}
 
 
-async def test_ask_follows_the_key_when_the_shared_server_has_no_default_app(monkeypatch):
+async def test_ask_is_declared_whatever_the_key_when_the_shared_server_has_no_default_app(monkeypatch):
     async def names() -> set[str]:
         return {t.name for t in await build_server(AppPool()).list_tools()}
 
-    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)  # a developer's own key must not decide this test
-    assert "ask" not in await names()
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)  # its rules need no provider
+    assert "ask" in await names()
     monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")
     assert "ask" in await names()

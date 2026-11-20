@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from graylog_mcp import rca, tools, ui_links
+from graylog_mcp import rca, tools, trace, ui_links
 from graylog_mcp.config import ConfigError
 from graylog_mcp.timerange import TimeRange
 
@@ -65,7 +65,7 @@ async def test_search_logs_links_its_query_and_absolute_range(make_app):
 async def test_trace_request_links_the_shared_admin_with_its_trace(make_app):
     app, _ = make_app()
     ui_links.record("127.0.0.1", 18742, "/admin/")
-    res = await tools.trace_request(app, "req-7f3a9c", range="1h")
+    res = await trace.trace_request(app, "req-7f3a9c", range="1h")
     assert res["ui"].startswith("http://127.0.0.1:18742/admin/logs/traces?")
     assert _params(res["ui"])["trace"] == "req-7f3a9c" and "q" not in _params(res["ui"])
 

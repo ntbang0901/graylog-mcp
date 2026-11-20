@@ -15,7 +15,7 @@ from typing import Any
 from graylog_mcp.backends import Graylog
 from graylog_mcp.backends.base import COUNT, AggResult, MessageQuery, Metric
 from graylog_mcp.timerange import TimeRange, choose_interval, parse_graylog_ts, resolve_range
-from graylog_mcp.tools import App, ToolInputError, escape_field, phrase
+from graylog_mcp.tools import App, ToolInputError, error_queries, escape_field, phrase
 
 MAX_LIMIT = 500
 MAX_WINDOW = 10_000  # offset + limit: OpenSearch's index.max_result_window by default
@@ -41,11 +41,7 @@ class Scope:
         self.status = first(cfg.status_fields)
         self.latency = first(cfg.latency_fields)
         self.trace = first(cfg.trace_fields)
-        status = escape_field(self.status) if self.status else None
-        self.business: str | None = cfg.business_error_query or (f"{status}:[400 TO 499]" if status else None)
-        self.technical = cfg.technical_error_query or (
-            f"{status}:[500 TO 599] OR ({cfg.error_query})" if status else cfg.error_query
-        )
+        self.business, self.technical = error_queries(cfg, self.status)
         unit = cfg.latency_unit
         if unit == "auto":
             unit = "s" if self.latency == "request_time" or (self.latency or "").endswith("_seconds") else "ms"
