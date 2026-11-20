@@ -84,8 +84,7 @@ export function Playground() {
         ta.current?.focus();
     }, [request]);
     function check():
-        | { ok: true; args: Fields }
-        | { ok: false; error: string } {
+        { ok: true; args: Fields } | { ok: false; error: string } {
         if (!args.trim()) return { ok: true, args: {} };
         try {
             const v: unknown = JSON.parse(args);

@@ -1,12 +1,7 @@
 // What the admin API (src/graylog_mcp/admin/app.py) returns. Keep these in step with it.
 
 export type Json =
-    | string
-    | number
-    | boolean
-    | null
-    | Json[]
-    | { [key: string]: Json };
+    string | number | boolean | null | Json[] | { [key: string]: Json };
 export type Fields = Record<string, any>;
 
 export interface Instance {
