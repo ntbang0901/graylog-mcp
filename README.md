@@ -1217,7 +1217,11 @@ remote.
 ## ChatGPT web
 
 ChatGPT connects only to a server on the internet, over HTTPS, signing in with OAuth. graylog-mcp can be that
-server for the person running it, with everything **off by default**:
+server for the person running it, with everything **off by default**.
+
+The admin page turns it on: Connect, *ChatGPT web*, then the tunnel's address, its port and the environments
+ChatGPT may read, and *Turn on*. The page writes the settings below into your config and restarts the server;
+*Turn off* and *Change* do the same. By hand, the settings are:
 
 ```toml
 # ~/.config/graylog-mcp/config.toml (your own config: a repository's file may set none of this)
@@ -1237,7 +1241,8 @@ remote_access = true                            # each environment ChatGPT may r
 1. Run a tunnel you are allowed to use (cloudflared, ngrok, ChatGPT's own Secure MCP Tunnel) from `public_url`
    to `127.0.0.1:8766`. graylog-mcp never starts one, nor anything that opens a port to the internet.
 2. Start the server over HTTP (`graylog-mcp start`, or `serve --transport streamable-http`); it serves the
-   channel on its own port beside the local one. Changes to `[http.oauth]` or `remote_access` take a restart.
+   channel on its own port beside the local one. Changes to `[http.oauth]` or `remote_access` take a restart,
+   which the admin page does for you.
 3. In ChatGPT (developer mode), add a connector with `https://logs-you.example.com/mcp` and OAuth. ChatGPT
    registers itself and opens a page asking for a **pairing code**: make one on the admin page (Connect, *ChatGPT
    web*, *New pairing code*) or with `graylog-mcp pair`, and type it there.

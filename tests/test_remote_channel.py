@@ -368,6 +368,69 @@ async def test_the_admin_page_shows_the_channel_and_hands_out_codes(tmp_path):
         assert (await client.post("/api/remote/revoke", json={"all": True})).json() == {"removed": 0}
 
 
+async def test_the_admin_page_turns_the_channel_on_and_off_and_restarts_its_server(tmp_path, monkeypatch):
+    from graylog_mcp.admin.app import AdminState, build_app
+    from graylog_mcp.setup import service, tomlwrite
+
+    path = tmp_path / "config.toml"
+    group = {"environments": {"staging": {"url": "https://staging.test", "token_env": "TEST_GRAYLOG_TOKEN"}}}
+    path.write_text(tomlwrite.dumps({"instances": {"main": PROD, "dev": PROD}, "groups": {"pay": group}}), "utf-8")
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(service, "spawn_detached", lambda cmd: spawned.append(cmd) or 1)
+    state = AdminState(tmp_path, path, "tok", transport=FakeGraylog().transport, allowed_hosts=("testserver",))
+    state.server_port = 8000
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=build_app(state)), base_url="http://testserver",
+        headers={"X-Admin-Token": "tok"},
+    ) as client:  # fmt: skip
+
+        async def put(**settings):
+            return await client.post("/api/remote/settings", json=settings)
+
+        before = (await client.get("/api/remote")).json()
+        assert before["enabled"] is False and before["restarts"] is True and before["port"] == 8766
+        assert [e["name"] for e in before["environments"]] == ["dev", "main", "pay/staging"]
+
+        on = {"enabled": True, "public_url": PUBLIC}
+        assert "at least one environment" in (await put(**on, instances=[])).json()["error"]
+        assert "this server's own" in (await put(**on, instances=["dev"], port=8000)).json()["error"]
+        assert (
+            "https address" in (await put(**{**on, "public_url": "http://x.test"}, instances=["dev"])).json()["error"]
+        )
+        assert "not defined in this file" in (await put(**on, instances=["nowhere"])).json()["error"]
+        assert spawned == [] and "oauth" not in path.read_text("utf-8")
+
+        assert (await put(**on, instances=["dev", "pay/staging"], port=8767)).json() == {
+            "ok": True, "restarting": True
+        }  # fmt: skip
+        shown = (await client.get("/api/remote")).json()
+        assert shown["enabled"] and shown["port"] == 8767 and shown["instances"] == ["dev", "pay/staging"]
+        assert shown["running"] is False  # nothing listens on 8767 until the server is back
+        assert "start" in spawned[0] and spawned[0][-4:] == ["--port", "8000", "--config", str(path)]
+
+        assert (await put(enabled=False, instances=["dev"])).json()["ok"]
+        off = (await client.get("/api/remote")).json()
+        assert off["enabled"] is False and off["instances"] == ["dev"] and off["public_url"] == PUBLIC
+        assert len(spawned) == 2
+
+
+async def test_a_repository_file_cannot_turn_the_channel_on_from_the_admin_page(tmp_path):
+    from graylog_mcp.admin.app import AdminState, build_app
+    from graylog_mcp.setup import tomlwrite
+
+    path = tmp_path / ".graylog-mcp.toml"
+    path.write_text(tomlwrite.dumps({"instances": {"dev": PROD}}), "utf-8")
+    state = AdminState(tmp_path, path, "tok", transport=FakeGraylog().transport, allowed_hosts=("testserver",))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=build_app(state)), base_url="http://testserver",
+        headers={"X-Admin-Token": "tok"},
+    ) as client:  # fmt: skip
+        refused = await client.post("/api/remote/settings", json={"enabled": True, "public_url": PUBLIC,
+                                                                   "instances": ["dev"]})  # fmt: skip
+    assert refused.status_code == 400 and "repository's own config file" in refused.json()["error"]
+    assert "oauth" not in path.read_text("utf-8")
+
+
 def test_the_pair_command_prints_a_code_that_works_once(capsys):
     from graylog_mcp.__main__ import main
 

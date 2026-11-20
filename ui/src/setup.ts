@@ -105,7 +105,7 @@ export function setupSteps() {
     }
     return steps;
 }
-async function waitFor(cond: () => Promise<boolean>, seconds = 180) {
+export async function waitFor(cond: () => Promise<boolean>, seconds = 180) {
     for (let i = 0; i < seconds / 2; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         try {

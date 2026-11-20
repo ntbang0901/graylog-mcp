@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- The admin page turns ChatGPT web on and off: Connect, *ChatGPT web* takes the tunnel's address, its port and
+  the environments ChatGPT may read, writes `[http.oauth]` and `remote_access` into your config and restarts the
+  server. The card says whether the channel actually answers on its port.
+
 ### Fixed
 - The admin page's Logs with an empty search, and `scan` with `exclude` set and no query, no longer send Graylog
   `(*)`, which it refuses ("'*' or '?' not allowed as first character in WildcardQuery").
