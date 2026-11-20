@@ -119,7 +119,9 @@ def _exclude(query: str, *noise: str | None) -> str:
     parts = [n.strip() for n in noise if n and n.strip()]
     if not parts:
         return query
-    return f"({query}) AND NOT ({' OR '.join(f'({p})' for p in parts)})"
+    noise_query = f"NOT ({' OR '.join(f'({p})' for p in parts)})"
+    # Graylog refuses "(*)": a whole query of "*" is the only match-all it accepts
+    return noise_query if query.strip() in ("", "*") else f"({query}) AND {noise_query}"
 
 
 def _trend(cur: int, prev: int | None, ratio: float | None) -> str:

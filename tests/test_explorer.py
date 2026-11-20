@@ -83,6 +83,16 @@ async def test_a_page_of_messages_says_how_many_match(explorer):
     assert too_far.status_code == 400 and "10000" in too_far.json()["error"]
 
 
+async def test_an_empty_search_matches_everything(explorer):
+    client, _ = explorer
+    everything = {"range": "1h"}
+    async with client:
+        responses = [await client.get(f"/api/explorer/{view}", params=everything)
+                     for view in ("dashboard", "messages", "traces")]  # fmt: skip
+    assert [r.status_code for r in responses] == [200, 200, 200], [r.text for r in responses]
+    assert responses[0].json()["total"] == responses[1].json()["total"] > 10  # more than source:acme-api holds
+
+
 async def test_traces_newest_first_and_one_trace_in_order(explorer):
     client, _ = explorer
     async with client:
