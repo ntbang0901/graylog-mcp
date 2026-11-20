@@ -195,6 +195,38 @@ def delete_instance(data: dict[str, Any], name: str) -> dict[str, Any]:
     return data
 
 
+def local_instances(data: dict[str, Any]) -> list[str]:
+    """The environments written in this file, as the config names them ('<group>/<env>' for a group's)."""
+    names = [n for n, v in (data.get("instances") or {}).items() if isinstance(v, dict)]
+    for group, gdata in (data.get("groups") or {}).items():
+        envs = gdata.get("environments") if isinstance(gdata, dict) else None
+        names += [f"{group}/{env}" for env, v in (envs or {}).items() if isinstance(v, dict) and "url" in v]
+    return names
+
+
+def set_remote(data: dict[str, Any], enabled: bool, public_url: str, port: int | None, offered: list[str]) -> dict:
+    """[http.oauth] on or off, and remote_access on exactly the ``offered`` environments of this file."""
+    data = copy.deepcopy(data)
+    local = local_instances(data)
+    elsewhere = [n for n in offered if n not in local]
+    if elsewhere:
+        raise ConfigError(f"{', '.join(elsewhere)}: not defined in this file, so it cannot be offered from here")
+    oauth = data.setdefault("http", {}).setdefault("oauth", {})
+    oauth["enabled"] = enabled
+    if public_url:
+        oauth["public_url"] = public_url
+    if port is not None:
+        oauth["port"] = port
+    for name in local:
+        group, env = split_name(name) if name not in (data.get("instances") or {}) else (None, name)
+        entry = data["groups"][group]["environments"][env] if group else data["instances"][name]
+        if name in offered:
+            entry["remote_access"] = True
+        else:
+            entry.pop("remote_access", None)
+    return data
+
+
 def apply_investigation(data: dict[str, Any], values: dict[str, Any], instance: str | None = None) -> dict[str, Any]:
     """Merge detected field settings into [investigation] (shared) or one instance."""
     data = copy.deepcopy(data)
