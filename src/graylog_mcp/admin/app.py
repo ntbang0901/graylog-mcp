@@ -35,6 +35,11 @@ from starlette.routing import Route
 from graylog_mcp import __version__, bundle, explorer, explorer_traces, operations, rca, recover, tools, ui_links, usage
 from graylog_mcp import secrets as secret_store
 from graylog_mcp import usage_conversations as conversations
+from graylog_mcp.admin import forms
+from graylog_mcp.admin.http import body as _body
+from graylog_mcp.admin.http import err as _err
+from graylog_mcp.admin.providers_page import provider_routes
+from graylog_mcp.admin.web_ask import ask_routes
 from graylog_mcp.client import GraylogError, QueryError
 from graylog_mcp.config import (
     ENV_NAME,
@@ -75,6 +80,7 @@ class AdminState:
         self.transport = transport
         self.allowed_hosts = allowed_hosts
         self.server_port: int | None = None  # set when served by the shared server itself (graylog-mcp start)
+        self.provider_transport: httpx.AsyncBaseTransport | None = None  # tests: the providers of ask
         self._app: tools.App | None = None
         self._app_key: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
@@ -93,21 +99,11 @@ class AdminState:
                 if self._app is not None:
                     await self._app.close()
                 config = configfile.validate(data, source=str(self.path), base_dir=self.path.parent)
-                self._app = tools.App.create(config, transport=self.transport or connect.TRANSPORT)
+                self._app = tools.App.create(
+                    config, transport=self.transport or connect.TRANSPORT, provider_transport=self.provider_transport
+                )
                 self._app_key = key
             return self._app
-
-
-def _err(message: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status)
-
-
-async def _body(request: Request) -> dict[str, Any]:
-    try:
-        data = await request.json()
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _instances_view(data: dict[str, Any], config: Config | None) -> list[dict[str, Any]]:
@@ -380,6 +376,7 @@ def build_app(state: AdminState) -> Starlette:
                 "profiles": {name: p.summary for name, p in PROFILES.items()},
                 "tools": sorted(playground),
                 "tool_templates": {name: dict(op.template) for name, op in playground.items()},
+                "tool_fields": {name: forms.arguments(op) for name, op in playground.items()},
                 "quick_tools": list(operations.QUICK_RUN),
                 "local_timezone": local_timezone(),
             }
@@ -1124,6 +1121,8 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/setup/update", setup_update, methods=["POST"]),
         Route("/api/clients", client_snippets),
         Route("/api/clients/install", install_client, methods=["POST"]),
+        *ask_routes(state),
+        *provider_routes(state),
         Route("/{path:path}", index),  # last: what no route above takes
     ]
     inner = Starlette(routes=routes)

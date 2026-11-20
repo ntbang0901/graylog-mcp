@@ -7,6 +7,7 @@ the structure into a Graylog query: from the instance's error queries and the gl
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import tzinfo
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 from graylog_mcp.ask.understand import time_args
 from graylog_mcp.ask.when import TimeSpan
 from graylog_mcp.backends import Graylog
-from graylog_mcp.config import ASK_OWN_SOURCES
+from graylog_mcp.config import ASK_OWN_SOURCES, GlossaryTerm
 from graylog_mcp.glossary import CodeMatch, TermMatch, Unclear
 from graylog_mcp.tools import App, and_queries, error_queries
 
@@ -105,10 +106,16 @@ class Compiled:
 
 async def compile_query(app: App, gl: Graylog, u: Understood) -> Compiled:
     """The Graylog queries ``u`` stands for on this instance."""
+    return await compile_filters(gl, u.errors.value, [m.term for m in u.topics])
+
+
+async def compile_filters(gl: Graylog, kind: str, terms: Sequence[GlossaryTerm]) -> Compiled:
+    """The Graylog queries of a kind of error (one of ``ERRORS``) and glossary terms, on this instance: what
+    ``ask`` searches, and what the admin page searches when its reading is edited."""
     names = await gl.field_names()
     status = next((f for f in gl.cfg.status_fields if f in names), None)
     business, technical = error_queries(gl.cfg, status)
-    kind, notes = u.errors.value, []
+    notes: list[str] = []
     errors: str | None = None
     if kind == "technical":
         errors = technical
@@ -118,6 +125,6 @@ async def compile_query(app: App, gl: Graylog, u: Understood) -> Compiled:
             errors, notes = technical, ["no_business_errors"]
         else:
             errors = business if kind == "business" else f"({technical}) OR ({business})"
-    filters = [m.term.query for m in u.topics if m.term.query]
+    filters = [term.query for term in terms if term.query]
     topic = and_queries(*filters) if filters else None
     return Compiled(and_queries(errors, topic), topic, technical, business, tuple(notes))

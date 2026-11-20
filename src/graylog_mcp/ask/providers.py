@@ -31,6 +31,9 @@ _THOUGHTS = re.compile(r"<think>.*?</think>", re.DOTALL)
 # Requests and bytes sent to each provider for the question being answered: provider -> [requests, bytes]. Set
 # by ask for one question, like client.requests_sent, so two questions at once each count their own.
 handed_over: ContextVar[dict[str, list[int]] | None] = ContextVar("handed_over", default=None)
+# What was handed to each provider asked, when someone shows it (the admin page's "what was sent"): provider,
+# task, the state and the questions, as redacted as the provider got them.
+sent_payloads: ContextVar[list[dict[str, Any]] | None] = ContextVar("sent_payloads", default=None)
 
 
 class ProviderError(GraylogError):
@@ -103,6 +106,8 @@ class Providers:
         for cfg, client in self._able(task, policy, words):
             if any(failure["provider"] == cfg.name for failure in failed):
                 continue
+            if (shown := sent_payloads.get()) is not None:
+                shown.append({"provider": cfg.name, "task": task, "state": state, "questions": questions})
             try:
                 believed = _checked(questions, await client.answers(state, questions))
                 if not believed:
