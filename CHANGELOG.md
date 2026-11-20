@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
   with `{argument}` placeholders, `arguments` with optional defaults), checked when the config loads and carried
   by a team bundle. The instructions tell the model to call `ask` first with such a question, repeat how it was
   understood, ask back on `clarify` and answer in the asker's language.
+- A guide in Vietnamese for business analysts and testers: `docs/huong-dan-ba-qa.md`.
 - The admin page asks in plain words: on Logs, a question opens the view it describes, with how it was read as
   chips to edit (environment, time range, kind of error, glossary terms); a code opens its journey across
   services; the glossary's terms and the presets are a click away; *What was sent* lists what each model

@@ -606,7 +606,8 @@ server offers the prompts of its default config.
 
 The server's instructions also tell the model how to treat a question from someone who is not a developer:
 call `ask` first with their words, say how it understood them, ask back what `clarify` asks, follow a code with
-`trace_request`, and answer in their language.
+`trace_request`, and answer in their language. A guide for business analysts and testers, in Vietnamese, covers
+the admin page and these prompts: [docs/huong-dan-ba-qa.md](docs/huong-dan-ba-qa.md).
 
 ## Root cause analysis
 
