@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -112,8 +113,9 @@ open, fetch or edit it.
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
 
 
-def build_server(app: App | AppPool) -> MCPServer:
-    """``app`` serves every call, or with a pool (shared server) the App of the caller's repository."""
+def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = None) -> MCPServer:
+    """``app`` serves every call, or with a pool (shared server) the App of the caller's repository. ``auth``:
+    the OAuth authorization server provider and its settings, for the remote channel."""
     current: Callable[[], App]
     startup: App | None
     if isinstance(app, AppPool):
@@ -150,6 +152,8 @@ def build_server(app: App | AppPool) -> MCPServer:
         version=__version__,
         instructions=INSTRUCTIONS,
         lifespan=lifespan,
+        auth_server_provider=auth[0] if auth else None,
+        auth=auth[1] if auth else None,
     )
 
     async def call(op: Operation, refused: str | None, ctx: RecordContext, /, **kwargs: Any) -> str:

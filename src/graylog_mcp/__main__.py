@@ -208,6 +208,8 @@ def run_http(
 
     if admin and not _is_loopback(host):
         raise ConfigError("--admin writes files on this machine: it only works on 127.0.0.1 / localhost")
+    oauth = config.http.oauth if config is not None else None
+    remote = remote_channel_app(config, port) if config is not None else None
     admin_app = admin_for_server(config_path, port) if admin else None
     app = build_http_app(config, host, path, allow_no_auth, shared, config_path, admin=admin_app)
     log.info(
@@ -226,11 +228,58 @@ def run_http(
         threading.Thread(target=_repair_registrations, args=(config_path, port), daemon=True).start()
     try:
         # Claude sessions keep event streams open: give them a few seconds, not forever, on Ctrl+C or stop
-        uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=True, timeout_graceful_shutdown=3)
+        local = uvicorn.Config(
+            app, host=host, port=port, log_level="info", proxy_headers=True, timeout_graceful_shutdown=3
+        )
+        if remote is None:
+            uvicorn.Server(local).run()
+        else:
+            assert oauth is not None
+            log.info(
+                "remote channel (OAuth, pairing code) on http://%s:%s%s for %s",
+                oauth.host,
+                oauth.port,
+                path,
+                oauth.public_url,
+            )
+            outside = uvicorn.Config(
+                remote, host=oauth.host, port=oauth.port, log_level="info", timeout_graceful_shutdown=3
+            )
+            asyncio.run(_serve_together(uvicorn.Server(local), uvicorn.Server(outside)))
     finally:
         if admin:
             ui_links.forget()
             service.clear_pid()
+
+
+def remote_channel_app(config: Config, port: int) -> Any:
+    """The ASGI app of [http.oauth], or None when it is off or set wrongly: then the local server runs alone,
+    and the log says why, so a mistake in the remote channel never stops the server every session uses."""
+    oauth = config.http.oauth
+    if not oauth.enabled:
+        return None
+    try:
+        if oauth.port == port:
+            raise ConfigError(
+                f"http.oauth.port: the remote channel needs a port of its own, not {port}: the admin page and "
+                "/status must not be reachable through the tunnel"
+            )
+        from graylog_mcp.remote_channel import build_remote_app
+
+        return build_remote_app(config)
+    except ConfigError as exc:
+        log.error("remote channel not started: %s", exc)
+        return None
+
+
+async def _serve_together(*servers: Any) -> None:
+    """Each uvicorn server stops on its own signal; when one stops, for a signal or a port in use, so do the
+    others, so the process never keeps half of its ports."""
+    tasks = [asyncio.create_task(s.serve()) for s in servers]
+    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for server in servers:
+        server.should_exit = True
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _http_token_from_env() -> str | None:
@@ -266,7 +315,7 @@ def _version(argv: list[str]) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers", "version", "bundle",
+    "ui", "connect", "headers", "version", "bundle", "pair",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
     "hook",  # internal: what Claude Code runs once 'install claude-code --trace' added the hooks
 )  # fmt: skip
@@ -289,6 +338,7 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp logout [INSTANCE...]       forget saved tokens/passwords (--ask: the ask tool's key)
        graylog-mcp repo list|add|remove       repositories served by each group
        graylog-mcp bundle export|import       share a team's settings, without secrets
+       graylog-mcp pair [--list|--revoke ID]  a one-time code to pair ChatGPT web over [http.oauth]
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
@@ -735,6 +785,38 @@ def _bundle(argv: list[str]) -> int:
     print(f"✓ imported {view.name} into {view.team_file}")
     if view.logins:
         print(f"next: graylog-mcp login {' '.join(view.logins)}")
+    return 0
+
+
+def _pair(argv: list[str]) -> int:
+    from datetime import datetime
+
+    from graylog_mcp.oauth_store import OAuthStore, show_code
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp pair",
+        description="A one-time code to pair ChatGPT (or another client on the internet) over [http.oauth]",
+    )
+    parser.add_argument("--list", action="store_true", help="the clients paired so far")
+    parser.add_argument("--revoke", metavar="CLIENT_ID", help="unpair one client ('all' for every one)")
+    args = parser.parse_args(argv)
+    store = OAuthStore()
+    if args.revoke:
+        done = store.remove_all() if args.revoke == "all" else int(store.remove_client(args.revoke))
+        print(f"unpaired {done} client(s)" if done else f"no client {args.revoke!r}")
+        return 0 if done else 1
+    if args.list:
+        paired = store.clients()
+        for c in paired:
+            used = datetime.fromtimestamp(c["used"]).strftime("%Y-%m-%d %H:%M") if c["used"] else "never"
+            print(f"{c['client_id']}  {c['name']}  last used {used}{'' if c['active'] else '  (signed out)'}")
+        if not paired:
+            print("no client paired")
+        return 0
+    code, expires = store.new_code()
+    until = datetime.fromtimestamp(expires).strftime("%H:%M")
+    print(f"pairing code: {show_code(code)}  (one use, until {until})")
+    print("type it on the page ChatGPT opens when you connect it; nobody else needs to see it")
     return 0
 
 
@@ -1462,6 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
         "logout": _logout,
         "repo": _repo,
         "bundle": _bundle,
+        "pair": _pair,
         "doctor": _doctor,
         "detect": _detect,
         "install": _install,

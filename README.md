@@ -1213,6 +1213,52 @@ graylog-mcp installed, the remote written by `connect` applies. Registered for e
 runs in (`${PWD}`), so list repositories by name in `repos`, or use `connect --project` for the ones listed by
 remote.
 
+## ChatGPT web
+
+ChatGPT connects only to a server on the internet, over HTTPS, signing in with OAuth. graylog-mcp can be that
+server for the person running it, with everything **off by default**:
+
+```toml
+# ~/.config/graylog-mcp/config.toml (your own config: a repository's file may set none of this)
+[http.oauth]
+enabled = true
+public_url = "https://logs-you.example.com"    # the https address of your tunnel
+# port = 8766                                   # the port the tunnel forwards to, apart from the local one
+# allowed_redirects = ["https://chatgpt.com/connector_platform_oauth_redirect"]
+# access_minutes = 60                           # an access token's life (at most 1440)
+# refresh_days = 7                              # a refresh token's life (at most 90)
+
+[instances.dev]
+url = "https://graylog-dev.example.com"
+remote_access = true                            # each environment ChatGPT may read, one by one
+```
+
+1. Run a tunnel you are allowed to use (cloudflared, ngrok, ChatGPT's own Secure MCP Tunnel) from `public_url`
+   to `127.0.0.1:8766`. graylog-mcp never starts one, nor anything that opens a port to the internet.
+2. Start the server over HTTP (`graylog-mcp start`, or `serve --transport streamable-http`); it serves the
+   channel on its own port beside the local one. Changes to `[http.oauth]` or `remote_access` take a restart.
+3. In ChatGPT (developer mode), add a connector with `https://logs-you.example.com/mcp` and OAuth. ChatGPT
+   registers itself and opens a page asking for a **pairing code**: make one on the admin page (Connect, *ChatGPT
+   web*, *New pairing code*) or with `graylog-mcp pair`, and type it there.
+
+What protects it:
+
+- The channel's port serves the MCP endpoint, the OAuth endpoints and the pairing page, nothing else: the admin
+  page and `/status` are on the local port only, whatever Host header the tunnel sends. Every MCP request needs
+  a token.
+- A client gets a token only after someone types a code shown on this machine: 8 characters, one use, 10
+  minutes; five wrong tries cancel the request. A client may register to the `allowed_redirects` only.
+- A paired client sees only the environments with `remote_access = true`: the others are not listed, and an
+  error names none of them. A group, `[environments]` and a repository's own file cannot set it.
+- Access tokens last an hour; a refresh token works once and is replaced. `~/.config/graylog-mcp/oauth.json`
+  (owner-only) keeps the paired clients and hashes of the tokens and codes, never the tokens themselves.
+  `graylog-mcp pair --list` lists the clients, `--revoke ID` (or `all`) unpairs, as does the admin page.
+- Activity records a call over the channel with the paired client's name; the server log, each pairing, refresh
+  and wrong code.
+
+What it cannot protect: the redacted results go to OpenAI. Turn this on for an environment whose logs may leave
+the company that way, with a strict [redaction](#configuration) profile (`profile = "pii"` or `"strict"`).
+
 ## Testing
 
 ```bash

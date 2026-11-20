@@ -39,6 +39,7 @@ from graylog_mcp.admin import forms
 from graylog_mcp.admin.http import body as _body
 from graylog_mcp.admin.http import err as _err
 from graylog_mcp.admin.providers_page import provider_routes
+from graylog_mcp.admin.remote_page import remote_routes
 from graylog_mcp.admin.web_ask import ask_routes
 from graylog_mcp.client import GraylogError, QueryError
 from graylog_mcp.config import (
@@ -1123,6 +1124,7 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/clients/install", install_client, methods=["POST"]),
         *ask_routes(state),
         *provider_routes(state),
+        *remote_routes(state),
         Route("/{path:path}", index),  # last: what no route above takes
     ]
     inner = Starlette(routes=routes)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, errorText } from "../api";
 import { currentPage, navigate, state, toast } from "../store";
 import type { ClientData, ClientSnippet } from "../scripts/types";
+import { RemoteCard } from "./RemoteCard";
 import { AsyncButton, Page, Tabs } from "./UI";
 export function Connect() {
     const [source, setSource] = useState("git"),
@@ -268,6 +269,7 @@ export function Connect() {
                 <pre id="ccCommand">{data?.["claude-code-command"]}</pre>
             </div>
             <TraceCard hidden={selected?.key !== "claude-code"} />
+            <RemoteCard />
         </Page>
     );
 }

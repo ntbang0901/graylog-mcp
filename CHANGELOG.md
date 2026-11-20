@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- ChatGPT web, off by default: `[http.oauth]` serves OAuth 2.1 (dynamic registration, PKCE) on a port of its
+  own, for a tunnel the user runs; the admin page and `/status` are not on it. A client gets a token only after
+  someone types a one-time pairing code shown on this machine (admin page, Connect; or `graylog-mcp pair`), may
+  redirect only to `allowed_redirects`, and sees only the environments with `remote_access = true`, which a
+  repository's own file, a group or `[environments]` cannot set. Tokens are kept as hashes; a refresh token works
+  once. `graylog-mcp pair --list` and `--revoke` (and the admin page) list and unpair clients.
 - MCP prompts for a task, for people who are not developers: `find_error` (a problem in their own words),
   `trace_code` (an order code or trace id), `check_after_change` (a release or a test run) and `ticket_evidence`
   (log evidence for a bug ticket, in Markdown), beside `scan`. A team adds its own in `[prompts.<name>]` (`text`

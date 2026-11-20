@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from graylog_mcp.glossary import alias_key
@@ -161,6 +161,7 @@ class InstanceConfig:
     latency_unit: str = "auto"  # "auto": ms, but seconds for a field named like request_time
     aliases: tuple[str, ...] = ()  # words of a question that mean this instance, beside its own names
     provider_data: str = "question_and_logs"  # one of PROVIDER_DATA: what ask may hand to a provider here
+    remote_access: bool = False  # offered to the clients paired over [http.oauth]
 
     @property
     def api_base(self) -> str:
@@ -311,6 +312,23 @@ class ScanConfig:
     disabled: tuple[str, ...] = ()
 
 
+CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
+
+
+@dataclass(frozen=True)
+class OAuthConfig:
+    """[http.oauth]: the channel for a client on the internet (ChatGPT web), served on a port of its own that
+    a tunnel the user runs forwards to."""
+
+    enabled: bool = False
+    public_url: str = ""  # the tunnel's https address, without a path
+    host: str = "127.0.0.1"
+    port: int = 8766
+    allowed_redirects: tuple[str, ...] = (CHATGPT_REDIRECT,)
+    access_minutes: int = 60
+    refresh_days: int = 7
+
+
 @dataclass(frozen=True)
 class HttpConfig:
     host: str = "127.0.0.1"
@@ -320,6 +338,7 @@ class HttpConfig:
     allowed_hosts: tuple[str, ...] = ()
     # whether a shared server may read a repository folder named by a client; None: only on a loopback address
     repo_paths: bool | None = None
+    oauth: OAuthConfig = OAuthConfig()
 
 
 @dataclass(frozen=True)
@@ -599,11 +618,13 @@ _INSTANCE_KEYS = {
     "aggregation_api",
     "aliases",
     "provider_data",
+    "remote_access",
 } | _INVESTIGATION_KEYS
 _SECRET_KEYS = {"token", "password", "auth_token", "secret"}
 _REDACTION_KEYS = {"profile", "packs", "vn_cmnd", "sensitive_fields", "exclude_fields", "allow", "patterns"}
 _STACKTRACE_KEYS = {"app_packages", "max_frames", "max_app_frames"}
-_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths"}
+_HTTP_KEYS = {"host", "port", "path", "auth_token_env", "allowed_hosts", "repo_paths", "oauth"}
+_OAUTH_KEYS = {"enabled", "public_url", "host", "port", "allowed_redirects", "access_minutes", "refresh_days"}
 _PRESET_KEYS = {"description", "tool", "args"}
 _SCAN_KEYS = {"disable", "exclude", "rules"}
 _GLOSSARY_KEYS = {"terms", "codes", "error_words"}
@@ -867,6 +888,9 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     provider_data = data.get("provider_data", InstanceConfig.provider_data)
     if provider_data not in PROVIDER_DATA:
         raise ConfigError(f"{where}.provider_data: expected one of {', '.join(PROVIDER_DATA)}")
+    remote_access = data.get("remote_access", False)
+    if not isinstance(remote_access, bool):
+        raise ConfigError(f"{where}.remote_access: expected true or false")
     return InstanceConfig(
         name=name,
         url=url,
@@ -904,6 +928,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
         latency_unit=inv["latency_unit"],
         aliases=aliases,
         provider_data=provider_data,
+        remote_access=remote_access,
         **apis,
     )
 
@@ -1274,10 +1299,10 @@ def _unit_float(where: str, value: Any) -> float:
     return float(value)
 
 
-def _ask_tables_of_repo_files(source: Path, root: Path | None) -> list[dict[str, Any]]:
-    """The ``[ask]`` tables written in a repository's own files: the config file when it is one, and what it
-    includes from inside the repository. A user or central file it includes from outside is not the
-    repository's, and neither is a file outside that includes one."""
+def _repo_files(source: Path, root: Path | None) -> list[dict[str, Any]]:
+    """What a repository's own files hold: the config file when it is one, and what it includes from inside
+    the repository. A user or central file it includes from outside is not the repository's, and neither is a
+    file outside that includes one."""
     source = source.resolve()
     root = root.resolve() if root is not None else None
     # outside any git repository (an unpacked archive) a project config still speaks for the folder it lies in
@@ -1296,8 +1321,8 @@ def _ask_tables_of_repo_files(source: Path, root: Path | None) -> list[dict[str,
                 data = tomllib.load(fh)
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
             continue  # read_config_file has already said what is wrong with it
-        if owned(path) and isinstance(data.get("ask"), dict):
-            tables.append(data["ask"])
+        if owned(path):
+            tables.append(data)
         includes = data.get("include", [])
         for item in [includes] if isinstance(includes, str) else includes if isinstance(includes, list) else []:
             try:
@@ -1308,6 +1333,28 @@ def _ask_tables_of_repo_files(source: Path, root: Path | None) -> list[dict[str,
                 seen.add(inner)
                 pending.append(inner)
     return tables
+
+
+def _has_key(data: Any, key: str) -> bool:
+    if isinstance(data, dict):
+        return key in data or any(_has_key(v, key) for v in data.values())
+    return False
+
+
+def _refuse_remote_in_repo(files: Sequence[dict[str, Any]]) -> None:
+    """A repository's own file must not open an environment to the internet: cloning one is not consenting."""
+    for data in files:
+        http = data.get("http")
+        if isinstance(http, dict) and "oauth" in http:
+            raise ConfigError(
+                "http.oauth: not allowed in a repository's own config file (it opens a channel from the "
+                "internet); set it in your user config"
+            )
+        if _has_key({k: v for k, v in data.items() if k in ("instances", "groups")}, "remote_access"):
+            raise ConfigError(
+                "remote_access: not allowed in a repository's own config file (it offers an environment to "
+                "clients on the internet); set it in your user config"
+            )
 
 
 def _parse_ask(data: Any, repo_tables: Sequence[dict[str, Any]] = ()) -> AskConfig:
@@ -1499,13 +1546,61 @@ def _parse_http(data: Any) -> HttpConfig:
         auth_token=token,
         allowed_hosts=_str_list("http.allowed_hosts", data.get("allowed_hosts", [])),
         repo_paths=repo_paths,
+        oauth=_parse_oauth(data.get("oauth", {})),
+    )
+
+
+def _redirect_ok(url: str) -> bool:
+    parts = urlsplit(url)
+    local = parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")
+    return (parts.scheme == "https" or local) and bool(parts.hostname) and not parts.fragment
+
+
+def _parse_oauth(data: Any) -> OAuthConfig:
+    where = "http.oauth"
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: expected a table")
+    _check_keys(where, data, _OAUTH_KEYS)
+    enabled = data.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"{where}.enabled: expected true or false")
+    public_url = data.get("public_url", "")
+    if not isinstance(public_url, str):
+        raise ConfigError(f"{where}.public_url: expected a string")
+    public_url = public_url.strip().rstrip("/")
+    parts = urlsplit(public_url)
+    if public_url and (parts.scheme != "https" or not parts.hostname or parts.path or parts.query or parts.fragment):
+        raise ConfigError(
+            f"{where}.public_url: expected the tunnel's https address alone, e.g. https://logs.example.com"
+        )
+    if enabled and not public_url:
+        raise ConfigError(f"{where}.public_url: required when enabled: the https address your tunnel forwards")
+    redirects = _str_list(f"{where}.allowed_redirects", data.get("allowed_redirects", [CHATGPT_REDIRECT]))
+    for url in redirects:
+        if not _redirect_ok(url):
+            raise ConfigError(f"{where}.allowed_redirects: {url!r} is not an https address")
+    access = _positive_int(f"{where}.access_minutes", data.get("access_minutes", OAuthConfig.access_minutes))
+    refresh = _positive_int(f"{where}.refresh_days", data.get("refresh_days", OAuthConfig.refresh_days))
+    if access > 1440 or refresh > 90:
+        raise ConfigError(f"{where}: access_minutes is at most 1440 (a day), refresh_days at most 90")
+    host = data.get("host", OAuthConfig.host)
+    if not isinstance(host, str) or not host:
+        raise ConfigError(f"{where}.host: expected an address")
+    return OAuthConfig(
+        enabled=enabled,
+        public_url=public_url,
+        host=host,
+        port=_port(data.get("port", OAuthConfig.port)),
+        allowed_redirects=redirects,
+        access_minutes=access,
+        refresh_days=refresh,
     )
 
 
 _LABEL = r"[A-Za-z0-9_.-]+"
-# keys a group may set for all of its environments
+# keys a group may set for all of its environments; remote_access is decided per environment (dev is not prod)
 _GROUP_SHARED_KEYS = (_INSTANCE_KEYS - {"url", "description", "group", "environment", "token_env", "username_env",
-                      "password_env", "username"})  # fmt: skip
+                      "password_env", "username", "remote_access"})  # fmt: skip
 _GROUP_KEYS = _GROUP_SHARED_KEYS | {"description", "default_environment", "environments", "repos"}
 _ENVIRONMENT_KEYS = _GROUP_SHARED_KEYS | {"description"}
 
@@ -2005,7 +2100,9 @@ def parse_config(
             groups[inst.group] = GroupInfo(inst.group)
     presets = _parse_presets(data.get("presets", {}))
     repo_root = repo.root if repo is not None else None
-    ask = _parse_ask(data.get("ask", {}), _ask_tables_of_repo_files(Path(source), repo_root) if from_file else ())
+    own = _repo_files(Path(source), repo_root) if from_file else []
+    _refuse_remote_in_repo(own)
+    ask = _parse_ask(data.get("ask", {}), [d["ask"] for d in own if isinstance(d.get("ask"), dict)])
     glossary = _parse_glossary(data.get("glossary", {}), presets, ask.code_patterns)
     _check_aliases(glossary, instances)  # before the scope narrows them: a clash is a mistake wherever it runs
 

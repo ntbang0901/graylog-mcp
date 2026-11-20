@@ -200,6 +200,13 @@ path = "/mcp"
 auth_token_env = "GRAYLOG_MCP_HTTP_TOKEN"
 # allowed_hosts = ["mcp.example.com"]  # enables Host header (DNS rebinding) checks
 
+# ChatGPT web, off by default (README: ChatGPT web). Your own config only; each environment it may read also sets
+# remote_access = true.
+# [http.oauth]
+# enabled = true
+# public_url = "https://logs-you.example.com"  # your tunnel's https address, forwarding to the port below
+# port = 8766
+
 # A shared server on a VM serving the team: settings of repositories it knows by identity (git remote or name),
 # since it cannot read their .graylog-mcp.toml. See "A server for the team on a VM" in the README.
 # [repos."acme/payment-api"]

@@ -81,6 +81,12 @@ Model được dặn: gọi `ask` với nguyên lời của bạn, nhắc lại 
 câu hỏi chưa rõ, và trả lời bằng ngôn ngữ bạn viết. Team có thể thêm prompt riêng (ví dụ "Kiểm tra sau release");
 chúng hiện cùng danh sách.
 
+**ChatGPT web.** Kênh này tắt theo mặc định. Nếu bạn (hoặc team) bật nó (README, mục *ChatGPT web*), ChatGPT sẽ
+mở một trang hỏi **mã ghép đôi** khi bạn thêm connector. Lấy mã trên trang quản trị (**Connect**, thẻ **ChatGPT
+web**, **New pairing code**) hoặc bằng lệnh `graylog-mcp pair`, rồi gõ mã vào trang đó. Mã chỉ dùng được một lần
+trong 10 phút. ChatGPT chỉ thấy những môi trường đã được đánh dấu `remote_access`, và kết quả (đã che) sẽ đi tới
+OpenAI, nên hãy hỏi người cấu hình trước khi bật cho một môi trường.
+
 ## 4. Đọc kết quả cho đúng
 
 - **Số lượng là số thật** do Graylog đếm, không phải ước lượng.
