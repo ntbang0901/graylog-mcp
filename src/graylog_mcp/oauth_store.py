@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import secrets
 import stat
@@ -27,7 +28,16 @@ CODE_MINUTES = 10
 MAX_CLIENTS = 50
 MAX_CODES = 5
 
+MAX_NAME = 80
+
 _lock = threading.Lock()
+log = logging.getLogger(__name__)
+
+
+def label(name: str) -> str:
+    """A client's name as it may be shown or logged: whoever registers chooses it."""
+    clean = "".join(ch if ch.isprintable() else " " for ch in name).strip()
+    return clean[:MAX_NAME] or "a client"
 
 
 def default_path() -> Path:
@@ -74,9 +84,17 @@ class OAuthStore:
     def _read(self) -> dict[str, Any]:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
             data = {}
+        except (ValueError, UnicodeDecodeError):
+            data = None
         if not isinstance(data, dict):
+            # a damaged file starts again empty, but is kept aside first: the next write would replace it
+            aside = self.path.with_name(f"{self.path.name}.bad-{int(self.clock())}")
+            os.replace(self.path, aside)
+            log.warning(
+                "remote channel: %s could not be read; moved to %s, every client must pair again", self.path, aside
+            )
             data = {}
         for key in ("clients", "tokens", "codes"):
             if not isinstance(data.get(key), dict):
@@ -131,6 +149,10 @@ class OAuthStore:
         with self._change() as data:
             return data["codes"].pop(digest(code), None) is not None
 
+    def drop_codes(self) -> None:
+        with self._change() as data:
+            data["codes"] = {}
+
     # ---------------------------------------------------------------- clients
 
     def add_client(self, info: dict[str, Any]) -> None:
@@ -158,7 +180,7 @@ class OAuthStore:
             out.append(
                 {
                     "client_id": client_id,
-                    "name": entry["info"].get("client_name") or client_id,
+                    "name": label(entry["info"].get("client_name") or client_id),
                     "paired": entry["paired"],
                     "used": entry["used"],
                     "active": bool(live),
@@ -195,7 +217,8 @@ class OAuthStore:
     ) -> tuple[str, str]:
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         now = self.clock()
-        common = {"client_id": client_id, "scopes": scopes, "resource": resource}
+        # the pair shares a grant: revoking either one revokes both
+        common = {"client_id": client_id, "scopes": scopes, "resource": resource, "grant": secrets.token_hex(8)}
         with self._change() as data:
             if client_id not in data["clients"]:
                 raise KeyError(client_id)
@@ -217,7 +240,9 @@ class OAuthStore:
 
     def revoke(self, value: str) -> None:
         with self._change() as data:
-            data["tokens"].pop(digest(value), None)
+            found = data["tokens"].pop(digest(value), None)
+            if found is not None and found.get("grant"):
+                data["tokens"] = {k: t for k, t in data["tokens"].items() if t.get("grant") != found["grant"]}
 
     def client_name(self, client_id: str) -> str:
         info = self.client(client_id) or {}

@@ -11,6 +11,7 @@ import pytest
 from graylog_mcp import operations
 from graylog_mcp.admin import forms
 from graylog_mcp.admin.app import AdminState, build_app
+from graylog_mcp.config import ConfigError
 from graylog_mcp.setup import tomlwrite
 from tests.fake_graylog import FakeGraylog
 from tests.fake_jev import FakeJev
@@ -200,6 +201,37 @@ async def test_a_repository_file_may_not_choose_providers(page):
     assert refused.status_code == 400 and "repository" in refused.json()["error"]
     assert (await client.get("/api/providers")).json()["editable"] is False
     assert path.read_text() == before
+
+
+async def test_a_repository_file_cannot_have_its_providers_tested(page, tmp_path, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")
+    ran = tmp_path / "ran"
+    helper = {"kind": "command", "command": ["touch", str(ran)], "can": ["understand"]}
+    gateway = {**GATEWAY, "api_key_env": "TYPESAFE_API_KEY"}
+    openai = FakeOpenAI()
+    client, _, _ = page(
+        {**BASE, "ask": {"providers": {"helper": helper, "gw": gateway}}}, openai.transport, ".graylog-mcp.toml"
+    )
+    for name in ("helper", "gw"):
+        refused = await client.post("/api/providers/test", json={"name": name})
+        assert refused.status_code == 400 and "repository" in refused.json()["error"]
+    assert not ran.exists() and openai.bodies == []
+
+
+def test_a_repository_file_is_saved_only_with_what_it_may_set(tmp_path):
+    from graylog_mcp.setup import configfile
+
+    project = tmp_path / ".graylog-mcp.toml"
+    for extra in ({"remote_access": True}, {}):
+        data = {"instances": {"dev": {"url": "https://dev.test", **extra}}}
+        if not extra:
+            data["ask"] = {"base_url": "https://llm.example.com"}
+        with pytest.raises(ConfigError, match="not allowed in a repository's own config file"):
+            configfile.save(project, data)
+    assert not project.exists()
+    configfile.save(
+        tmp_path / "config.toml", {"instances": {"dev": {"url": "https://dev.test", "remote_access": True}}}
+    )
 
 
 # ------------------------------------------------------------------ the Playground's form

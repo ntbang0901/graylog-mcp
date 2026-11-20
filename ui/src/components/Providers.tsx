@@ -107,6 +107,7 @@ function Card({
             <div class="actions mt-sm">
                 <AsyncButton
                     class="btn sm"
+                    disabled={!editable}
                     title="Hand it one fixed sample question, nothing of yours"
                     run={async () => {
                         setTested(null);

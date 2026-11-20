@@ -118,6 +118,110 @@ def test_five_wrong_codes_cancel_the_request_and_a_code_works_once(tmp_path):
     assert provider.pair(pending(provider), code) == ("wrong", None)
 
 
+def test_guessing_across_many_requests_voids_the_live_codes(tmp_path):
+    store = OAuthStore(tmp_path / "oauth.json")
+    provider = PairingProvider(remote().http.oauth, store, PUBLIC + "/mcp")
+    code, _ = store.new_code()
+    for _ in range(4):  # four requests, five wrong tries each: each request alone stays under its limit
+        request = pending(provider)
+        for _ in range(5):
+            provider.pair(request, "AAAA-AAAA")
+    assert provider.pair(pending(provider), code) == ("wrong", None)
+
+
+def test_registration_is_refused_when_too_large_or_to_an_address_not_allowed(tmp_path):
+    from mcp.server.auth.provider import RegistrationError
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    store = OAuthStore(tmp_path / "oauth.json")
+    provider = PairingProvider(remote(allowed_redirects=["https://chat.example.com"]).http.oauth, store, PUBLIC)
+
+    def register(redirect: str = "https://chat.example.com/", **fields) -> str | None:
+        """The error a registration gets, None when accepted (RegistrationError is frozen: no pytest.raises)."""
+        info = OAuthClientInformationFull(client_id="c1", redirect_uris=[redirect], **fields)
+        try:
+            asyncio.run(provider.register_client(info))
+        except RegistrationError as exc:
+            return exc.error
+        return None
+
+    assert register(client_name="x" * 5000) == "invalid_client_metadata"
+    assert register("https://chat.example.com/other") == "invalid_redirect_uri"
+    assert store.client("c1") is None
+    assert register(client_name="Chat\nGPT") is None  # the configured address had no "/", this one has
+    assert store.client("c1") is not None
+
+
+def test_a_client_name_is_shown_and_logged_on_one_line():
+    from graylog_mcp.oauth_store import label
+
+    assert label("Chat\nGPT\x1b[31m") == "Chat GPT [31m" and label("") == "a client" and len(label("x" * 500)) == 80
+
+
+def test_revoking_a_refresh_token_revokes_its_access_token(tmp_path):
+    store = OAuthStore(tmp_path / "oauth.json")
+    store.add_client({"client_id": "c1"})
+    access, refresh = store.issue("c1", [SCOPE], None, 3600, 86400)
+    other, _ = store.issue("c1", [SCOPE], None, 3600, 86400)
+    store.revoke(refresh)
+    assert store.token(access, "access") is None and store.token(other, "access") is not None
+
+
+def test_a_damaged_store_is_kept_aside_and_started_again(tmp_path, caplog):
+    path = tmp_path / "oauth.json"
+    path.write_text("{not json", encoding="utf-8")
+    store = OAuthStore(path)
+    assert store.clients() == [] and not path.exists()
+    assert [p.read_text() for p in tmp_path.glob("oauth.json.bad-*")] == ["{not json"]
+    assert "could not be read" in caplog.text
+    store.new_code()
+    assert path.exists()
+
+
+def test_a_remote_client_is_not_told_the_names_of_other_environments():
+    cfg = remote_config(
+        make_config(
+            instances={"main": PROD, "dev": DEV},
+            presets={"prod_errors": {"tool": "search_logs", "args": {"instance": "main", "query": "level:3"}},
+                     "dev_errors": {"tool": "search_logs", "args": {"instance": "dev", "query": "level:3"}}},
+            glossary={"terms": {"pay": {"aliases": ["thanh toán"], "query": "service:payment",
+                                        "instances": ["main", "dev"], "preset": "prod_errors"},
+                                "refund": {"aliases": ["hoàn tiền"], "query": "service:refund", "instances": ["main"]}},
+                      "codes": {"order": {"pattern": "ORD-[0-9]+", "instances": ["main"]}}},
+        )
+    )  # fmt: skip
+    assert list(cfg.presets) == ["dev_errors"]
+    assert list(cfg.glossary.terms) == ["pay"] and cfg.glossary.terms["pay"].instances == ("dev",)
+    assert cfg.glossary.terms["pay"].preset is None and cfg.glossary.codes == {}
+
+
+async def test_a_busy_remote_port_leaves_the_local_server_running():
+    from graylog_mcp.__main__ import _serve_together
+
+    class Local:
+        should_exit = False
+        stopped = False
+
+        async def serve(self):
+            while not self.should_exit:
+                await asyncio.sleep(0.01)
+            self.stopped = True
+
+    class Busy:
+        should_exit = False
+
+        async def serve(self):
+            raise SystemExit(3)
+
+    local = Local()
+    running = asyncio.create_task(_serve_together(local, Busy()))
+    await asyncio.sleep(0.1)
+    assert not running.done() and not local.stopped
+    local.should_exit = True
+    await asyncio.wait_for(running, 2)
+    assert local.stopped
+
+
 def test_a_pairing_code_expires(tmp_path):
     now = [1000.0]
     store = OAuthStore(tmp_path / "oauth.json", clock=lambda: now[0])

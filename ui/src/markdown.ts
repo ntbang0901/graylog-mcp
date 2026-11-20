@@ -11,11 +11,11 @@ function text(v: unknown): string {
     if (v == null) return "";
     return typeof v === "object" ? JSON.stringify(v) : String(v);
 }
-// a pipe would end the cell and a newline the row
+// a pipe would end the cell and a newline the row; a log line's link, image or HTML must not come alive where the
+// table is pasted, so Markdown's own characters are taken literally before the line breaks become <br>
 export function cell(v: unknown, max = MAX_CELL): string {
     return cap(text(v), max)
-        .replace(/\\/g, "\\\\")
-        .replace(/\|/g, "\\|")
+        .replace(/([\\`*_[\]<>|])/g, "\\$1")
         .replace(/\r?\n/g, "<br>");
 }
 // text in a heading or a list item: Markdown's own characters are taken literally

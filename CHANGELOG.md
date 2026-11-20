@@ -141,6 +141,10 @@ All notable changes to this project are documented here. The format follows
   the queries in `error_queries`.
 
 ### Fixed
+- `ask` reads "since this morning" and "từ sáng nay" from the start of the morning to now, not to noon.
+- A repository's own config file can no longer test a model provider or be saved from the admin page with a
+  setting it may not decide (the providers of `ask`, `[http.oauth]`, `remote_access`).
+- A table cell copied as Markdown takes a log line's links, images, HTML and emphasis literally.
 - `ask` finds an order or transaction code that the redactor would mask (a number shaped like a card number): the code
   is read from the question as typed, and only the redacted question is sent to TypeSafe.
 - An `ask` question naming several codes stays under the size cap: its traces share `max_output_chars`.

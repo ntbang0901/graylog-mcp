@@ -818,7 +818,7 @@ def _parse_instance(name: str, data: dict[str, Any], defaults: dict[str, Any]) -
     auth = data.get("auth")
     if auth is None:
         auth = "basic" if ("password_env" in data or "username" in data or "username_env" in data) else "token"
-    if auth not in {"token", "basic"}:
+    if auth not in ("token", "basic"):  # a tuple: a list given here is refused, not a TypeError
         raise ConfigError(f"{where}.auth: expected 'token' or 'basic'")
     token = username = password = None
     unavailable = None
@@ -1357,14 +1357,15 @@ def _refuse_remote_in_repo(files: Sequence[dict[str, Any]]) -> None:
             )
 
 
-def _parse_ask(data: Any, repo_tables: Sequence[dict[str, Any]] = ()) -> AskConfig:
-    """``repo_tables``: the ``[ask]`` tables of a repository's own files, which must not choose where the key
-    and the questions are sent, which environment variable is sent as the key, or which program runs. Turning
+def check_repository_files(files: Sequence[dict[str, Any]]) -> None:
+    """What a repository's own files may not set: where the API key and the questions are sent, which
+    environment variable is sent as the key, which program runs, and the channel from the internet. Turning
     every provider off is theirs to ask for: it only keeps things on the machine."""
-    if not isinstance(data, dict):
-        raise ConfigError("ask: expected a table")
-    _check_keys("ask", data, _ASK_KEYS)
-    for table in repo_tables:
+    _refuse_remote_in_repo(files)
+    for data in files:
+        table = data.get("ask")
+        if not isinstance(table, dict):
+            continue
         for name in ("base_url", "api_key_env", "providers", "provider_order"):
             if name in table and not (name == "provider_order" and table[name] == []):
                 raise ConfigError(
@@ -1372,6 +1373,12 @@ def _parse_ask(data: Any, repo_tables: Sequence[dict[str, Any]] = ()) -> AskConf
                     "key and the questions go, or which program runs); set it in your user config or a central "
                     "config instead"
                 )
+
+
+def _parse_ask(data: Any) -> AskConfig:
+    if not isinstance(data, dict):
+        raise ConfigError("ask: expected a table")
+    _check_keys("ask", data, _ASK_KEYS)
     from graylog_mcp import secrets  # local import: secrets uses check_env_name
 
     env = check_env_name(data.get("api_key_env", "TYPESAFE_API_KEY"), "ask.api_key_env")
@@ -2100,9 +2107,9 @@ def parse_config(
             groups[inst.group] = GroupInfo(inst.group)
     presets = _parse_presets(data.get("presets", {}))
     repo_root = repo.root if repo is not None else None
-    own = _repo_files(Path(source), repo_root) if from_file else []
-    _refuse_remote_in_repo(own)
-    ask = _parse_ask(data.get("ask", {}), [d["ask"] for d in own if isinstance(d.get("ask"), dict)])
+    if from_file:
+        check_repository_files(_repo_files(Path(source), repo_root))
+    ask = _parse_ask(data.get("ask", {}))
     glossary = _parse_glossary(data.get("glossary", {}), presets, ask.code_patterns)
     _check_aliases(glossary, instances)  # before the scope narrows them: a clash is a mistake wherever it runs
 

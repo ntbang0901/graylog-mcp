@@ -239,7 +239,7 @@ def run_http(
                 "remote channel (OAuth, pairing code) on http://%s:%s%s for %s",
                 oauth.host,
                 oauth.port,
-                path,
+                config.http.path if config is not None else path,  # the channel serves the config's path
                 oauth.public_url,
             )
             outside = uvicorn.Config(
@@ -272,14 +272,22 @@ def remote_channel_app(config: Config, port: int) -> Any:
         return None
 
 
-async def _serve_together(*servers: Any) -> None:
-    """Each uvicorn server stops on its own signal; when one stops, for a signal or a port in use, so do the
-    others, so the process never keeps half of its ports."""
-    tasks = [asyncio.create_task(s.serve()) for s in servers]
-    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for server in servers:
-        server.should_exit = True
-    await asyncio.gather(*tasks, return_exceptions=True)
+async def _serve_together(local: Any, remote: Any) -> None:
+    """Both uvicorn servers in one loop. A signal stops both, whichever server's handler caught it. The remote
+    one failing alone (its port in use) leaves the local one running: every session uses that one."""
+
+    async def remote_serve() -> None:
+        try:
+            await remote.serve()
+        except SystemExit as exc:  # uvicorn's answer to a port it cannot bind; out of a task it would end the loop
+            log.error("remote channel not started: could not listen on its port (exit %s)", exc.code)
+
+    mine, theirs = asyncio.create_task(local.serve()), asyncio.create_task(remote_serve())
+    await asyncio.wait([mine, theirs], return_when=asyncio.FIRST_COMPLETED)
+    if not mine.done() and not remote.should_exit:  # the remote one failed, no signal: keep serving locally
+        await mine
+    local.should_exit = remote.should_exit = True
+    await asyncio.gather(mine, theirs, return_exceptions=True)
 
 
 def _http_token_from_env() -> str | None:

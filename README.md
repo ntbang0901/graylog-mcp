@@ -955,10 +955,11 @@ like a secret (a private key, a JWT, a bearer or basic credential, a password in
 Importing writes `teams/<name>.toml` beside your config file (`~/.config/graylog-mcp/config.toml`, or `--config`)
 and adds it first to the file's `include`, so everything in your own file stays in force. The preview lists every
 setting added, changed and removed; apart, the changes that decide where a token or log text goes (a URL of an
-environment you already have, `verify_tls = false`, `provider_data`), and the settings your own file sets
-differently. Nothing is written until you confirm (`--yes` in a script). Variables for the secrets are named by
-the server after each environment (`GRAYLOG_PAYMENT_PROD_TOKEN`, `_USERNAME`, `_PASSWORD`), never by the bundle,
-and `graylog-mcp login` asks for each. A bundle with a key outside this list, or of a newer format than this
+environment you already have, `verify_tls = false`, `provider_data`, a new environment whose secret is already
+saved, a redaction that hides less, a larger limit), and the settings your own file sets differently. Nothing is
+written until you confirm (`--yes` in a script). Variables for the secrets are named by the server after each
+environment (`GRAYLOG_PAYMENT_PROD_TOKEN`, `_USERNAME`, `_PASSWORD`), never by the bundle, and `graylog-mcp
+login` asks for each; a bundle whose two environments would share one is refused. A bundle with a key outside this list, or of a newer format than this
 version reads, is refused; so is a team file edited by hand to add one, when the config loads. Importing a newer
 version of the bundle replaces the team file and keeps a `.bak`; if the config would no longer load, both files
 are put back.
@@ -1247,7 +1248,9 @@ What protects it:
   page and `/status` are on the local port only, whatever Host header the tunnel sends. Every MCP request needs
   a token.
 - A client gets a token only after someone types a code shown on this machine: 8 characters, one use, 10
-  minutes; five wrong tries cancel the request. A client may register to the `allowed_redirects` only.
+  minutes; five wrong tries cancel the request, and twenty wrong codes in ten minutes, across requests, void
+  every code still waiting. A client may register to the `allowed_redirects` only, with at most 4 KB of
+  metadata; its name is shown cut to 80 characters.
 - A paired client sees only the environments with `remote_access = true`: the others are not listed, and an
   error names none of them. A group, `[environments]` and a repository's own file cannot set it.
 - Access tokens last an hour; a refresh token works once and is replaced. `~/.config/graylog-mcp/oauth.json`

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from graylog_mcp import secrets
-from graylog_mcp.config import _INVESTIGATION_KEYS, ConfigError, read_config_file
+from graylog_mcp.config import _INVESTIGATION_KEYS, ConfigError, parse_config, read_config_file
 from graylog_mcp.redact import Redactor
 
 FORMAT = 1  # raise when a bundle gains something an older server would misread
@@ -223,27 +223,74 @@ def user_config_path() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "graylog-mcp" / "config.toml"
 
 
-def _credentials(data: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, list[str]]]]:
-    """The data with the server's names for every instance's secrets, and those names by instance."""
+def _table(value: Any, where: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise BundleError(f"{where}: expected a table")
+    return value
+
+
+def _credentials(data: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, list[str], Any]]]:
+    """The data with the server's names for every instance's secrets, and by instance: those names, its URL."""
     data = copy.deepcopy(data)
-    env_auth = {e: v.get("auth") for e, v in (data.get("environments") or {}).items() if isinstance(v, dict)}
-    named: list[tuple[str, list[str]]] = []
+    env_auth = {e: v.get("auth") for e, v in _table(data.get("environments"), "environments").items()
+                if isinstance(v, dict)}  # fmt: skip
+    named: list[tuple[str, list[str], Any]] = []
 
     def name_them(instance: str, entry: dict[str, Any], auth: Any) -> None:
         keys = ("username_env", "password_env") if auth == "basic" else ("token_env",)
         for key in keys:
             entry[key] = credential_name(instance, key)
-        named.append((instance, [entry[k] for k in keys]))
+        named.append((instance, [entry[k] for k in keys], entry.get("url")))
 
-    for name, inst in (data.get("instances") or {}).items():
-        if isinstance(inst, dict):
-            name_them(name, inst, inst.get("auth") or env_auth.get(inst.get("environment")))
-    for group, gdata in (data.get("groups") or {}).items():
-        if isinstance(gdata, dict):
-            for env, edata in (gdata.get("environments") or {}).items():
-                if isinstance(edata, dict):
-                    name_them(f"{group}/{env}", edata, edata.get("auth") or gdata.get("auth") or env_auth.get(env))
+    for name, inst in _table(data.get("instances"), "instances").items():
+        name_them(name, _table(inst, f"instances.{name}"), inst.get("auth") or env_auth.get(inst.get("environment")))
+    for group, gdata in _table(data.get("groups"), "groups").items():
+        gdata = _table(gdata, f"groups.{group}")
+        for env, edata in _table(gdata.get("environments"), f"groups.{group}.environments").items():
+            edata = _table(edata, f"groups.{group}.environments.{env}")
+            name_them(f"{group}/{env}", edata, edata.get("auth") or gdata.get("auth") or env_auth.get(env))
     return data, named
+
+
+def _shared_secrets(named: list[tuple[str, list[str], Any]], current: Any) -> None:
+    """Refuse two instance names given one variable: 'Prod' beside the user's 'prod' would be sent prod's token."""
+    users: dict[str, set[str]] = {}
+    for name, envs, _ in named:
+        for env in envs:
+            users.setdefault(env, set()).add(name)
+    for inst in current.instances.values() if current is not None else ():
+        for env in (inst.secret_env, inst.username_env):
+            if env:
+                users.setdefault(env, set()).add(inst.name)
+    for env, names in sorted(users.items()):
+        if len(names) > 1:
+            first, *others = sorted(names)
+            raise BundleError(
+                f"{first} and {', '.join(others)} would share {env}, and so one saved secret: rename the "
+                "environment in the bundle"
+            )
+
+
+# the changes that mask less, or hand the model or a provider more, than the user's config does now
+_LOOSER = {
+    "redaction.allow": "what it matches is no longer masked",
+    "redaction.exclude_fields": "these fields are no longer masked",
+}
+_LARGER = {"limits": "results handed to the model may be larger", "ask.send_chars": "a provider may be handed more",
+           "ask.max_candidates": "a provider may be handed more"}  # fmt: skip
+
+
+def _looser(path: str, before: Any, after: Any) -> str | None:
+    if path.startswith("redaction.") and before != after:
+        why = next((w for key, w in _LOOSER.items() if path.startswith(key)), "masking changes")
+        return f"{path}: {before!r} -> {after!r}; {why}"
+    larger = next((w for key, w in _LARGER.items() if path == key or path.startswith(key + ".")), None)
+    numbers = isinstance(after, int | float) and not isinstance(after, bool)
+    if larger and numbers and (not isinstance(before, int | float) or after > before):
+        return f"{path}: {before if before is not None else 'default'} -> {after}; {larger}"
+    return None
 
 
 def _flat(value: Any, where: str = "") -> dict[str, Any]:
@@ -298,9 +345,12 @@ def preview(bundle: Bundle, config_path: Path) -> Preview:
     own_data = _load(config_path)
     own = _flat({k: v for k, v in own_data.items() if k != "include"})
     current = dict(old)
+    loaded = None
     if config_path.is_file():
         with contextlib.suppress(ConfigError):  # a config that does not load yet: compare with the team file alone
             current = _flat(read_config_file(config_path))
+            loaded = parse_config(read_config_file(config_path), source="editor", require_usable=False, scoped=False)
+    _shared_secrets(named, loaded)
     view = Preview(bundle.name, team_file)
     view.added = sorted(p for p in new if p not in old)
     view.removed = sorted(p for p in old if p not in new)
@@ -315,10 +365,17 @@ def preview(bundle: Bundle, config_path: Path) -> Preview:
             view.security.append(
                 f"{_owner(path)}: data handed to model providers {before or 'question_and_logs (default)'} -> {after}"
             )
+        elif (looser := _looser(path, before, after)) is not None:
+            view.security.append(looser)
+    known = set(loaded.instances) if loaded is not None else set()
+    for name, envs, url in named:
+        saved = [env for env in envs if secrets.get(env)]
+        if name not in known and saved:
+            view.security.append(f"{name}: a new environment; the secret already saved in {saved[0]} goes to {url}")
     view.shadowed = sorted(p for p in new if p in own and own[p] != new[p] and p.rsplit(".", 1)[-1] not in CREDENTIALS)
     includes = own_data.get("include", [])
     view.include_added = _include_item(bundle) not in ([includes] if isinstance(includes, str) else includes)
-    view.logins = [name for name, envs in named if not all(secrets.get(env) for env in envs)]
+    view.logins = [name for name, envs, _ in named if not all(secrets.get(env) for env in envs)]
     return view
 
 
@@ -386,7 +443,7 @@ def apply(bundle: Bundle, config_path: Path) -> Preview:
         configfile.write_text(config_path, new_own)
     try:
         configfile.validate(configfile.load_raw(config_path), base_dir=config_path.parent)
-    except ConfigError as exc:
+    except Exception as exc:  # whatever breaks the config (a value of the wrong type too), the user's file is put back
         if old_team is None:
             view.team_file.unlink()
         else:

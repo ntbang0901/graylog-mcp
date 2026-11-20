@@ -136,6 +136,9 @@ def provider_routes(state: AdminState) -> list[Route]:
         return save(raw) or JSONResponse({"ok": True})
 
     async def test(request: Request) -> Response:
+        # a repository's provider would run its command, or carry the user's key to its address
+        if (no := refused()) is not None:
+            return no
         data = await body(request)
         name = str(data.get("name") or "")
         raw = state.raw()

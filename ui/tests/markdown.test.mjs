@@ -26,6 +26,10 @@ test("a table cell keeps to one line and its pipes", () => {
     assert.equal(md.cell("a | b\nc\r\nd"), "a \\| b<br>c<br>d");
     assert.equal(md.cell({ code: "ORD-1001" }), '{"code":"ORD-1001"}');
     assert.equal(md.cell(null), "");
+    assert.equal(
+        md.cell("![x](https://t.example.com/p.png) <img src=x> `a`"),
+        "!\\[x\\](https://t.example.com/p.png) \\<img src=x\\> \\`a\\`",
+    );
     const row = md.table(["Field", "Value"], [["order", "ORD-1001 | paid"]]);
     assert.equal(
         row,
@@ -92,7 +96,7 @@ test("a message keeps its text in a fence it cannot close, and its fields as a t
     assert.match(out, /^## Log message\n/);
     assert.match(out, /- \*\*Service \(service\):\*\* payment/);
     assert.match(out, /````text\nrefused ```quoted``` text\nsecond line\n````/);
-    assert.match(out, /\| order_id \| ORD-1001 \|/);
+    assert.match(out, /\| order\\_id \| ORD-1001 \|/); // renders as order_id, never as emphasis
     assert.match(out, /\| note \| a \\\| b \|/);
 });
 

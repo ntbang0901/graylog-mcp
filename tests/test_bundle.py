@@ -237,6 +237,60 @@ def test_preview_names_loosened_tls_and_provider_data(tmp_path):
     assert any("prod" in line and "question_only" in line for line in view.security)
 
 
+def test_an_instance_that_would_share_another_ones_saved_token_is_refused(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('[instances.prod]\nurl = "https://prod.graylog.test"\ntoken_env = "GRAYLOG_PROD_TOKEN"\n')
+    secrets.save("GRAYLOG_PROD_TOKEN", "fake-prod-token")
+    with pytest.raises(BundleError, match="Prod and prod would share GRAYLOG_PROD_TOKEN"):
+        bundle.preview(small({"instances.Prod": {"url": "https://collector.example.com"}}), config)
+    with pytest.raises(BundleError, match="would share GRAYLOG_PAYMENT_PROD_TOKEN"):
+        bundle.preview(small({"instances.payment-prod": {"url": "https://a.test"},
+                              "groups.payment.environments.prod": {"url": "https://b.test"}}), config)  # fmt: skip
+
+
+def test_a_new_environment_handed_a_token_already_saved_is_a_security_change(tmp_path):
+    secrets.save("GRAYLOG_STAGING_TOKEN", "fake-staging-token")
+    view = bundle.preview(small({"instances.staging": {"url": "https://collector.example.com"}}), tmp_path / "c.toml")
+    assert any("staging" in s and "GRAYLOG_STAGING_TOKEN" in s and "collector.example.com" in s for s in view.security)
+
+
+def test_preview_names_what_masks_less_or_hands_over_more(tmp_path):
+    changes = {"redaction": {"allow": ["(?s).*"], "exclude_fields": ["password"]},
+               "limits": {"max_output_chars": 100000000}, "ask": {"send_chars": 1000000}}  # fmt: skip
+    view = bundle.preview(small(changes), tmp_path / "config.toml")
+    joined = "\n".join(view.security)
+    for key in ("redaction.allow", "redaction.exclude_fields", "limits.max_output_chars", "ask.send_chars"):
+        assert key in joined, key
+
+
+def test_an_import_that_breaks_the_config_in_any_way_is_rolled_back(tmp_path, monkeypatch):
+    from graylog_mcp.setup import configfile
+
+    config = tmp_path / "config.toml"
+    config.write_text('[instances.main]\nurl = "https://main.graylog.test"\n')
+    before = config.read_text()
+
+    def unreadable(*_args, **_kwargs):
+        raise TypeError("a value of a type the parser did not expect")
+
+    monkeypatch.setattr(configfile, "validate", unreadable)
+    with pytest.raises(BundleError, match="not imported"):
+        bundle.apply(small(), config)
+    assert config.read_text() == before and not (tmp_path / "teams" / "acme.toml").exists()
+
+
+def test_an_auth_that_is_not_a_word_is_a_config_error():
+    with pytest.raises(ConfigError, match="expected 'token' or 'basic'"):
+        parse_config({"instances": {"main": {"url": "https://main.graylog.test", "auth": ["basic"]}}},
+                     require_usable=False)  # fmt: skip
+
+
+def test_a_malformed_bundle_is_an_error_not_a_crash(tmp_path):
+    for data in ({"instances": ["prod"]}, {"groups": {"payment": {"environments": ["prod"]}}}):
+        with pytest.raises(BundleError):
+            bundle.apply(bundle.Bundle("acme", "", data), tmp_path / "config.toml")
+
+
 def test_preview_names_personal_settings_that_hide_the_bundle(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text('[instances.prod]\nurl = "https://mine.graylog.test"\ntoken_env = "MINE"\n')
