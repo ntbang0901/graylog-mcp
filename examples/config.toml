@@ -104,6 +104,15 @@ description = "Quick health scan: high and critical rules"
 tool = "scan"
 args = { range = "1h", min_severity = "high" }
 
+# The team's own MCP prompts (README: Prompts for a task), next to the built-in scan, find_error, trace_code,
+# check_after_change and ticket_evidence. {name} is filled with an argument; {{ and }} are literal braces.
+[prompts.release_check]
+title = "Kiểm tra sau release"
+description = "Errors of one service since its release"
+text = """Check {service} on {environment} since {since}: compare_periods with split_at at the release, then \
+scan. Answer in the user's language, in plain words."""
+arguments = { service = "the service released", environment = { default = "prod" }, since = { description = "when it was released", default = "30m" } }
+
 # The team's own words (README: Glossary). ask and trace_request read them; describe(what="glossary") lists them
 # for the model of a chat client.
 [glossary.terms.payment]

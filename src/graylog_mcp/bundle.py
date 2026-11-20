@@ -24,7 +24,7 @@ from graylog_mcp.redact import Redactor
 FORMAT = 1  # raise when a bundle gains something an older server would misread
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _META_KEYS = {"format", "name", "description"}
-_WHOLE = {"timezone", "limits", "redaction", "stacktrace", "investigation", "presets", "scan", "glossary"}
+_WHOLE = {"timezone", "limits", "redaction", "stacktrace", "investigation", "presets", "scan", "glossary", "prompts"}
 _SHARED = {
     "description", "timezone", "aliases", "provider_data", "message_api", "aggregation_api", "auth", "verify_tls",
     *_INVESTIGATION_KEYS,

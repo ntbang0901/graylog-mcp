@@ -249,6 +249,24 @@ class Preset:
     args: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class PromptArgument:
+    name: str
+    description: str = ""
+    default: str | None = None  # None: the user must give it
+
+
+@dataclass(frozen=True)
+class TeamPrompt:
+    """A prompt of the team's own: ``text`` with ``{argument}`` placeholders, offered next to the built-in ones."""
+
+    name: str
+    text: str
+    title: str = ""
+    description: str = ""
+    arguments: tuple[PromptArgument, ...] = ()
+
+
 SEVERITIES = ("critical", "high", "medium", "low")
 
 
@@ -428,6 +446,7 @@ class Config:
     redaction: RedactionConfig = RedactionConfig()
     stacktrace: StacktraceConfig = StacktraceConfig()
     presets: dict[str, Preset] = field(default_factory=dict)
+    prompts: dict[str, TeamPrompt] = field(default_factory=dict)
     http: HttpConfig = HttpConfig()
     source: str = "env"
     groups: dict[str, GroupInfo] = field(default_factory=dict)
@@ -537,6 +556,7 @@ _TOP_KEYS = {
     "http",
     "ask",
     "glossary",
+    "prompts",
     "repos",
 }
 # what [repos."<repository>"] may set for one repository (a central config naming repositories it cannot read)
@@ -970,6 +990,64 @@ def _port(value: Any) -> int:
     if port > 65535:
         raise ConfigError(f"http.port: {port} is not a valid TCP port")
     return port
+
+
+_PROMPT_KEYS = {"title", "description", "text", "arguments"}
+
+
+def _parse_prompts(data: Any) -> dict[str, TeamPrompt]:
+    """[prompts.<name>]: text with {argument} placeholders; [prompts.<name>.arguments] names each argument with
+    its description, or a table of description and default (an argument with a default may be left out)."""
+    import string
+
+    from graylog_mcp.prompts import BUILT_IN  # local import: prompts imports the server's SDK
+
+    if not isinstance(data, dict):
+        raise ConfigError("prompts: expected a table of [prompts.<name>]")
+    out = {}
+    for name, item in data.items():
+        where = f"prompts.{name}"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            raise ConfigError(f"{where}: names may only contain letters, digits, '_' and '-'")
+        if name in BUILT_IN:
+            raise ConfigError(f"{where}: {name!r} is a built-in prompt; choose another name")
+        if not isinstance(item, dict):
+            raise ConfigError(f"{where}: expected a table")
+        _check_keys(where, item, _PROMPT_KEYS)
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ConfigError(f"{where}.text: expected the prompt's text")
+        raw_args = item.get("arguments", {})
+        if not isinstance(raw_args, dict):
+            raise ConfigError(f'{where}.arguments: expected a table of <argument> = "description"')
+        arguments = []
+        for arg, spec in raw_args.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", arg):
+                raise ConfigError(f"{where}.arguments.{arg}: names may only contain letters, digits and '_'")
+            if isinstance(spec, str):
+                arguments.append(PromptArgument(arg, spec))
+            elif isinstance(spec, dict) and set(spec) <= {"description", "default"}:
+                default = spec.get("default")
+                default = None if default is None else str(default)
+                arguments.append(PromptArgument(arg, str(spec.get("description", "")), default))
+            else:
+                raise ConfigError(f"{where}.arguments.{arg}: expected a description, or {{ description, default }}")
+        declared = {a.name for a in arguments}
+        try:
+            fields = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(text) if f is not None]
+        except ValueError as exc:
+            raise ConfigError(f"{where}.text: {exc} (write {{{{ and }}}} for a literal brace)") from None
+        known = ", ".join(sorted(declared)) or "none"
+        for placeholder, spec, conv in fields:
+            if placeholder not in declared or spec or conv:
+                raise ConfigError(
+                    f"{where}.text: {{{placeholder}}} is not one of its arguments ({known}); "
+                    "write {{ and }} for a literal brace"
+                )
+        out[name] = TeamPrompt(
+            name, text, str(item.get("title", "")), str(item.get("description", "")), tuple(arguments)
+        )
+    return out
 
 
 def _parse_presets(data: Any) -> dict[str, Preset]:
@@ -1998,6 +2076,7 @@ def parse_config(
         redaction=_parse_redaction(data.get("redaction", {})),
         stacktrace=_parse_stacktrace(data.get("stacktrace", {})),
         presets=presets,
+        prompts=_parse_prompts(data.get("prompts", {})),
         scan=_parse_scan(data.get("scan", {})),
         http=_parse_http(data.get("http", {})),
         ask=ask,

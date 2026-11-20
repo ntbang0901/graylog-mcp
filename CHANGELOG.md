@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- MCP prompts for a task, for people who are not developers: `find_error` (a problem in their own words),
+  `trace_code` (an order code or trace id), `check_after_change` (a release or a test run) and `ticket_evidence`
+  (log evidence for a bug ticket, in Markdown), beside `scan`. A team adds its own in `[prompts.<name>]` (`text`
+  with `{argument}` placeholders, `arguments` with optional defaults), checked when the config loads and carried
+  by a team bundle. The instructions tell the model to call `ask` first with such a question, repeat how it was
+  understood, ask back on `clarify` and answer in the asker's language.
 - The admin page asks in plain words: on Logs, a question opens the view it describes, with how it was read as
   chips to edit (environment, time range, kind of error, glossary terms); a code opens its journey across
   services; the glossary's terms and the presets are a click away; *What was sent* lists what each model

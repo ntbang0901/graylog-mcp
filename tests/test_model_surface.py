@@ -13,9 +13,12 @@ SNAPSHOT = Path(__file__).parent / "snapshots" / "model_surface.json"
 
 async def test_what_the_model_receives_is_unchanged(make_app):
     app, _ = make_app()
-    declared = [t.model_dump(mode="json", exclude_none=True) for t in await build_server(app).list_tools()]
+    server = build_server(app)
+    declared = [t.model_dump(mode="json", exclude_none=True) for t in await server.list_tools()]
     assert len(declared) == 10
-    text = json.dumps({"instructions": INSTRUCTIONS, "tools": declared}, indent=2, ensure_ascii=False) + "\n"
+    offered = [p.model_dump(mode="json", exclude_none=True) for p in await server.list_prompts()]
+    surface = {"instructions": INSTRUCTIONS, "tools": declared, "prompts": offered}
+    text = json.dumps(surface, indent=2, ensure_ascii=False) + "\n"
     if os.environ.get("GRAYLOG_MCP_UPDATE_SNAPSHOT"):
         SNAPSHOT.parent.mkdir(exist_ok=True)
         SNAPSHOT.write_text(text, encoding="utf-8")

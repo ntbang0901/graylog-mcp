@@ -1,5 +1,5 @@
 {
-  "instructions": "Read-only access to Graylog logs. Nothing you do here changes Graylog. Sensitive values are\nalready masked ([REDACTED], [EMAIL], [CARD], [PHONE], ...); never try to recover them.\n\nQuery syntax (Lucene, as in the Graylog search bar):\n- field:value, field:\"exact phrase\", AND / OR / NOT (upper case), parentheses for grouping.\n- Wildcards: message:time*  (no leading wildcard). Existence: _exists_:trace_id.\n- Ranges: http_status:[500 TO 599], took_ms:>1000, level:<=3.\n- Escape special characters in values with quotes: path:\"/api/v1/orders\".\n- Field names are case-sensitive; call describe(what='fields') when unsure. Streams accept names or ids.\n- level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.\n  The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.\n- The team's own words: when the user names a product, a flow or a kind of code, describe(what='glossary') gives\n  the query and keywords that word stands for here. Use them rather than guessing a field or a service name.\n\nEnvironments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one\nsystem group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'\n(e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only\none group has it. When the user names a system or an environment, pick that instance; when it is\nambiguous, ask. Never mix results from different instances without saying which is which.\nFocus: inside a repository, search_logs, aggregate, compare_periods and root_cause view='changes' only look at\nthat repository's service (results carry 'focus' with the filter added). Search other services or streams only\nwhen the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service\nfield (e.g. application:\"other-service\"). trace_request and the other root_cause views always span every service.\nInside a group's repository only that group is loaded (describe shows 'scope'); if the user\nasks about another group, say it is not loaded here and how to enable it, as the error explains.\n\nSearches that find nothing: search_logs and aggregate kind='count' try the likely fixes and return 'suggestions', each\nwith its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,\noutside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'\nsays which AND clause matches nothing and the values its field really has ('did_you_mean'). When a\nresult carries 'rewritten', the query you sent could not match as written (a field this Graylog does not\nhave, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,\nfor the reasons in 'why'; tell the user when that changes the meaning of their question.\n\nTime: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'\n(interpreted in the instance timezone shown in results). Output timestamps carry their offset.\n\nScanning (for \"is anything wrong?\", \"scan for errors\", \"check X\", a health check):\n- One scan call, not a loop of searches: it runs every rule concurrently with exact counts against a baseline\n  and returns only what fired, most severe first. Triage fast with min_severity='high'.\n- A specific need becomes ad hoc rules in that same call: checks=[{'name': ..., 'query': ...} + a condition]:\n  threshold (fires when count > N; 0 = any occurrence is bad), growth (the rate grew N times; for things that\n  normally happen, with min_count against noise), or group_by + new_groups (a value the baseline never saw).\n  Put several checks in one call; rules=[names or tags] runs configured rules (describe(what='scan_rules')).\n- Accurate queries: quoted phrases (\"Connection refused\") and field:value with real field names (describe);\n  no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.\n- Growth checks on things that follow traffic (errors, 5xx, timeouts) take per_traffic=true: a busy hour\n  is not an incident. A growth fires only when significant ('confidence' in the result); a 'note' on a quiet\n  rule says it grew but within chance: do not report that as a problem.\n- Window from the question. Baseline: the period right before by default; baseline='24h' when the window is\n  short; baseline_shift='1d' (or '7d') when traffic has a daily (weekly) curve, e.g. morning peaks.\n- Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call\n  it healthy); 'baseline_note' means the comparison is weaker (missing baseline data). Report severity,\n  count vs baseline, trend, confidence, first seen and the sample's ref.\n- Then drill into a finding with its 'query': aggregate kind='histogram' (when), kind='errors' (what),\n  search_logs (lines); several findings at once: root_cause.\n\nSuggested investigation flow:\n0. For \"what is causing this?\": root_cause first. It ranks the service that broke first, with nearby\n   deploys (view='changes') and the call graph (view='service_map') as evidence; then verify with the tools below.\n1. Size the problem: aggregate kind='count' / 'histogram' (the 'onset' field marks when a spike started).\n2. Group it: aggregate kind='errors' (exact counts per exception/logger/source, first/last seen, one sample).\n3. Before/after a deploy or incident start: compare_periods with split_at.\n4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.\n5. Follow one request across services: trace_request with a trace/correlation/request id, or with an order or\n   transaction number.\n6. See what happened around one message: get_message with its 'ref' and context_seconds.\nCounts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the\nreturned page.\nResults are size-capped: when 'truncated' is true, narrow the query or page with next_offset.\nA field 'ui' is a local link to the same view in the admin page, for the user: give it to them as it is; do not\nopen, fetch or edit it.\n",
+  "instructions": "Read-only access to Graylog logs. Nothing you do here changes Graylog. Sensitive values are\nalready masked ([REDACTED], [EMAIL], [CARD], [PHONE], ...); never try to recover them.\n\nQuery syntax (Lucene, as in the Graylog search bar):\n- field:value, field:\"exact phrase\", AND / OR / NOT (upper case), parentheses for grouping.\n- Wildcards: message:time*  (no leading wildcard). Existence: _exists_:trace_id.\n- Ranges: http_status:[500 TO 599], took_ms:>1000, level:<=3.\n- Escape special characters in values with quotes: path:\"/api/v1/orders\".\n- Field names are case-sensitive; call describe(what='fields') when unsure. Streams accept names or ids.\n- level is usually a syslog number: 0 emerg, 1 alert, 2 crit, 3 error, 4 warning, 5 notice, 6 info, 7 debug.\n  The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.\n- The team's own words: when the user names a product, a flow or a kind of code, describe(what='glossary') gives\n  the query and keywords that word stands for here. Use them rather than guessing a field or a service name.\n\nQuestions from people who are not developers (business analysts, testers): call ask first with their words as\nthey are, the period included; never ask them for a query or a field name. Repeat in one sentence how ask\nunderstood the question (its summary), so they can correct it. When ask returns 'clarify', ask them exactly\nthat, with its options, rather than guess. An order code, a transaction number or a request id goes to\ntrace_request as trace_id. Answer in the language they wrote in, in plain words.\n\nEnvironments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one\nsystem group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'\n(e.g. 'payment/prod'), or the group alone for its default environment, or the environment alone when only\none group has it. When the user names a system or an environment, pick that instance; when it is\nambiguous, ask. Never mix results from different instances without saying which is which.\nFocus: inside a repository, search_logs, aggregate, compare_periods and root_cause view='changes' only look at\nthat repository's service (results carry 'focus' with the filter added). Search other services or streams only\nwhen the user asks for them: pass streams=['*'] for everything, explicit streams, or a query naming the service\nfield (e.g. application:\"other-service\"). trace_request and the other root_cause views always span every service.\nInside a group's repository only that group is loaded (describe shows 'scope'); if the user\nasks about another group, say it is not loaded here and how to enable it, as the error explains.\n\nSearches that find nothing: search_logs and aggregate kind='count' try the likely fixes and return 'suggestions', each\nwith its exact count and why (a misspelled field, a level in the other form, letter case, a prefix wildcard,\noutside the focus, a wider range). Run the one that fits the question rather than guessing again. 'diagnosis'\nsays which AND clause matches nothing and the values its field really has ('did_you_mean'). When a\nresult carries 'rewritten', the query you sent could not match as written (a field this Graylog does not\nhave, a level word on a numeric field) or a fix learned from earlier searches applied: it ran 'ran' instead,\nfor the reasons in 'why'; tell the user when that changes the meaning of their question.\n\nTime: range='15m' | '2h' | '7d', or from_time/to_time as ISO 8601 or 'YYYY-MM-DD HH:MM'\n(interpreted in the instance timezone shown in results). Output timestamps carry their offset.\n\nScanning (for \"is anything wrong?\", \"scan for errors\", \"check X\", a health check):\n- One scan call, not a loop of searches: it runs every rule concurrently with exact counts against a baseline\n  and returns only what fired, most severe first. Triage fast with min_severity='high'.\n- A specific need becomes ad hoc rules in that same call: checks=[{'name': ..., 'query': ...} + a condition]:\n  threshold (fires when count > N; 0 = any occurrence is bad), growth (the rate grew N times; for things that\n  normally happen, with min_count against noise), or group_by + new_groups (a value the baseline never saw).\n  Put several checks in one call; rules=[names or tags] runs configured rules (describe(what='scan_rules')).\n- Accurate queries: quoted phrases (\"Connection refused\") and field:value with real field names (describe);\n  no leading wildcards or regex; add exclude for known noise; errors_only=true reuses the error query.\n- Growth checks on things that follow traffic (errors, 5xx, timeouts) take per_traffic=true: a busy hour\n  is not an incident. A growth fires only when significant ('confidence' in the result); a 'note' on a quiet\n  rule says it grew but within chance: do not report that as a problem.\n- Window from the question. Baseline: the period right before by default; baseline='24h' when the window is\n  short; baseline_shift='1d' (or '7d') when traffic has a daily (weekly) curve, e.g. morning peaks.\n- Read the result as: findings (fired), quiet (checked, normal), skipped (could not check: say so, never call\n  it healthy); 'baseline_note' means the comparison is weaker (missing baseline data). Report severity,\n  count vs baseline, trend, confidence, first seen and the sample's ref.\n- Then drill into a finding with its 'query': aggregate kind='histogram' (when), kind='errors' (what),\n  search_logs (lines); several findings at once: root_cause.\n\nSuggested investigation flow:\n0. For \"what is causing this?\": root_cause first. It ranks the service that broke first, with nearby\n   deploys (view='changes') and the call graph (view='service_map') as evidence; then verify with the tools below.\n1. Size the problem: aggregate kind='count' / 'histogram' (the 'onset' field marks when a spike started).\n2. Group it: aggregate kind='errors' (exact counts per exception/logger/source, first/last seen, one sample).\n3. Before/after a deploy or incident start: compare_periods with split_at.\n4. Drill down: search_logs with a narrow query; get_message with a 'ref' for one message.\n5. Follow one request across services: trace_request with a trace/correlation/request id, or with an order or\n   transaction number.\n6. See what happened around one message: get_message with its 'ref' and context_seconds.\nCounts from aggregate are exact (computed by Graylog); 'count' inside search_logs groups only covers the\nreturned page.\nResults are size-capped: when 'truncated' is true, narrow the query or page with next_offset.\nA field 'ui' is a local link to the same view in the admin page, for the user: give it to them as it is; do not\nopen, fetch or edit it.\n",
   "tools": [
     {
       "name": "search_logs",
@@ -1187,6 +1187,113 @@
         "idempotent_hint": true,
         "open_world_hint": true
       }
+    }
+  ],
+  "prompts": [
+    {
+      "name": "scan",
+      "title": "Scan logs",
+      "description": "Scan the logs for problems (all rules, or a target) and report the findings",
+      "arguments": [
+        {
+          "name": "target",
+          "description": "What to scan: a service, a symptom, an environment, or empty for everything",
+          "required": false
+        },
+        {
+          "name": "range",
+          "description": "Window, e.g. 15m, 1h, 24h",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "find_error",
+      "title": "Find an error",
+      "description": "Find the error matching a description in your own words",
+      "arguments": [
+        {
+          "name": "description",
+          "description": "The problem in your own words, e.g. 'thanh toán bị lỗi sáng nay', 'login fails'",
+          "required": true
+        },
+        {
+          "name": "environment",
+          "description": "Environment or group/environment, e.g. prod or payment/prod; empty: the default",
+          "required": false
+        },
+        {
+          "name": "when",
+          "description": "When, in words or as 15m/2h/1d; empty: as the description says",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "trace_code",
+      "title": "Follow a code",
+      "description": "Where an order, transaction or request went, step by step",
+      "arguments": [
+        {
+          "name": "code",
+          "description": "An order code, transaction number or trace id, e.g. ORD-1001",
+          "required": true
+        },
+        {
+          "name": "environment",
+          "description": "Environment or group/environment, e.g. prod or payment/prod; empty: the default",
+          "required": false
+        },
+        {
+          "name": "when",
+          "description": "How far back to look, e.g. 24h, 7d",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "check_after_change",
+      "title": "Check after a change",
+      "description": "What is new or worse in the logs after a release, a deploy or a test run",
+      "arguments": [
+        {
+          "name": "change",
+          "description": "What changed, e.g. 'release 2.4 of checkout', 'test run 17'",
+          "required": true
+        },
+        {
+          "name": "since",
+          "description": "When it happened: ISO time, 'YYYY-MM-DD HH:MM', or 30m/2h ago",
+          "required": false
+        },
+        {
+          "name": "environment",
+          "description": "Environment or group/environment, e.g. prod or payment/prod; empty: the default",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "ticket_evidence",
+      "title": "Evidence for a ticket",
+      "description": "Log evidence for a bug ticket, ready to paste",
+      "arguments": [
+        {
+          "name": "problem",
+          "description": "The bug in your words, or a code / trace id to follow",
+          "required": true
+        },
+        {
+          "name": "environment",
+          "description": "Environment or group/environment, e.g. prod or payment/prod; empty: the default",
+          "required": false
+        },
+        {
+          "name": "when",
+          "description": "Period, e.g. 1h, today, 'từ 9h đến 11h'",
+          "required": false
+        }
+      ]
     }
   ]
 }

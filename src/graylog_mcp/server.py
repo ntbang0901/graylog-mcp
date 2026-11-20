@@ -8,15 +8,13 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.mcpserver.prompts import Prompt
 from mcp.types import ToolAnnotations
-from pydantic import Field
 
-from graylog_mcp import __version__, tools
+from graylog_mcp import __version__, prompts, tools
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.operations import Operation
@@ -44,6 +42,12 @@ Query syntax (Lucene, as in the Graylog search bar):
   The configured error query (see describe(what='fields')) is what aggregate kind='errors' and compare_periods use.
 - The team's own words: when the user names a product, a flow or a kind of code, describe(what='glossary') gives
   the query and keywords that word stands for here. Use them rather than guessing a field or a service name.
+
+Questions from people who are not developers (business analysts, testers): call ask first with their words as
+they are, the period included; never ask them for a query or a field name. Repeat in one sentence how ask
+understood the question (its summary), so they can correct it. When ask returns 'clarify', ask them exactly
+that, with its options, rather than guess. An order code, a transaction number or a request id goes to
+trace_request as trace_id. Answer in the language they wrote in, in plain words.
 
 Environments and groups: each Graylog instance is one environment (dev, staging, prod...), often of one
 system group (ERP, CXP, PAYMENT...). Call describe to see them. Pass instance='<group>/<environment>'
@@ -186,35 +190,8 @@ def build_server(app: App | AppPool) -> MCPServer:
         if spec.enabled(startup):
             register(spec)
 
-    # ------------------------------------------------------------------ prompts
-
-    def scan_prompt(
-        target: Annotated[
-            str, Field(description="What to scan: a service, a symptom, an environment, or empty for everything")
-        ] = "",
-        range: Annotated[str, Field(description="Window, e.g. 15m, 1h, 24h")] = "1h",
-    ) -> str:
-        focus = f" Focus on: {target}." if target.strip() else ""
-        return (
-            f"Scan the logs of the last {range} for problems.{focus}\n"
-            "1. Call scan once (instance from describe if the request names an environment). If the request "
-            "is about something specific, add ad hoc checks for it in the same call.\n"
-            "2. For each finding, most severe first: one aggregate (kind='histogram' or 'errors') with the "
-            "finding's query to confirm when it started and what it is.\n"
-            "3. Answer with a table: severity, rule, count vs baseline, trend, first seen, sample ref; then the "
-            "rules checked and quiet, and any skipped rule (not checked, not healthy). No speculation beyond the "
-            "evidence."
-        )
-
-    server.add_prompt(
-        Prompt.from_function(
-            scan_prompt,
-            name="scan",
-            title="Scan logs",
-            description="Scan the logs for problems (all rules, or a target) and report the findings",
-        )
-    )
-
+    # a shared server's repositories may declare prompts of their own; the default config's are offered
+    prompts.register(server, startup.config.prompts if startup is not None else {})
     return server
 
 

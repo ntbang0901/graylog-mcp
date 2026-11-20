@@ -574,6 +574,40 @@ repository's file includes from outside it. `provider_order = []` is the excepti
 provider off. It can also set `provider_data`, `send_chars` and `max_candidates`, which decide how much your own
 provider is handed, like the other settings of a file you [trust](#one-repository-several-environments).
 
+## Prompts for a task
+
+A chat client lists the server's prompts (in Claude Code: `/mcp__graylog__find_error`, ...); picking one fills in
+the steps, and the person only types their own words. The built-in ones start from words and codes, never from a
+query, and ask the model to answer in the language the person wrote in:
+
+| Prompt | Arguments | What the model is asked to do |
+|---|---|---|
+| `scan` | `target`, `range` (1h) | one scan, confirm each finding, report a table ([Scan rules](#scan-rules)) |
+| `find_error` | `description`, `environment`, `when` | ask with the words as they are; repeat how it understood them; ask back on `clarify`; the best match, then its trace |
+| `trace_code` | `code`, `environment`, `when` (24h) | trace_request with the code; the step that failed |
+| `check_after_change` | `change`, `since` (30m), `environment` | compare_periods split at the change, then scan; what is new or grew |
+| `ticket_evidence` | `problem`, `environment`, `when` (1h) | ask or trace_request, then the ticket text in Markdown: summary, period, counts, sample, steps, the query that ran |
+
+A team adds its own in the config, and a [team bundle](#share-a-team-setup) carries them:
+
+```toml
+[prompts.release_check]
+title = "Kiểm tra sau release"
+description = "Errors of one service since its release"
+text = "Check {service} on {environment} since {since}: compare_periods with split_at at the release, then scan."
+arguments = { service = "the service released", environment = { default = "prod" }, since = { default = "30m" } }
+```
+
+`{name}` is filled with the argument of that name; an argument without `default` is required; `{{` and `}}` are
+literal braces (a Lucene range `{a TO b}` is written `{{a TO b}}`). A text naming an argument it does not declare,
+a format (`{x:>5}`, `{x.name}`), an unmatched brace, or a prompt taking a built-in name is refused when the config
+loads. A prompt is only text sent to the model: it runs nothing, and the tools work the same without it. A shared
+server offers the prompts of its default config.
+
+The server's instructions also tell the model how to treat a question from someone who is not a developer:
+call `ask` first with their words, say how it understood them, ask back what `clarify` asks, follow a code with
+`trace_request`, and answer in their language.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
@@ -910,7 +944,7 @@ graylog-mcp login                                    # each person's own tokens 
 
 A bundle holds the environments (URL, description, group, aliases, `auth`, `verify_tls`, `provider_data`), log
 fields, error queries, `[limits]`, `[redaction]`, `[stacktrace]`, `[investigation]`, presets, `[scan]`, the
-glossary, and the settings of `[ask]` that choose no destination (`language`, `send_chars`, `max_candidates`,
+glossary, the team's [prompts](#prompts-for-a-task), and the settings of `[ask]` that choose no destination (`language`, `send_chars`, `max_candidates`,
 `min_confidence`, `relevance`, `time`, `intent_words`, `code_patterns`). It never holds a token, a password, a
 username, the name of a variable holding a secret, a local path (`repos`, `ca_bundle`), `proxy`, `[http]`,
 `focus`, `only_groups`, the `default_*` choices, `ui_links`, nor any setting that decides where data goes
