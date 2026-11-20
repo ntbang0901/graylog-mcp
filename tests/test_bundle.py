@@ -129,7 +129,9 @@ def test_exported_bundle_loads_back_with_the_same_instances(tmp_path):
 
 
 def test_export_file_applies_includes(tmp_path):
-    (tmp_path / "shared.toml").write_text('[glossary.terms.refund]\naliases = ["hoàn tiền"]\nkeywords = ["refund"]\n')
+    (tmp_path / "shared.toml").write_text(
+        '[glossary.terms.refund]\naliases = ["hoàn tiền"]\nkeywords = ["refund"]\n', encoding="utf-8"
+    )
     path = tmp_path / "config.toml"
     path.write_text('include = "shared.toml"\n\n[instances.main]\nurl = "https://graylog.test"\ntoken_env = "T"\n')
     text, _ = bundle.export_file(path, "acme")
@@ -387,7 +389,7 @@ def test_cli_export_then_import_then_login(tmp_path, monkeypatch, capsys):
     from graylog_mcp.__main__ import main
 
     source = tmp_path / "theirs.toml"
-    source.write_text(tomlwrite.dumps(SMALL | {"default_instance": "prod"}))
+    source.write_text(tomlwrite.dumps(SMALL | {"default_instance": "prod"}), encoding="utf-8")
     out = tmp_path / "acme.toml"
     assert main(["bundle", "export", "--name", "acme", "-c", str(source), "-o", str(out)]) == 0
     assert "left out (personal, secret or local): default_instance" in capsys.readouterr().err
@@ -433,7 +435,7 @@ async def test_admin_exports_previews_and_imports(tmp_path):
 
     theirs = tmp_path / "theirs" / "config.toml"
     theirs.parent.mkdir()
-    theirs.write_text(tomlwrite.dumps(SMALL | {"http": {"port": 8100}}))
+    theirs.write_text(tomlwrite.dumps(SMALL | {"http": {"port": 8100}}), encoding="utf-8")
     async with client_for(theirs) as client:
         out = (await client.get("/api/bundle/export", params={"name": "acme"})).json()
         assert out["ok"] and out["filename"] == "acme.toml" and out["dropped"] == ["http"]

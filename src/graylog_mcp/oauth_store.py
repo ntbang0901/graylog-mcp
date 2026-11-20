@@ -68,7 +68,7 @@ def _file_lock(path: Path) -> Iterator[None]:
         except ImportError:  # Windows: one writer at a time within the process only
             yield
             return
-        with open(path.with_suffix(".lock"), "a") as fh:
+        with open(path.with_suffix(".lock"), "a", encoding="utf-8") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 yield

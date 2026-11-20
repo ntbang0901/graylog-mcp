@@ -8,6 +8,7 @@ import hashlib
 import json
 import secrets
 import stat
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -326,7 +327,8 @@ def test_chatgpt_pairs_with_a_code_and_reads_only_the_remote_environment(channel
 
     saved = (tmp_path / "oauth.json").read_text(encoding="utf-8")
     assert access not in saved and refresh not in saved and code not in saved
-    assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE((tmp_path / "oauth.json").stat().st_mode) == 0o600
     assert [p["name"] for p in store.clients()] == ["ChatGPT <b>"]
 
     for path in ("/admin/", "/status", "/healthz"):
