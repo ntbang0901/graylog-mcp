@@ -100,6 +100,14 @@ async def test_what_was_handed_to_a_provider_is_shown_redacted(page, monkeypatch
     assert out["result"]["cost"]["provider_requests"] == len(jev.bodies) > 0
 
 
+async def test_a_provider_without_its_key_is_not_listed_as_sent(page):
+    jev = FakeJev()
+    declared = {"providers": {"jev": {"kind": "jev"}}, "provider_order": ["jev"]}
+    client, _, _ = page({**BASE, "ask": declared}, jev.transport)
+    out = (await client.post("/api/ask", json={"question": "anything odd"})).json()
+    assert jev.bodies == [] and out.get("sent") == [], out
+
+
 async def test_a_question_that_names_no_environment_opens_no_view(page):
     two = {"groups": {g: {"environments": {"prod": server(g)}} for g in ("a", "b")}, "glossary": BASE["glossary"]}
     client, _, _ = page(two)

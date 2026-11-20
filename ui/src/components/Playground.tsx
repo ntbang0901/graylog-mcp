@@ -14,6 +14,7 @@ import {
 } from "./UI";
 import { Marks, maskRegex } from "./Marks";
 import { JsonTree } from "./JsonTree";
+import { ToolForm } from "./ToolForm";
 interface Run {
     tool: string;
     instance: string;
@@ -30,6 +31,7 @@ export function Playground() {
         [env, setEnv] = useState(""),
         [args, setArgs] = useState(""),
         [validate, setValidate] = useState(false),
+        [mode, setMode] = useState("form"),
         [view, setView] = useState("pretty"),
         [history, setHistory] = useState<Run[]>([]),
         [result, setResult] = useState<Run | null>(null),
@@ -103,7 +105,8 @@ export function Playground() {
         setValidate(true);
         const chk = check();
         if (!chk.ok) {
-            ta.current?.focus();
+            setMode("json");
+            requestAnimationFrame(() => ta.current?.focus());
             throw new Error(`Arguments are not valid JSON: ${chk.error}`);
         }
         const t0 = performance.now(),
@@ -206,9 +209,17 @@ export function Playground() {
                         </div>
                         <div class="field mt-sm">
                             <div class="ed-head">
-                                <label class="label" for="p_args">
-                                    Arguments (JSON)
-                                </label>
+                                <span class="label">Arguments</span>
+                                <Segment
+                                    id="p_mode"
+                                    label="Edit the arguments as"
+                                    options={[
+                                        ["form", "Form"],
+                                        ["json", "JSON"],
+                                    ]}
+                                    value={mode}
+                                    onChange={setMode}
+                                />
                                 <span class="spacer" />
                                 <span
                                     class={`ed-state${bad ? " bad" : ""}`}
@@ -222,7 +233,37 @@ export function Playground() {
                                           : ""}
                                 </span>
                             </div>
-                            <div class={`ed${bad ? " bad" : ""}`}>
+                            {mode === "form" &&
+                                (valid.ok ? (
+                                    <ToolForm
+                                        fields={
+                                            state.value?.tool_fields?.[tool] ||
+                                            []
+                                        }
+                                        args={valid.args}
+                                        onChange={(next) =>
+                                            setArgs(
+                                                JSON.stringify(next, null, 2),
+                                            )
+                                        }
+                                    />
+                                ) : (
+                                    <div class="inline-msg">
+                                        The arguments are not valid JSON (
+                                        {valid.error}).{" "}
+                                        <button
+                                            type="button"
+                                            class="lg-link"
+                                            onClick={() => setMode("json")}
+                                        >
+                                            Fix them in JSON
+                                        </button>
+                                    </div>
+                                ))}
+                            <div
+                                class={`ed${bad ? " bad" : ""}`}
+                                hidden={mode === "form"}
+                            >
                                 <div
                                     class="gut"
                                     id="p_gut"
@@ -237,6 +278,7 @@ export function Playground() {
                                 <textarea
                                     ref={ta}
                                     id="p_args"
+                                    aria-label="Arguments (JSON)"
                                     rows={9}
                                     wrap="off"
                                     spellcheck={false}
@@ -309,10 +351,17 @@ export function Playground() {
                                 />
                             </div>
                             <div class="hint">
-                                Tab indents · <span class="kbd">Esc</span> then
-                                Tab leaves the editor · the environment above is
-                                used unless the arguments name an{" "}
-                                <span class="mono">instance</span>
+                                {mode === "json" ? (
+                                    <>
+                                        Tab indents ·{" "}
+                                        <span class="kbd">Esc</span> then Tab
+                                        leaves the editor · the
+                                    </>
+                                ) : (
+                                    "The"
+                                )}{" "}
+                                environment above is used unless the arguments
+                                name an <span class="mono">instance</span>
                             </div>
                         </div>
                         <div class="row mt-sm pg-actions">

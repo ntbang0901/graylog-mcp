@@ -106,14 +106,18 @@ class Providers:
         for cfg, client in self._able(task, policy, words):
             if any(failure["provider"] == cfg.name for failure in failed):
                 continue
+            entry = {"provider": cfg.name, "task": task, "state": state, "questions": questions}
             if (shown := sent_payloads.get()) is not None:
-                shown.append({"provider": cfg.name, "task": task, "state": state, "questions": questions})
+                shown.append(entry)
+            requests_before = client.requests
             try:
                 believed = _checked(questions, await client.answers(state, questions))
                 if not believed:
                     raise ProviderError("none of its answers was one of the choices it was given")
             except ProviderError as exc:
                 failed.append({"provider": cfg.name, "task": task, "reason": str(exc)})
+                if shown is not None and client.requests == requests_before:
+                    shown.remove(entry)  # refused before sending (no key): nothing left the machine
                 continue
             except Exception as exc:
                 # Whatever a reply is built to break (nesting too deep to parse, a number too large to be one),

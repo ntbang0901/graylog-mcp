@@ -821,6 +821,16 @@ Clients that do not start the server inside the repository (Claude Desktop) need
   - *All logs*: the newest messages, 100 a page, each opening on its fields with the stack trace folded. Graylog
     pages at most the newest 10,000: narrow the range or the query for older ones.
 
+  Above them, **Ask in plain words** takes a question as [ask](#ask-in-plain-language) does ("thanh toán lỗi
+  trong 15 phút qua ở prod") and opens the view it describes, with how it was read as chips (environment, time
+  range, kind of error, each glossary term) that change the view when edited, without asking again. A question
+  it cannot place is asked back with its options. The best match follows its trace (*Follow its journey*), every
+  match opens *Its lines in Logs*. **Follow a code** takes an order code, a transaction id or a trace id and shows
+  its journey across services. The glossary's terms are chips that narrow the query, and *Open a preset* runs one
+  of the `[presets]`. *What was sent* lists what was handed to each model provider for the last question, as
+  redacted as the provider got it (empty when none was asked). On *By trace* and on an opened message, *Copy as
+  Markdown* copies the trace as a table, or the message and its fields, for a ticket.
+
   The bar on top picks the environment, query, streams and range (*last 1h* or from … to …). *Save view* keeps a
   view in this browser's favourites, *Recent from the agent* reopens what the model searched, *Open in Graylog*
   runs the same search there, and the auto refresh (off, 30 s, 1 or 5 minutes) pauses while the browser tab is
@@ -835,7 +845,11 @@ Clients that do not start the server inside the repository (Claude Desktop) need
 - **Redaction**: toggle country packs, add custom patterns and allow-list entries, and see live which rules
   mask your sample text;
 - **Playground**: run any tool against any environment and see the exact output, its size and an
-  approximate token count;
+  approximate token count; its arguments are a form (a field per argument, a list of choices where the tool
+  takes one) or the JSON, each following the other;
+- **Providers**: the [providers](#providers) of ask, their order, what each may do (`can`), a key saved per
+  provider, *Test* (one fixed sample question, nothing of yours) and *Use no provider*. It refuses to write a
+  repository's own `.graylog-mcp.toml`, which may not choose providers;
 - **Connect**: a tab per client (Claude Code first), each a three-step stack; snippets and one-click install for Claude Desktop, Cursor, VS Code and Claude Code per project;
 - **Config file** (reached from the status bar, the command palette or the *Raw file* button): edit the TOML with line
   numbers, validation on <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> and an automatic backup. Below it, **Team

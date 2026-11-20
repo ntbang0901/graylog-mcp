@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- The admin page asks in plain words: on Logs, a question opens the view it describes, with how it was read as
+  chips to edit (environment, time range, kind of error, glossary terms); a code opens its journey across
+  services; the glossary's terms and the presets are a click away; *What was sent* lists what each model
+  provider was handed for the question. A trace and a message copy as Markdown for a ticket. The Playground's
+  arguments are a form as well as JSON. A Providers screen declares, orders, tests and removes the providers of
+  ask and saves their keys.
 - Team bundles: `graylog-mcp bundle export --name acme` writes the settings a team shares (environments, fields,
   error queries, redaction, presets, scan rules, the glossary, the `[ask]` settings that choose no destination)
   without any secret, variable name, local path, proxy, `[http]`, personal default or provider; `graylog-mcp
