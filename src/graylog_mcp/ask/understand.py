@@ -1,12 +1,13 @@
-"""First Jev request: what the user wants, over which time and on which instance."""
+"""What a provider is asked about a question the rules did not read whole, and what its answer says."""
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
-from graylog_mcp.ask.jev import JevClient
+from graylog_mcp.ask.providers import Answered
 from graylog_mcp.config import Config
 
 INTENTS = {
@@ -16,6 +17,7 @@ INTENTS = {
     "count": "The user asks how many errors or messages there are",
     "root_cause": "The user asks what is causing an incident, which service broke first, or why the system is failing",
     "compare": "The user asks what changed, or how things differ from before or from another period",
+    "search": "The user wants to see log lines about something, without asking for a count, a summary or a cause",
 }
 TIMES = {
     "last_hour": "The last hour, or recently, or right now",
@@ -24,15 +26,25 @@ TIMES = {
     "last_7_days": "The last week or the last 7 days",
     "unspecified": "No time is mentioned",
 }
+PARTS = ("intent", "time", "errors_only", "instance")  # what a provider can be asked, in the order it is asked
+KEYWORDS = {
+    "keywords": {
+        "type": "words",
+        "instructions": "Which words would a log line about the problem the request describes contain?",
+        "max": 8,
+    }
+}
 
 
 @dataclass(frozen=True)
 class Understanding:
-    intent: str
-    time: str
-    instance: str | None
-    errors_only: bool
-    confidence: float
+    """What a provider chose, each with how sure it is; None for what it was not asked or did not answer."""
+
+    provider: str
+    intent: tuple[str, float] | None = None
+    time: tuple[str, float] | None = None
+    instance: tuple[str, float] | None = None
+    errors_only: bool | None = None
 
 
 def time_args(time: str, tz: tzinfo, now: datetime | None = None) -> dict[str, Any]:
@@ -50,41 +62,36 @@ def time_args(time: str, tz: tzinfo, now: datetime | None = None) -> dict[str, A
     return {"range": "24h"}
 
 
-def _certainty(answer: dict[str, Any]) -> float:
-    return float(answer.get("confidence") or 0.0)
-
-
-async def understand(jev: JevClient, config: Config, question: str, fixed_instance: str | None = None) -> Understanding:
-    """``fixed_instance``: the caller already chose the instance, so the question is not asked."""
-    questions: dict[str, dict[str, Any]] = {
+def questions(config: Config, wanted: Collection[str], instances: Collection[str] = ()) -> dict[str, dict[str, Any]]:
+    """The questions for the parts in ``wanted`` (of ``PARTS``): only what the rules left open is asked.
+    ``instances``: the ones the question's words fit, which are all the environment may be chosen from."""
+    every: dict[str, dict[str, Any]] = {
         "intent": {"type": "choice", "instructions": "What does the request ask for?", "criteria": INTENTS},
         "time": {"type": "choice", "instructions": "Which period does the request refer to?", "criteria": TIMES},
         "errors_only": {
             "type": "noul",
             "instructions": "Is the request only about errors and failures, not about normal activity?",
         },
-    }
-    names = list(config.instances)
-    if len(names) > 1 and not fixed_instance:
-        questions["instance"] = {
+        "instance": {
             "type": "choice",
             "instructions": "Which environment does the request refer to?",
-            "criteria": {n: config.instances[n].description or n for n in names},
-        }
-    got = await jev.answers(question, questions)
-    used = [_certainty(got["intent"]), _certainty(got["time"])]
-    instance = None
-    if "instance" in got:
-        instance = str(got["instance"].get("choice"))
-        used.append(_certainty(got["instance"]))
-        if instance not in config.instances:
-            instance = None
-    p = float(got["errors_only"].get("noul") or 0.0)
-    intent, time = str(got["intent"].get("choice")), str(got["time"].get("choice"))
+            "criteria": {name: config.instances[name].description or name for name in instances},
+        },
+    }
+    return {name: every[name] for name in PARTS if name in wanted and (name != "instance" or instances)}
+
+
+def read(answered: Answered) -> Understanding:
+    """``answered`` holds only choices that were offered: nothing is checked again here."""
+    got = answered.answers
+
+    def choice(name: str) -> tuple[str, float] | None:
+        return (got[name]["choice"], got[name]["confidence"]) if name in got else None
+
     return Understanding(
-        intent=intent if intent in INTENTS else "follow_flow",
-        time=time if time in TIMES else "unspecified",
-        instance=instance,
-        errors_only=p >= 0.5,
-        confidence=min(used),  # errors_only is a refinement: a neutral question must not be sent back as unclear
+        provider=answered.provider,
+        intent=choice("intent"),
+        time=choice("time"),
+        instance=choice("instance"),
+        errors_only=got["errors_only"]["noul"] >= 0.5 if "errors_only" in got else None,
     )

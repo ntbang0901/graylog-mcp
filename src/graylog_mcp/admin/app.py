@@ -35,6 +35,7 @@ from starlette.routing import Route
 
 from graylog_mcp import (
     __version__,
+    bundle,
     contexts,
     explorer,
     explorer_traces,
@@ -48,9 +49,16 @@ from graylog_mcp import (
 )
 from graylog_mcp import secrets as secret_store
 from graylog_mcp import usage_conversations as conversations
+from graylog_mcp.admin import forms
+from graylog_mcp.admin.http import body as _body
+from graylog_mcp.admin.http import err as _err
+from graylog_mcp.admin.providers_page import provider_routes
+from graylog_mcp.admin.remote_page import remote_routes
+from graylog_mcp.admin.web_ask import ask_routes
 from graylog_mcp.client import GraylogError, QueryError
 from graylog_mcp.config import (
     ENV_NAME,
+    PROJECT_CONFIG_NAMES,
     Config,
     ConfigError,
     detect_repo,
@@ -91,6 +99,7 @@ class AdminState:
         self.transport = transport
         self.allowed_hosts = allowed_hosts
         self.server_port: int | None = None  # set when served by the shared server itself (graylog-mcp start)
+        self.provider_transport: httpx.AsyncBaseTransport | None = None  # tests: the providers of ask
         self._app: tools.App | None = None
         self._app_key: tuple[Any, ...] | None = None
         self._lock = asyncio.Lock()
@@ -109,21 +118,11 @@ class AdminState:
                 if self._app is not None:
                     await self._app.close()
                 config = configfile.validate(data, source=str(self.path), base_dir=self.path.parent)
-                self._app = tools.App.create(config, transport=self.transport or connect.TRANSPORT)
+                self._app = tools.App.create(
+                    config, transport=self.transport or connect.TRANSPORT, provider_transport=self.provider_transport
+                )
                 self._app_key = key
             return self._app
-
-
-def _err(message: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status)
-
-
-async def _body(request: Request) -> dict[str, Any]:
-    try:
-        data = await request.json()
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _instances_view(data: dict[str, Any], config: Config | None) -> list[dict[str, Any]]:
@@ -396,6 +395,7 @@ def build_app(state: AdminState) -> Starlette:
                 "profiles": {name: p.summary for name, p in PROFILES.items()},
                 "tools": sorted(playground),
                 "tool_templates": {name: dict(op.template) for name, op in playground.items()},
+                "tool_fields": {name: forms.arguments(op) for name, op in playground.items()},
                 "quick_tools": list(operations.QUICK_RUN),
                 "local_timezone": local_timezone(),
             }
@@ -1041,6 +1041,38 @@ def build_app(state: AdminState) -> Starlette:
             return _err(str(exc))
         return JSONResponse({"ok": True, "backup": str(backup) if backup else None})
 
+    # ------------------------------------------------------------------ team bundle
+
+    def _bundle_target() -> Path:
+        # a repository's file is the repository's: a team bundle goes into the user's own config
+        return bundle.user_config_path() if state.path.name in PROJECT_CONFIG_NAMES else state.path
+
+    async def bundle_export(request: Request) -> Response:
+        name = request.query_params.get("name", "")
+        try:
+            text, dropped = bundle.export_file(state.path, name, request.query_params.get("description", ""))
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, "text": text, "dropped": dropped, "filename": f"{name}.toml"})
+
+    async def bundle_preview(request: Request) -> Response:
+        body = await _body(request)
+        target = _bundle_target()
+        try:
+            view = bundle.preview(bundle.read_bundle(str(body.get("text") or "")), target)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, **view.as_dict(), "config_path": str(target)})
+
+    async def bundle_import(request: Request) -> Response:
+        body = await _body(request)
+        target = _bundle_target()
+        try:
+            view = bundle.apply(bundle.read_bundle(str(body.get("text") or "")), target)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"ok": True, **view.as_dict(), "config_path": str(target)})
+
     # ------------------------------------------------------------------ setup checklist (graylog-mcp start)
 
     def _folders() -> list[Path]:
@@ -1232,6 +1264,9 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/config", get_config),
         Route("/api/config", save_config, methods=["POST"]),
         Route("/api/config/validate", validate_config, methods=["POST"]),
+        Route("/api/bundle/export", bundle_export),
+        Route("/api/bundle/preview", bundle_preview, methods=["POST"]),
+        Route("/api/bundle/import", bundle_import, methods=["POST"]),
         Route("/api/setup", get_setup),
         Route("/api/setup/claude", setup_claude, methods=["POST"]),
         Route("/api/setup/trace", get_trace),
@@ -1241,6 +1276,9 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/setup/update", setup_update, methods=["POST"]),
         Route("/api/clients", client_snippets),
         Route("/api/clients/install", install_client, methods=["POST"]),
+        *ask_routes(state),
+        *provider_routes(state),
+        *remote_routes(state),
         Route("/{path:path}", index),  # last: what no route above takes
     ]
     inner = Starlette(routes=routes)

@@ -37,6 +37,9 @@ import {
     updated,
     view,
 } from "../explorer-store";
+import { loadVocabulary } from "../ask";
+import { Ask } from "./Ask";
+import { Glossary } from "./Glossary";
 import { Dashboard } from "./LogsDashboard";
 import { MessagesTable, TraceView, TracesList } from "./LogsLists";
 import { Icon, Page, Panel, Refresh, Skeleton, Tabs } from "./UI";
@@ -355,6 +358,9 @@ export function Logs() {
         void load();
     }, [active, path, instances.value]);
     useEffect(() => {
+        if (active) void loadVocabulary();
+    }, [active, state.value]);
+    useEffect(() => {
         const visible = () => {
                 if (document.visibilityState === "visible") schedule();
                 else stop();
@@ -441,7 +447,9 @@ export function Logs() {
                 </>
             }
         >
+            <Ask />
             <Bar v={v} />
+            <Glossary v={v} />
             <Tabs
                 id="lgTabs"
                 label="Log views"

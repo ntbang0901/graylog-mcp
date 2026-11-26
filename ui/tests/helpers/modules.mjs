@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 
 // Load real UI modules without a browser or a bundler; resolve npm imports from ui/.
 export async function loadModules(names) {
@@ -14,12 +14,7 @@ export async function loadModules(names) {
             new URL(`../../src/${name}.ts`, import.meta.url),
             "utf8",
         );
-        const { outputText } = ts.transpileModule(source, {
-            compilerOptions: {
-                module: ts.ModuleKind.ESNext,
-                target: ts.ScriptTarget.ES2022,
-            },
-        });
+        const outputText = stripTypeScriptTypes(source);
         const javascript = outputText.replace(
             /from "([^"]+)"/g,
             (_, spec) =>

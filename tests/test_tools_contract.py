@@ -12,6 +12,7 @@ from graylog_mcp.client import READ_ONLY_POSTS, QueryError
 from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import ToolInputError
 from graylog_mcp.toolspecs import TOOLS
+from graylog_mcp.trace import trace_request
 
 # Sensitive values planted in the fake dataset; none may appear in any output.
 LEAKS = [
@@ -48,7 +49,7 @@ async def run_all(app, fake) -> dict[str, dict]:
     out["search_raw"] = await tools.search_logs(app, query="*", range="2h", limit=30, dedup_lines=False)
     out["search_stream"] = await tools.search_logs(app, query="*", range="2h", streams=["Payments"])
     out["count"] = await tools.count_logs(app, query="level:3", range="2h")
-    out["trace"] = await tools.trace_request(app, "req-7f3a9c", range="1h")
+    out["trace"] = await trace_request(app, "req-7f3a9c", range="1h")
     ref = next((m["ref"] for m in out["trace"]["timeline"] if "ref" in m), None)
     if ref:
         out["get"] = await tools.get_message(app, ref)
@@ -152,10 +153,11 @@ async def test_stacktrace_compacted_in_output(make_app):
     assert "alice@example.com" not in full
 
 
-async def test_trace_falls_back_to_full_text(make_app):
+async def test_text_found_in_a_request_leads_to_that_request(make_app):
     app, _ = make_app()
-    res = await tools.trace_request(app, "/api/pay", range="1h")
-    assert res["strategy"] == "full_text" and res["timeline"]
+    res = await trace_request(app, "/api/pay", range="1h")
+    assert res["strategy"] == "business_code" and res["shown_trace"] == "req-7f3a9c"
+    assert len(res["timeline"]) == 6  # the whole request, not only its two lines naming the path
 
 
 async def test_bad_query_is_reported_with_position(make_app, version):
@@ -233,7 +235,7 @@ async def test_forced_apis(make_app, message_api, aggregation_api):
             }
         },
     )
-    trace = await tools.trace_request(app, "req-7f3a9c", range="1h")
+    trace = await trace_request(app, "req-7f3a9c", range="1h")
     assert [s["service"] for s in trace["steps"]] == ["gateway", "payment", "notify", "gateway"]
     ref = trace["first_error"]["ref"]
     msg = await tools.get_message(app, ref)
@@ -367,9 +369,52 @@ async def test_describe_takes_an_instance_for_every_listing(make_app):
 
     app, _ = make_app()
     server = build_server(app)
-    for what in ("instances", "streams", "fields", "presets", "scan_rules"):
+    for what in ("instances", "streams", "fields", "presets", "scan_rules", "glossary"):
         result = await server.call_tool("describe", {"what": what, "instance": "main"})
         assert json.loads(result.content[0].text)
+
+
+GLOSSARY = {
+    "terms": {
+        "payment": {"aliases": ["thanh toán"], "query": "service:payment"},
+        "elsewhere": {"aliases": ["kho"], "keywords": ["stock"], "instances": ["other"]},
+    },
+    "codes": {"order": {"pattern": r"ORD-\d+", "fields": ["order_id"]}},
+}
+
+
+async def test_the_glossary_is_listed_for_the_model(make_app):
+    from graylog_mcp.server import build_server
+
+    app, _ = make_app(glossary=GLOSSARY)
+    everything = tools.list_glossary(app)
+    assert everything["terms"] == [
+        {"name": "payment", "aliases": ["thanh toán"], "query": "service:payment"},
+        {"name": "elsewhere", "aliases": ["kho"], "keywords": ["stock"], "instances": ["other"]},
+    ]
+    assert everything["codes"] == [{"name": "order", "pattern": r"ORD-\d+", "fields": ["order_id"]}]
+    assert [t["name"] for t in tools.list_glossary(app, instance="main")["terms"]] == ["payment"]
+    described = await build_server(app).call_tool("describe", {"what": "glossary"})
+    assert json.loads(described.content[0].text) == everything
+
+
+async def test_a_glossary_too_long_for_one_answer_says_what_it_left_out(make_app):
+    terms = {
+        f"term{i}": {"aliases": [f"alias number {i}"], "query": f"service:svc{i}", "description": "x" * 80}
+        for i in range(300)
+    }
+    app, _ = make_app(glossary={"terms": terms, "codes": GLOSSARY["codes"]})
+    listed = tools.list_glossary(app)
+    assert len(listed["codes"]) == 1 and 0 < len(listed["terms"]) < 300  # the few code shapes are never the ones cut
+    assert listed["truncated"] is True and listed["count"] == {"terms": 300, "codes": 1}
+    assert "instance" in listed["hint"] and len(dumps(listed)) <= app.config.limits.max_output_chars
+    assert tools.list_glossary(make_app(glossary=GLOSSARY)[0])["truncated"] is False
+
+
+async def test_an_empty_glossary_says_how_to_add_one(make_app):
+    app, _ = make_app()
+    listed = tools.list_glossary(app)
+    assert listed["terms"] == [] and listed["codes"] == [] and "glossary.terms" in listed["hint"]
 
 
 async def test_get_message_arguments_refused_with_context_say_so(make_app):

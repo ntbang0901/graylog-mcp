@@ -754,9 +754,7 @@ export function aboutOf(e: InvEvidence): string {
 export function windowOfEvidence(e: InvEvidence, snap: InvSnapshot): string {
     const ex = e.step?.executed ?? {},
         range = ex.range as
-            | { from?: unknown; to?: unknown }
-            | string
-            | undefined,
+            { from?: unknown; to?: unknown } | string | undefined,
         pick = (from: unknown, to: unknown) =>
             typeof from === "string" && typeof to === "string"
                 ? windowText({ from, to })

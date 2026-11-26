@@ -19,6 +19,7 @@ import { Environments } from "./components/Environments";
 import { LogFields } from "./components/LogFields";
 import { Redaction } from "./components/Redaction";
 import { Playground } from "./components/Playground";
+import { Providers } from "./components/Providers";
 import { Connect } from "./components/Connect";
 import { ConfigFile } from "./components/ConfigFile";
 import { EnvDrawer } from "./components/EnvDrawer";
@@ -57,6 +58,7 @@ function App() {
             <Environments />
             <LogFields />
             <Redaction />
+            <Providers />
             <Playground />
             <Connect />
             <ConfigFile />

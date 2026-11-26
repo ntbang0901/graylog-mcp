@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from graylog_mcp import contexts, rca, scan, tools
+from graylog_mcp import contexts, rca, scan, tools, trace
 from graylog_mcp.ask.pipeline import ask
 from graylog_mcp.config import ConfigError
 from graylog_mcp.investigations import ops as investigation_ops
@@ -83,7 +83,7 @@ OPERATIONS: dict[str, Operation] = {
         _op(tools.error_summary, preset=True, playground=True, template={"range": "1h", "group_by": "exception"}),
         _op(tools.get_message, playground=True, template={"ref": "index/id"}),
         _op(tools.context_around, playground=True, search=True, template={"ref": "index/id", "seconds": 30}),
-        _op(tools.trace_request, preset=True, playground=True, search=True, template={"trace_id": "", "range": "24h"}),
+        _op(trace.trace_request, preset=True, playground=True, search=True, template={"trace_id": "", "range": "24h"}),
         _op(tools.compare_periods, preset=True, playground=True, template={"window": "1h"}),
         _op(scan.scan, preset=True, playground=True, template={"range": "1h"}),
         _op(rca.root_cause, preset=True, playground=True, template={"range": "1h"}),
@@ -93,6 +93,7 @@ OPERATIONS: dict[str, Operation] = {
         _op(tools.list_streams, playground=True),
         _op(tools.list_fields, playground=True, template={"contains": ""}),
         _op(tools.list_presets),
+        _op(tools.list_glossary),
         _op(scan.list_scan_rules),
         _op(run_preset),
         _op(ask, playground=True),

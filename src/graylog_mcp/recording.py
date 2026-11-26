@@ -72,6 +72,12 @@ class RecordContext:
         client = None
         if isinstance(info, dict) and info.get("name"):
             client = f"{info['name']}/{info['version']}" if info.get("version") else str(info["name"])
+        with contextlib.suppress(Exception):
+            from mcp.server.auth.middleware.auth_context import get_access_token
+
+            token = get_access_token()
+            if token is not None and token.subject:  # a client paired over the remote channel
+                client = f"{client or 'client'} (paired: {token.subject})"
         turn = meta.get("x-codex-turn-metadata")
         tool_call_id = meta.get("claudecode/toolUseId")
         session = headers.get("mcp-session-id") if headers is not None else None

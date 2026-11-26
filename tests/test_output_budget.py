@@ -258,8 +258,11 @@ async def test_usage_records_requests_and_what_shaped_the_result(make_app):
     assert entry["returned"] == 5
 
 
-async def test_tool_list_stays_small(make_app):
+# investigations, off until turned on, add two tools and three arguments to eight others
+@pytest.mark.parametrize(("investigations", "limit"), [("off", 30000), ("on", 33000)])
+async def test_tool_list_stays_small(make_app, monkeypatch, investigations, limit):
+    monkeypatch.setenv("GRAYLOG_MCP_INVESTIGATIONS", investigations)
     app, _ = make_app()
     listed = await build_server(app).list_tools()
     size = sum(len(json.dumps(t.model_dump(exclude_none=True, by_alias=True))) for t in listed)
-    assert size <= 30000, f"tool list grew to {size} characters; every session pays for it"
+    assert size <= limit, f"tool list grew to {size} characters; every session pays for it"

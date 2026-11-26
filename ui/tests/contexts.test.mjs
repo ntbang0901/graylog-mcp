@@ -1,25 +1,8 @@
-import { after, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { loadModules } from "./helpers/modules.mjs";
 
-const output = await mkdtemp(join(tmpdir(), "graylog-contexts-"));
-const source = await readFile(
-    new URL("../src/contexts-model.ts", import.meta.url),
-    "utf8",
-);
-const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-    },
-});
-await writeFile(join(output, "model.mjs"), compiled.outputText);
-const model = await import(pathToFileURL(join(output, "model.mjs")).href);
-after(() => rm(output, { recursive: true, force: true }));
+const { "contexts-model": model } = await loadModules(["contexts-model"]);
 
 const answer = () => ({
     instance: "main",

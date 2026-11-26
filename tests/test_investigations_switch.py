@@ -38,11 +38,12 @@ def test_a_damaged_switch_file_means_off(monkeypatch):
 
 async def test_the_default_gives_the_model_exactly_what_it_saw_before(make_app, monkeypatch):
     monkeypatch.delenv("GRAYLOG_MCP_INVESTIGATIONS", raising=False)
-    monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")
     app, _ = make_app()
     server = build_server(app)
     declared = [t.model_dump(mode="json", exclude_none=True) for t in await server.list_tools()]
-    text = json.dumps({"instructions": server.instructions, "tools": declared}, indent=2, ensure_ascii=False) + "\n"
+    offered = [p.model_dump(mode="json", exclude_none=True) for p in await server.list_prompts()]
+    surface = {"instructions": server.instructions, "tools": declared, "prompts": offered}
+    text = json.dumps(surface, indent=2, ensure_ascii=False) + "\n"
     assert text == SNAPSHOT.read_text(encoding="utf-8")
 
 

@@ -9,7 +9,15 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from graylog_mcp.config import ENV_NAME, PROJECT_CONFIG_NAMES, Config, ConfigError, parse_config, resolve_includes
+from graylog_mcp.config import (
+    ENV_NAME,
+    PROJECT_CONFIG_NAMES,
+    Config,
+    ConfigError,
+    check_repository_files,
+    parse_config,
+    resolve_includes,
+)
 from graylog_mcp.setup import tomlwrite
 
 HEADER = (
@@ -61,6 +69,8 @@ def render(data: dict[str, Any]) -> str:
 def save_text(path: Path, text: str) -> Path | None:
     """Validate then write, keeping a .bak of the previous file. Returns the backup path."""
     validate_text(text, base_dir=path.parent)
+    if path.name in PROJECT_CONFIG_NAMES:  # else saved here, then refused each time the repository loads it
+        check_repository_files([tomllib.loads(text)])
     _refuse_symlink(path)  # before the backup too, which would copy what the link points to into the repository
     backup = backup_file(path) if path.exists() else None
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +192,38 @@ def delete_instance(data: dict[str, Any], name: str) -> dict[str, Any]:
             data["default_instance"] = remaining[0]
         else:
             data.pop("default_instance", None)
+    return data
+
+
+def local_instances(data: dict[str, Any]) -> list[str]:
+    """The environments written in this file, as the config names them ('<group>/<env>' for a group's)."""
+    names = [n for n, v in (data.get("instances") or {}).items() if isinstance(v, dict)]
+    for group, gdata in (data.get("groups") or {}).items():
+        envs = gdata.get("environments") if isinstance(gdata, dict) else None
+        names += [f"{group}/{env}" for env, v in (envs or {}).items() if isinstance(v, dict) and "url" in v]
+    return names
+
+
+def set_remote(data: dict[str, Any], enabled: bool, public_url: str, port: int | None, offered: list[str]) -> dict:
+    """[http.oauth] on or off, and remote_access on exactly the ``offered`` environments of this file."""
+    data = copy.deepcopy(data)
+    local = local_instances(data)
+    elsewhere = [n for n in offered if n not in local]
+    if elsewhere:
+        raise ConfigError(f"{', '.join(elsewhere)}: not defined in this file, so it cannot be offered from here")
+    oauth = data.setdefault("http", {}).setdefault("oauth", {})
+    oauth["enabled"] = enabled
+    if public_url:
+        oauth["public_url"] = public_url
+    if port is not None:
+        oauth["port"] = port
+    for name in local:
+        group, env = split_name(name) if name not in (data.get("instances") or {}) else (None, name)
+        entry = data["groups"][group]["environments"][env] if group else data["instances"][name]
+        if name in offered:
+            entry["remote_access"] = True
+        else:
+            entry.pop("remote_access", None)
     return data
 
 

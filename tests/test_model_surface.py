@@ -13,12 +13,13 @@ SNAPSHOT_ON = Path(__file__).parent / "snapshots" / "model_surface_investigation
 
 
 async def _surface(make_app, monkeypatch, investigations: str) -> tuple[str, int]:
-    monkeypatch.setenv("TYPESAFE_API_KEY", "fake-typesafe-key")  # ask is declared only with a key
     monkeypatch.setenv("GRAYLOG_MCP_INVESTIGATIONS", investigations)
     app, _ = make_app()
     server = build_server(app)
     declared = [t.model_dump(mode="json", exclude_none=True) for t in await server.list_tools()]
-    text = json.dumps({"instructions": server.instructions, "tools": declared}, indent=2, ensure_ascii=False) + "\n"
+    offered = [p.model_dump(mode="json", exclude_none=True) for p in await server.list_prompts()]
+    surface = {"instructions": server.instructions, "tools": declared, "prompts": offered}
+    text = json.dumps(surface, indent=2, ensure_ascii=False) + "\n"
     return text, len(declared)
 
 

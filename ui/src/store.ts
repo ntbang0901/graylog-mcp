@@ -158,6 +158,10 @@ export const pages = {
         "Redaction",
         "What is masked before any log line reaches the model",
     ],
+    providers: [
+        "Providers",
+        "Which models ask may hand a question to, and in which order",
+    ],
     playground: [
         "Playground",
         "Run the exact tools the model uses, with the same redaction and limits",

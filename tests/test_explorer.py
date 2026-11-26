@@ -5,8 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from graylog_mcp import usage
+from graylog_mcp import tools, usage
 from graylog_mcp.usage_store import store
+from tests.conftest import make_config
 from tests.fake_graylog import FakeGraylog
 from tests.test_regressions import _add
 
@@ -82,6 +83,16 @@ async def test_a_page_of_messages_says_how_many_match(explorer):
     assert too_far.status_code == 400 and "10000" in too_far.json()["error"]
 
 
+async def test_an_empty_search_matches_everything(explorer):
+    client, _ = explorer
+    everything = {"range": "1h"}
+    async with client:
+        responses = [await client.get(f"/api/explorer/{view}", params=everything)
+                     for view in ("dashboard", "messages", "traces")]  # fmt: skip
+    assert [r.status_code for r in responses] == [200, 200, 200], [r.text for r in responses]
+    assert responses[0].json()["total"] == responses[1].json()["total"] > 10  # more than source:acme-api holds
+
+
 async def test_traces_newest_first_and_one_trace_in_order(explorer):
     client, _ = explorer
     async with client:
@@ -115,3 +126,14 @@ async def test_bad_requests_are_refused_and_reads_are_recorded_apart(explorer):
     assert call["source"] == "explorer" and call["conversation"] == "explorer"
     assert call["args"]["query"] == "source:acme-api"
     assert "explorer_traces" not in {t["tool"] for t in usage.summarize(24)["tools"]}  # not one of the model's
+
+
+def test_error_queries_follow_the_status_field_and_the_config():
+    cfg = make_config().instance(None)
+    assert tools.error_queries(cfg, None) == (None, cfg.error_query)
+    assert tools.error_queries(cfg, "http_status") == (
+        "http_status:[400 TO 499]",
+        f"http_status:[500 TO 599] OR ({cfg.error_query})",
+    )
+    own = make_config(investigation={"business_error_query": "message:declined", "technical_error_query": "level:<=2"})
+    assert tools.error_queries(own.instance(None), "http_status") == ("message:declined", "level:<=2")
