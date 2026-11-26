@@ -16,16 +16,16 @@ All notable changes to this project are documented here. The format follows
   `graylog-investigate` skill and the investigation tool's note tell agents what the page draws from each record: a
   short `purpose` as a check's title, a one-line `check_result` with counts beside their total, one branch per question
   under test, assessments as the explanations, and requests as what waits for the user.
-- The Investigations page follows `docs/concepts/agent-investigations-v3/ui-spec.md`. The task flow numbers each piece of
-  evidence (`E-003`), shows when each check ran in the browser's time zone (named in the header; today's checks show the time, earlier ones the day, seconds on hover), draws the checks of a branch (or steps that
-  overlapped in time) side by side, folds older finished checks past twelve, and ends with what the agent waits for. The
-  evidence inspector is short: the query and its absolute window, a picture only where it helps, at most three lines, a
-  one-line coverage note, and "Why it matters" behind a disclosure. A traced request is drawn as one row of log
-  observations per service on a time axis, with the first observed error marked; it is built from the whole timeline the
-  tool returned and kept with the evidence (`summary.charts`, about 4 KB), so records saved earlier show their lines and
-  no chart. Histograms get a slim strip with the peak marked; the flow, top-value and event charts are gone. Header,
-  explanations (checking, supported, ruled out, undetermined) and the handoff chips ("Analysis complete", "Fix not
-  verified") follow the spec.
+- The Investigations page's task flow numbers each piece of evidence (`E-003`), shows when each check ran in the
+  browser's time zone (named in the header; today's checks show the time, earlier ones the day, seconds on hover), draws
+  the checks of a branch (or steps that overlapped in time) side by side, folds older finished checks past twelve, and
+  ends with what the agent waits for. The evidence inspector is short: the query and its absolute window, a picture only
+  where it helps, at most three lines, a one-line coverage note, and "Why it matters" behind a disclosure. A traced
+  request is drawn as one row of log observations per service on a time axis, with the first observed error marked; it is
+  built from the whole timeline the tool returned and kept with the evidence (`summary.charts`, about 4 KB), so records
+  saved earlier show their lines and no chart. Histograms get a slim strip with the peak marked; the flow, top-value and
+  event charts are gone. Each explanation is labelled checking, supported, ruled out or undetermined, and the handoff row
+  can show the chips "Analysis complete" and "Fix not verified".
 - The Investigations page follows the journey prototype: a task flow (each check with its tool, result, status and
   evidence) beside the agent's working explanations, which give way to the evidence inspector (query, saved window,
   what it supports or contradicts, gaps), and a handoff row (observed, probable explanation, still unverified, a
@@ -126,6 +126,10 @@ All notable changes to this project are documented here. The format follows
 - Each screen of the admin page has its own address (`/admin/activity/conversations/<id>?turn=<ms>`), so the
   browser's Back and Forward work and a turn or call can be linked to; the old `#activity` links still open. The
   page's access token is kept per browser instead of per tab, and a page opened without it says how to sign in.
+- The admin page shows every time in the browser's time zone, on Overview, Activity, Logs and Investigations, and names
+  that zone on charts and range inputs. A custom range that falls in a clock hour skipped by a daylight-saving change is
+  refused. Overview and saved investigation histograms carry exact instants, so a bar opens its own window and the two
+  copies of a repeated hour at a daylight-saving change stay apart.
 - Usage records move from the single `usage.jsonl` to `usage/`, one file per process and day, so servers no longer
   share a file. The old file is imported on first use.
 - Usage records are no longer trimmed at 4 MB but kept in tiers, tidied in a background thread: every detail for
