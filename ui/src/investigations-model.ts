@@ -832,7 +832,11 @@ export function traceExcerpts(
             service: String(x.service ?? x.source ?? ""),
             level: levelWord(x.level),
             message: String(x.message ?? ""),
-            error: "level" in x && isErrorLevel(x.level),
+            // the tool marks errors by the instance's error queries; a record saved without them has only the level
+            error:
+                "error_queries" in e.summary
+                    ? x.error === "technical"
+                    : "level" in x && isErrorLevel(x.level),
             first: false,
         }));
     const errors = rows.filter((r) => r.error);
@@ -845,8 +849,9 @@ export function traceExcerpts(
         ? [rows[0], rows[rows.length - 1]]
         : rows.slice(0, Math.min(2, max));
 }
-// Traces return the earliest lines; searches can use any sort order or page. Only for evidence that is lines:
-// the rows of a histogram or a grouping say nothing about how many lines matched
+// A search can show any page of its matches, and a long request keeps its errors besides its earliest lines, so
+// neither is called a prefix. Only for evidence that is lines: the rows of a histogram or a grouping say nothing
+// about how many lines matched
 export function cutText(
     e: Pick<InvEvidence, "kind" | "exact_count" | "returned">,
 ) {
@@ -854,7 +859,7 @@ export function cutText(
         e.exact_count !== null &&
         e.returned !== null &&
         e.returned < e.exact_count
-        ? `Showing ${e.kind === "trace_request" ? "the earliest " : ""}${e.returned.toLocaleString("en-US")} of ${e.exact_count.toLocaleString("en-US")} lines.`
+        ? `Showing ${e.returned.toLocaleString("en-US")} of ${e.exact_count.toLocaleString("en-US")} lines.`
         : "";
 }
 // one line on what the evidence is made of; a request's chart says it in its own legend

@@ -7,7 +7,7 @@ from datetime import UTC, timedelta
 
 import pytest
 
-from graylog_mcp import tools
+from graylog_mcp import tools, trace
 from graylog_mcp.investigations import charts, evidence
 from graylog_mcp.timerange import parse_time
 
@@ -18,7 +18,9 @@ def charts_of(op: str, result: dict) -> list[dict]:
 
 
 def line(t: str, service: str, level: int = 6, message: str = "m") -> dict:
-    return {"t": t, "service": service, "level": level, "message": message}
+    # as trace_request returns it: with these level-based error queries, a line of level 3 is marked
+    marked = {"error": "technical"} if level <= 3 else {}
+    return {"t": t, "service": service, "level": level, "message": message} | marked
 
 
 def test_a_histogram_keeps_its_buckets_peak_and_onset():
@@ -160,13 +162,25 @@ def test_a_service_seen_once_has_one_observation_and_errors_are_capped_at_three_
     assert "first_error" in chart and chart["first_error"]["service"] == "busy"
 
 
-def test_without_a_level_only_the_line_the_tool_named_is_an_error():
+def test_a_traces_errors_are_the_ones_the_tool_marked_whatever_their_level():
     timeline = [
-        {"t": "+0ms", "service": "a", "ref": "i/1"},
-        {"t": "+9ms", "service": "a", "ref": "i/2"},
+        line("+0ms", "a", message="HTTP 502") | {"error": "technical"},
+        {"t": "+5ms", "service": "a", "level": 3, "message": "outside the instance's error query"},
+        line("+9ms", "a", message="declined") | {"error": "business"},
     ]
-    (chart,) = charts_of("trace_request", {"timeline": timeline, "first_error": timeline[1]})
-    assert chart["services"][0]["errors"] == 1 and chart["first_error"]["ms"] == 9
+    result = {"timeline": timeline, "error_queries": {"technical": "http_status:>=500"}}
+    (draft,) = evidence.build("trace_request", result, lambda v: v)
+    (chart,) = draft["summary"]["charts"]
+    assert chart["services"][0]["errors"] == 1 and chart["first_error"]["message"] == "HTTP 502"
+    assert [x.get("error") for x in draft["excerpts"]] == ["technical", None, "business"]
+
+
+async def test_a_real_trace_charts_the_errors_it_reports(make_app):
+    app, _ = make_app()
+    result = await trace.trace_request(app, "req-7f3a9c", range="1h")
+    (chart,) = charts_of("trace_request", result)
+    assert sum(s["errors"] for s in chart["services"]) == sum(s["errors"] for s in result["services"]) > 0
+    assert chart["first_error"]["service"] == result["first_error"]["service"]
 
 
 def test_services_over_the_limit_are_cut_with_the_ones_that_failed_kept_first():

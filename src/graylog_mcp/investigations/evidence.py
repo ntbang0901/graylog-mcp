@@ -24,7 +24,9 @@ LINES = ("messages", "timeline", "samples", "findings", "errors", "groups", "ite
 MESSAGE_LISTS = ("messages", "timeline", "samples")
 # the parts of a result that say how it was run: kept on the step as what was executed
 EXECUTED = ("instance", "query", "range", "from", "to", "streams", "focus", "rewritten", "effective_query")
-LINE_FIELDS = ("ref", "t", "ts", "level", "source", "service", "message", "count", "key", "value", "name", "trace_id")
+LINE_FIELDS = (
+    "ref", "t", "ts", "level", "error", "source", "service", "message", "count", "key", "value", "name", "trace_id",
+)  # fmt: skip
 MAX_REFS = 50
 
 

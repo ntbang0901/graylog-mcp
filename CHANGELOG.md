@@ -78,6 +78,9 @@ All notable changes to this project are documented here. The format follows
 - The ChatGPT web channel offers no investigations: not the `investigation` and `get_investigation` tools, nor the
   arguments that record a search as a step. Investigations are kept per repository, not per environment, so a remote
   client could read ones about environments without `remote_access`.
+- A saved trace marks the errors `trace_request` marked (the instance's technical error query, such as an HTTP 5xx
+  logged at INFO), in its chart and its excerpts, not the ones the log level suggests; a long trace is no longer
+  described as its earliest lines.
 - Investigation evidence lists now expand their `+n` links, so every saved piece can be opened. Long histograms
   keep the full window and peak by grouping adjacent buckets, with each bar's maximum explained in the caption.
   Root-cause event timelines no longer appear as request observations, and search coverage notes no longer call

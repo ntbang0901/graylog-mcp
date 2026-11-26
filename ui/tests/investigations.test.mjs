@@ -803,6 +803,21 @@ test("trace excerpts are the error lines, earliest first; with none, the first a
         m.traceExcerpts({ excerpts: all, summary: { lines: 4 } }, 1).length,
         1,
     );
+    // where the tool named its error queries, its mark decides, whatever the level says
+    const marked = [
+        { ...line("+0ms", "gateway", 6, "HTTP 502"), error: "technical" },
+        line("+5ms", "payment", 3, "not an error here"),
+        { ...line("+9ms", "checkout", 4, "declined"), error: "business" },
+    ];
+    assert.deepEqual(
+        m
+            .traceExcerpts({
+                excerpts: marked,
+                summary: { lines: 3, error_queries: { technical: "q" } },
+            })
+            .map((r) => [r.message, r.error]),
+        [["HTTP 502", true]],
+    );
     assert.equal(m.levelWord(4), "WARN");
     assert.equal(m.isErrorLevel("fatal"), true);
     assert.equal(m.isErrorLevel("6"), false);
@@ -811,7 +826,7 @@ test("trace excerpts are the error lines, earliest first; with none, the first a
 test("a request cut by the server's limit says how many lines it shows, and the coverage line is said once", () => {
     assert.equal(
         m.cutText({ kind: "trace_request", exact_count: 640, returned: 200 }),
-        "Showing the earliest 200 of 640 lines.",
+        "Showing 200 of 640 lines.",
     );
     assert.equal(
         m.cutText({ kind: "search_logs", exact_count: 2332, returned: 2 }),

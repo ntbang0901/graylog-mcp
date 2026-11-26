@@ -12,7 +12,6 @@ import re
 from datetime import timedelta
 from typing import Any
 
-from graylog_mcp.shaping import is_error_level
 from graylog_mcp.timerange import interval_seconds, parse_graylog_ts, to_graylog
 
 MAX_POINTS = 120
@@ -88,17 +87,6 @@ def _histogram(result: dict[str, Any]) -> dict[str, Any] | None:
         count -= 1
 
 
-def _is_error(line: dict[str, Any], first_error: Any) -> bool:
-    """The tool's own verdict where the line has a level; else only the line it named as the first error."""
-    if "level" in line:
-        return is_error_level(line["level"])
-    return (
-        isinstance(first_error, dict)
-        and first_error.get("ref") is not None
-        and first_error.get("ref") == line.get("ref")
-    )
-
-
 def _size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
 
@@ -115,7 +103,8 @@ def _trace(result: dict[str, Any]) -> dict[str, Any] | None:
         ms = offset_ms(line.get("t"))
         if ms is None:
             continue
-        failed = _is_error(line, result.get("first_error"))
+        # the tool's verdict, by the instance's error queries: an HTTP 5xx logged at INFO counts, a business error not
+        failed = line.get("error") == "technical"
         name = _text(line["service"])
         s = services.setdefault(
             name, {"service": name, "first_ms": ms, "last_ms": ms, "lines": 0, "errors": 0, "_at": []}
