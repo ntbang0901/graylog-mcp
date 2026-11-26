@@ -1331,6 +1331,8 @@ What protects it:
   metadata; its name is shown cut to 80 characters.
 - A paired client sees only the environments with `remote_access = true`: the others are not listed, and an
   error names none of them. A group, `[environments]` and a repository's own file cannot set it.
+- The channel has no [investigations](#investigations): they are kept per repository, not per environment, so they
+  stay on this machine even while the switch is on.
 - Access tokens last an hour; a refresh token works once and is replaced. `~/.config/graylog-mcp/oauth.json`
   (owner-only) keeps the paired clients and hashes of the tokens and codes, never the tokens themselves.
   `graylog-mcp pair --list` lists the clients, `--revoke ID` (or `all`) unpairs, as does the admin page.

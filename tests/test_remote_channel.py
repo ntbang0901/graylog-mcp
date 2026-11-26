@@ -19,7 +19,9 @@ import pytest
 from graylog_mcp.__main__ import remote_channel_app
 from graylog_mcp.config import CHATGPT_REDIRECT, ConfigError, load_config
 from graylog_mcp.oauth_store import OAuthStore
-from graylog_mcp.remote_channel import SCOPE, PairingProvider, build_remote_app, remote_config
+from graylog_mcp.remote_channel import SCOPE, PairingProvider, auth_settings, build_remote_app, remote_config
+from graylog_mcp.server import build_server
+from graylog_mcp.tools import App
 from tests.conftest import make_config
 from tests.fake_graylog import FakeGraylog
 from tests.test_shared import _free_port
@@ -88,6 +90,26 @@ def test_a_remote_client_sees_only_the_remote_environments():
     with pytest.raises(ConfigError) as refused:
         cfg.instance("main")
     assert "configured instances: dev." in str(refused.value)
+
+
+async def test_a_remote_client_is_given_no_investigations(tmp_path):
+    # the switch is on (conftest); a record of an environment the client may not see is on this machine
+    local = build_server(App.create(remote(), FakeGraylog().transport))
+    started = {"action": "start", "title": "prod only", "question": "why?", "instance": "main"}
+    await local.call_tool("investigation", started)
+    app = App.create(remote_config(remote()), FakeGraylog().transport)
+    server = build_server(app, auth=_auth(tmp_path))
+    listed = {tool.name: tool for tool in await server.list_tools()}
+    assert "investigation" not in listed and "get_investigation" not in listed
+    assert "investigation_id" not in listed["search_logs"].input_schema["properties"]
+    assert "Investigations" not in (server.instructions or "")
+
+
+def _auth(tmp_path):
+    cfg = remote()
+    resource = cfg.http.oauth.public_url + cfg.http.path
+    provider = PairingProvider(cfg.http.oauth, OAuthStore(tmp_path / "auth.json"), resource)
+    return provider, auth_settings(cfg.http.oauth, cfg.http.path)
 
 
 class Client:

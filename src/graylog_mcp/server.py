@@ -23,7 +23,7 @@ from graylog_mcp.recording import RecordContext, run_recorded
 from graylog_mcp.shared import AppPool
 from graylog_mcp.tools import App
 from graylog_mcp.toolspecs import TOOLS
-from graylog_mcp.toolspecs.investigations import NOTE, RECORDED, with_recording
+from graylog_mcp.toolspecs.investigations import GET_INVESTIGATION, INVESTIGATION, NOTE, RECORDED, with_recording
 from graylog_mcp.toolspecs.spec import ToolSpec, flat_signature, resolve
 
 log = logging.getLogger(__name__)
@@ -130,6 +130,10 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
         single = app
         current, startup = (lambda: single), single
 
+    # Investigations stay on this machine. They are kept per repository, not per environment, so a remote client could
+    # read, and write, ones about environments it may not see.
+    investigating = auth is None and investigations.enabled()
+
     async def detect(app: App) -> None:
         try:
             status = await tools.list_instances(app)  # detect versions once, cached afterwards
@@ -158,7 +162,7 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
         name="graylog-mcp",
         title="Graylog (read-only)",
         version=__version__,
-        instructions=INSTRUCTIONS + (INVESTIGATIONS_NOTE if investigations.enabled() else ""),
+        instructions=INSTRUCTIONS + (INVESTIGATIONS_NOTE if investigating else ""),
         lifespan=lifespan,
         auth_server_provider=auth[0] if auth else None,
         auth=auth[1] if auth else None,
@@ -173,7 +177,8 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
             raise ToolError(str(exc)) from None
 
     def register(spec: ToolSpec) -> None:
-        spec = with_recording(spec)  # the three optional arguments, unless investigations are switched off
+        if investigating:
+            spec = with_recording(spec)  # the three optional arguments
 
         async def run(**kwargs: Any) -> str:
             ctx = RecordContext.from_mcp(kwargs.pop(CONTEXT, None), spec.name)
@@ -205,7 +210,7 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
         )
 
     for spec in TOOLS:
-        if spec.enabled(startup):
+        if spec.enabled(startup) and (investigating or spec not in (INVESTIGATION, GET_INVESTIGATION)):
             register(spec)
 
     # a shared server's repositories may declare prompts of their own; the default config's are offered
