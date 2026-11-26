@@ -14,6 +14,7 @@ import statistics
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 from graylog_mcp import recover, ui_links
@@ -34,6 +35,7 @@ from graylog_mcp.timerange import (
     parse_graylog_ts,
     parse_time,
     resolve_range,
+    to_graylog,
 )
 
 log = logging.getLogger(__name__)
@@ -809,6 +811,8 @@ async def log_histogram(
     streams: list[str] | None = None,
     interval: str | None = None,
     instance: str | None = None,
+    *,
+    utc_labels: bool = False,
 ) -> dict[str, Any]:
     gl = app.gl(instance)
     tr = _range(gl, range, from_time, to_time, "1h")
@@ -840,12 +844,21 @@ async def log_histogram(
     fmt = "%Y-%m-%d %H:%M" if secs >= 60 else "%Y-%m-%d %H:%M:%S"
     if tr.seconds <= 86400 and secs < 86400:
         fmt = fmt[9:]  # drop the date for ranges within a day
-    labels = [datetime.fromtimestamp(k, UTC).astimezone(tz).strftime(fmt) for k in keys]
+    # The web UI needs instants so its browser can format the axis in the reader's timezone.
+    labels = [
+        to_graylog(datetime.fromtimestamp(k, UTC))
+        if utc_labels
+        else datetime.fromtimestamp(k, UTC).astimezone(tz).strftime(fmt)
+        for k in keys
+    ]
     values = [counts.get(k, 0) for k in keys]
     buckets = [[label, value] for label, value in zip(labels, values, strict=True)]
     total = agg.total if agg.total is not None else sum(values)
     out = _header(gl, tr, query=query or "*", focus=focus, interval=unit, total=total)
-    out["timezone"] = f"{gl.cfg.timezone} ({format_ts(tr.end, tz)[-6:]})"
+    out["timezone"] = "UTC (+00:00)" if utc_labels else f"{gl.cfg.timezone} ({format_ts(tr.end, tz)[-6:]})"
+    if keys and all(b - a == secs for a, b in pairwise(keys)):
+        # A compact, exact time axis for saved charts, including repeated clocks at a DST change.
+        out["bucket_start"] = to_graylog(datetime.fromtimestamp(keys[0], UTC))
     if values and any(values):
         peak_i = max(enumerate(values), key=lambda iv: iv[1])[0]
         out["peak"] = {"at": labels[peak_i], "count": values[peak_i]}

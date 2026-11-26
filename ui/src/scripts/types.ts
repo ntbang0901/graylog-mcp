@@ -395,6 +395,132 @@ export interface LogsView {
     column?: string;
 }
 
+// ------------------------------------------------------------------ investigations (admin/app.py, investigations/)
+export interface InvScope {
+    rev: number;
+    from: string;
+    to: string;
+    baseline_from: string;
+    baseline_to: string;
+    timezone: string;
+    query: string;
+    streams: string[];
+    focus: string | null;
+}
+export interface InvSummary {
+    id: string;
+    follows: string | null;
+    label: string;
+    title: string;
+    question: string;
+    instance: string;
+    repo: string | null;
+    state: string;
+    outcome: string | null;
+    verification: string;
+    revision: number;
+    scope: InvScope;
+    lease_expires: string | null;
+    created: string | null;
+    updated: string | null;
+}
+export interface InvItem {
+    kind: string;
+    id: string;
+    revision: number;
+    author: string;
+    data: Fields;
+}
+export interface InvStep {
+    id: string;
+    operation: string;
+    tool: string | null;
+    source: string;
+    check: string | null;
+    state: string;
+    attempt: string;
+    scope_rev: number;
+    requested: Fields;
+    executed: Fields | null;
+    error: string | null;
+    call_id: string | null;
+    started: string | null;
+    ended: string | null;
+    fenced_out: boolean;
+    evidence: string[];
+}
+export interface InvEvidenceRow {
+    id: string;
+    step: string;
+    kind: string;
+    exact_count: number | null;
+    returned: number | null;
+    sampled: boolean;
+    truncated: boolean;
+    retention: string;
+}
+export interface InvAttempt {
+    id: string;
+    n: number;
+    scope_rev: number;
+    started: string | null;
+    ended: string | null;
+    end_reason: string | null;
+    checkpoint: string | null;
+    current: boolean;
+}
+export interface InvSnapshot extends InvSummary {
+    enabled?: boolean;
+    attempts: InvAttempt[];
+    scope_revisions: {
+        rev: number;
+        reason: string | null;
+        author: string;
+        from: string;
+        to: string;
+    }[];
+    reports: Fields[];
+    items: InvItem[];
+    steps: InvStep[];
+    evidence: InvEvidenceRow[];
+    cursor: number;
+    followed_by?: string[];
+    truncated?: Record<string, number>;
+}
+export interface InvEvent {
+    seq: number;
+    type: string;
+    ref: [string, string] | null;
+    ts: number;
+    data: Fields;
+}
+export interface InvEvidence {
+    id: string;
+    investigation: string;
+    kind: string;
+    step: {
+        id: string;
+        operation: string;
+        state: string;
+        requested: Fields;
+        executed: Fields | null;
+        instance: string;
+        attempt: string;
+        fenced_out: boolean;
+    } | null;
+    scope_rev: number;
+    summary: Fields;
+    excerpts: Fields[];
+    refs: string[];
+    exact_count: number | null;
+    returned: number | null;
+    sampled: boolean;
+    truncated: boolean;
+    coverage: string[];
+    retention: string;
+    excerpts_expired: boolean;
+}
+
 // a field of the Playground's form (admin/forms.py arguments)
 export interface ToolField {
     name: string;

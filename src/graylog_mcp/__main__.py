@@ -323,7 +323,7 @@ def _version(argv: list[str]) -> int:
 
 SUBCOMMANDS = (
     "serve", "start", "stop", "status", "update", "init", "login", "logout", "repo", "doctor", "detect", "install",
-    "ui", "connect", "headers", "version", "bundle", "pair",
+    "ui", "connect", "headers", "version", "investigate", "skill", "bundle", "pair",
     "keepalive",  # internal: what the login item runs on Windows and XDG desktops
     "hook",  # internal: what Claude Code runs once 'install claude-code --trace' added the hooks
 )  # fmt: skip
@@ -350,6 +350,8 @@ usage: graylog-mcp start|stop|status|update   the background server
        graylog-mcp doctor [options]           check config, connections, permissions and field mapping
        graylog-mcp detect [options]           suggest field names from the logs
        graylog-mcp install CLIENT [options]   register the server in claude-code, claude-desktop, cursor, vscode
+       graylog-mcp investigate list|show|resume|export   read the investigations agents kept (no server needed)
+       graylog-mcp skill install|path         the Claude Code skill for working with investigations
 
 Run 'graylog-mcp COMMAND --help' for the options of a command.
 """
@@ -1181,9 +1183,21 @@ def _start(argv: list[str]) -> int:
     _check_start_config(config_file)
     url = service.admin_url(port)
     print(f"  ✓ admin page: {url}")
+    print(f"  ✓ investigations: {_investigations_line()}")
     if not args.no_browser:
         webbrowser.open(url)
     return 0
+
+
+def _investigations_line() -> str:
+    """Whether an agent's investigation gets a link to this admin page (the shared server runs it)."""
+    from graylog_mcp import investigations
+
+    on, source = investigations.switch()
+    if not on:
+        how = "GRAYLOG_MCP_INVESTIGATIONS=off" if source == "env" else "turn on in the admin page, Investigations"
+        return f"off ({how}): no investigation tools, no links"
+    return "on: an agent's investigation is kept in investigations.db and linked to this admin page"
 
 
 def _try_autostart(step: Any, *args: Any, **kwargs: Any) -> bool:
@@ -1398,6 +1412,7 @@ def _status(argv: list[str]) -> int:
         print(f"             {folder} points to another port: 'graylog-mcp start' moves it")
     if body:
         print(f"admin page:  {service.admin_url(args.port)}")
+        print(f"investigations: {_investigations_line()}")
     else:
         print("start it:    graylog-mcp start")
     return 0 if body else 1
@@ -1534,6 +1549,113 @@ def _tolerant_output() -> None:
             stream.reconfigure(errors="replace")
 
 
+def _skill(argv: list[str]) -> int:
+    """Copy the Claude Code skill that teaches an agent to work with investigations into the user's skills folder."""
+    from graylog_mcp.setup import skill
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp skill", description="The Claude Code skill for working with investigations"
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    inst = sub.add_parser("install", help="copy it into Claude Code's skills folder (replaces an older copy)")
+    where = inst.add_mutually_exclusive_group()
+    where.add_argument("--project", action="store_true", help="this folder's .claude/skills instead of your own")
+    where.add_argument("--dir", help="a skills folder of your choice")
+    sub.add_parser("path", help="print where the skill is in this installation")
+    args = parser.parse_args(argv)
+    if args.action == "path":
+        print(skill.source() / skill.NAME)
+        return 0
+    target = skill.install(Path(args.dir) if args.dir else None, project=args.project)
+    print(f"✓ installed the {skill.NAME} skill: {target}")
+    print("  Claude Code reads it in new sessions. It is useful once investigations are on (admin page).")
+    return 0
+
+
+def _investigate(argv: list[str]) -> int:
+    """Read the investigations an agent kept, straight from the local file: it works with the server stopped. Nothing
+    here starts an agent or writes a record."""
+    from graylog_mcp import investigations
+    from graylog_mcp.investigations.model import ANY_REPO, InvestigationError, enabled
+
+    parser = argparse.ArgumentParser(
+        prog="graylog-mcp investigate", description="Read the investigations agents kept on this machine"
+    )
+    sub = parser.add_subparsers(dest="action", required=True)
+    ls = sub.add_parser("list", help="the investigations, newest first")
+    ls.add_argument("--state", choices=("running", "awaiting_input", "interrupted", "completed", "cancelled"))
+    ls.add_argument("--json", action="store_true")
+    show = sub.add_parser("show", help="one investigation as text (or --json)")
+    show.add_argument("id", help="id or label, e.g. INV-1")
+    show.add_argument("--json", action="store_true")
+    show.add_argument("--open", action="store_true", help="open it in the admin page of the running server")
+    res = sub.add_parser("resume", help="print the briefing and what to tell the agent; starts nothing")
+    res.add_argument("id")
+    exp = sub.add_parser("export", help="write it as Markdown")
+    exp.add_argument("id")
+    exp.add_argument("--format", choices=("markdown",), default="markdown")
+    exp.add_argument("--output", "-o", help="a file; default: standard output")
+    args = parser.parse_args(argv)
+    if not enabled():
+        print("investigations are off: turn them on in the admin page (Investigations)", file=sys.stderr)
+        return 1
+    svc = investigations.service()
+    try:
+        if args.action == "list":
+            rows = svc.list(repo=ANY_REPO, state=args.state, limit=200)
+            if args.json:
+                print(json.dumps(rows, indent=2, ensure_ascii=False))
+                return 0
+            for r in rows:
+                print(f"{r['label']:8} {r['state']:15} {r['instance']:12} {r['title']}")
+            if not rows:
+                print("no investigation yet: an agent starts one with the investigation tool")
+            return 0
+        if args.action == "show":
+            if args.json:
+                print(json.dumps(svc.get(repo=ANY_REPO, investigation_id=args.id), indent=2, ensure_ascii=False))
+            else:
+                print(svc.get(repo=ANY_REPO, investigation_id=args.id, view="export")["markdown"], end="")
+            if args.open:
+                return _open_investigation(args.id)
+            return 0
+        if args.action == "resume":
+            brief = svc.get(repo=ANY_REPO, investigation_id=args.id, view="briefing")
+            print(json.dumps(brief, indent=2, ensure_ascii=False))
+            print(
+                f"\nTell the agent: continue {brief['label']}. Read it with get_investigation "
+                f"(investigation_id='{brief['label']}', view='briefing'), then call investigation "
+                f"(action='resume', investigation_id='{brief['label']}')."
+            )
+            return 0
+        text = svc.get(repo=ANY_REPO, investigation_id=args.id, view="export")["markdown"]
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+            print(f"wrote {args.output}")
+        else:
+            print(text, end="")
+        return 0
+    except InvestigationError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+
+
+def _open_investigation(label: str) -> int:
+    import webbrowser
+
+    from graylog_mcp.setup import service
+
+    port = service.current_port()
+    running = service.probe(port)
+    if not (running and running.get("admin")):
+        print("no admin page is running: 'graylog-mcp start' runs one", file=sys.stderr)
+        return 1
+    url = service.admin_url(port).replace("/admin/#", f"/admin/investigations/{label}#")
+    print(f"admin page: {url}")
+    webbrowser.open(url)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _tolerant_output()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1562,6 +1684,8 @@ def main(argv: list[str] | None = None) -> int:
         "version": _version,
         "keepalive": _keepalive,
         "hook": _hook,
+        "investigate": _investigate,
+        "skill": _skill,
     }
     return handlers[command](argv)
 

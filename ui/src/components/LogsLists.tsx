@@ -1,4 +1,5 @@
 import { Fragment } from "preact";
+import { formatDateTime, formatTime } from "../time";
 import {
     LOG_PAGE,
     LOG_TRACES,
@@ -26,9 +27,9 @@ import {
     rowKey,
 } from "./TraceTimeline";
 import { num, plural } from "./UI";
+import { addContextItem } from "../contexts";
+import { scopeOf, traceItem } from "../contexts-model";
 
-const time = (ms: number | null) =>
-    ms == null ? "-" : new Date(ms).toLocaleTimeString();
 // Enter and Space open a focusable row like a click
 const activate = (go: () => void) => (e: KeyboardEvent) => {
     if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " "))
@@ -71,9 +72,9 @@ export function TracesList({ d }: { d: TracesAnswer }) {
                                 >
                                     <td
                                         class="mono"
-                                        title={`from ${t.first_ts == null ? "-" : new Date(t.first_ts).toLocaleString()} to ${t.last_ts == null ? "-" : new Date(t.last_ts).toLocaleString()}`}
+                                        title={`from ${formatDateTime(t.first_ts)} to ${formatDateTime(t.last_ts)}`}
                                     >
-                                        {time(t.last_ts)}
+                                        {formatTime(t.last_ts)}
                                     </td>
                                     <td class="num mono">
                                         {t.duration_ms == null
@@ -121,6 +122,14 @@ export function TraceView({ d }: { d: TraceAnswer }) {
                     ← Traces
                 </button>
                 <h2 class="mono truncate">{d.trace}</h2>
+                <span class="spacer" />
+                <button
+                    class="btn sm"
+                    type="button"
+                    onClick={() => addContextItem(traceItem(d))}
+                >
+                    Add trace to context
+                </button>
             </div>
             <TraceTimeline
                 trace={d}
@@ -224,8 +233,11 @@ export function MessagesTable({
                                         onClick={go}
                                         onKeyDown={activate(go)}
                                     >
-                                        <td class="mono">
-                                            {String(m.ts || "").slice(11, 23)}
+                                        <td
+                                            class="mono"
+                                            title={formatDateTime(m.ts)}
+                                        >
+                                            {formatTime(m.ts, "HH:mm:ss.SSS")}
                                         </td>
                                         <td>
                                             <LevelBadge level={m.level} />
@@ -257,7 +269,10 @@ export function MessagesTable({
                                     {isOpen && (
                                         <tr class="lg-det">
                                             <td colSpan={4}>
-                                                <MessageDetail m={m} />
+                                                <MessageDetail
+                                                    m={m}
+                                                    scope={scopeOf(d)}
+                                                />
                                             </td>
                                         </tr>
                                     )}

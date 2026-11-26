@@ -32,6 +32,8 @@ def _clean_env(monkeypatch, tmp_path_factory):
     # never touch the real Claude Code config, CLI, or graylog-mcp state of the machine running the tests
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path_factory.mktemp("claude")))
     monkeypatch.setenv("GRAYLOG_MCP_HOME", str(tmp_path_factory.mktemp("gmhome")))
+    # investigations are off by default; most tests are about them being on (test_investigations_switch.py is not)
+    monkeypatch.setenv("GRAYLOG_MCP_INVESTIGATIONS", "on")
     from graylog_mcp.setup import clients, service
 
     monkeypatch.setattr(clients, "claude_binary", lambda: None)

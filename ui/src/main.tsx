@@ -14,6 +14,7 @@ import { Shell } from "./components/Shell";
 import { Overview } from "./components/Overview";
 import { Activity } from "./components/Activity";
 import { Logs } from "./components/Logs";
+import { Investigations } from "./components/Investigations";
 import { Environments } from "./components/Environments";
 import { LogFields } from "./components/LogFields";
 import { Redaction } from "./components/Redaction";
@@ -23,6 +24,7 @@ import { Connect } from "./components/Connect";
 import { ConfigFile } from "./components/ConfigFile";
 import { EnvDrawer } from "./components/EnvDrawer";
 import { LogsDrawer } from "./components/LogsDrawer";
+import { AgentContext } from "./components/AgentContext";
 import { Palette } from "./components/Palette";
 import "./styles/main.css";
 function App() {
@@ -44,6 +46,7 @@ function App() {
                 <>
                     <EnvDrawer />
                     <LogsDrawer />
+                    <AgentContext />
                     <Palette />
                 </>
             }
@@ -51,6 +54,7 @@ function App() {
             <Overview />
             <Activity />
             <Logs />
+            <Investigations />
             <Environments />
             <LogFields />
             <Redaction />

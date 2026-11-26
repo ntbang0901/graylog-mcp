@@ -39,6 +39,7 @@ import { Icon, modKey, AsyncButton } from "./UI";
 import { Settings } from "./Settings";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Toasts } from "./Toasts";
+import { AgentContextButton } from "./AgentContext";
 
 function EnvPicker() {
     const [q, setQ] = useState(""),
@@ -256,6 +257,7 @@ export function Shell({
                 o: "home",
                 a: "activity",
                 l: "logs",
+                i: "investigations",
                 e: "envs",
                 f: "fields",
                 r: "redaction",
@@ -324,6 +326,13 @@ export function Shell({
         logs: (
             <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 6h16M4 12h10M4 18h13" />
+            </svg>
+        ),
+        investigations: (
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10" cy="10" r="6" />
+                <path d="M15 15l5 5" />
+                <path d="M7.5 10h5" />
             </svg>
         ),
         envs: (
@@ -421,6 +430,7 @@ export function Shell({
                             usage.value?.totals.errors,
                         )}
                         {nav("logs", "Logs", "lines")}
+                        {nav("investigations", "Investigations", "search")}
                     </div>
                     <div class="navgroup">
                         <div class="glabel">Configure</div>
@@ -451,6 +461,7 @@ export function Shell({
                             <b id="crumb">{pageTitle.value.toLowerCase()}</b>
                         </span>
                         <div class="right">
+                            <AgentContextButton />
                             <button
                                 class="ctl envbtn"
                                 id="envBtn"

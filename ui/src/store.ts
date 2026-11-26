@@ -142,6 +142,10 @@ export const pages = {
         "Logs",
         "Request logs per API, traces and messages, read from Graylog with the same redaction",
     ],
+    investigations: [
+        "Investigations",
+        "What a connected agent asked, checked and concluded, with the evidence behind each step",
+    ],
     envs: [
         "Environments",
         "Graylog per environment, grouped by system, and the repositories each system serves",

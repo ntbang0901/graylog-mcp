@@ -20,7 +20,6 @@ import {
     setup,
     state,
     stats,
-    statsAt,
     usage,
     byGroup,
     navigate,
@@ -317,23 +316,20 @@ export function Overview() {
     };
     const openBucket = (
         i: number,
-        n: number,
+        timestamps: (number | null)[],
         at: string,
         errorsOnly: boolean,
     ) => {
         const instance = target();
-        if (!instance) return;
-        const interval = step * 3600000,
-            end =
-                Math.floor((statsAt.value || Date.now()) / interval) * interval,
-            start = end - (n - 1 - i) * interval;
+        const start = timestamps[i];
+        if (!instance || start == null) return;
+        const interval = step * 3600000;
         openLogs({
             instance,
             query: "*",
             title: `${errorsOnly ? "Errors" : "Messages"} at ${at}`,
             from: new Date(start).toISOString(),
             to: new Date(start + interval).toISOString(),
-            when: `${at} to ${String((Number(at.slice(-5).split(":")[0]) + step) % 24).padStart(2, "0")}:${at.slice(-2)}`,
             errorsOnly,
         });
     };
@@ -793,12 +789,13 @@ export function Overview() {
                             id="volChart"
                             line
                             labels={vol.labels}
+                            timestamps={vol.timestamps}
                             values={vol.values}
                             name="Messages"
                             pick={(i) =>
                                 openBucket(
                                     i,
-                                    vol.values.length,
+                                    vol.timestamps,
                                     vol.labels[i],
                                     false,
                                 )
@@ -826,6 +823,7 @@ export function Overview() {
                         <Chart
                             id="errChart"
                             labels={errs.labels}
+                            timestamps={errs.timestamps}
                             series={[
                                 {
                                     name: "Errors",
@@ -838,7 +836,7 @@ export function Overview() {
                             pick={(i) =>
                                 openBucket(
                                     i,
-                                    errs.values.length,
+                                    errs.timestamps,
                                     errs.labels[i],
                                     true,
                                 )

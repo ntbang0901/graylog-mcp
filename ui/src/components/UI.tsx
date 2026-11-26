@@ -495,10 +495,4 @@ export const timeAgo = (ts: number) => {
             ? `${Math.floor(s / 3600)}h ago`
             : `${Math.floor(s / 86400)}d ago`;
 };
-export function whenShort(ts: number) {
-    const d = new Date(ts * 1000),
-        t = d.toLocaleTimeString([], { hour12: false });
-    return d.toDateString() === new Date().toDateString()
-        ? t
-        : `${d.toLocaleDateString([], { weekday: "short" })} ${t.slice(0, 5)}`;
-}
+export { whenShort } from "../time";

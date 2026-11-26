@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from "preact/hooks";
+import { formatDateTime, formatTime, parseTime } from "../time";
 import type { ComponentChildren } from "preact";
 import { navigate } from "../store";
 import { phrase } from "../logs";
@@ -70,7 +71,7 @@ const pct = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
 function Histogram({ d }: { d: DashboardAnswer }) {
     const step = d.histogram.interval_s * 1000,
         have = new Map(d.histogram.buckets.map((b) => [b.t, b])),
-        parse = (s: string) => +new Date(s.replace(" ", "T")),
+        parse = (s: string) => parseTime(s)?.valueOf() ?? NaN,
         from = parse(d.range.from),
         to = parse(d.range.to);
     let buckets: DashboardAnswer["histogram"]["buckets"] = [];
@@ -81,11 +82,9 @@ function Histogram({ d }: { d: DashboardAnswer }) {
     else buckets = d.histogram.buckets;
     const days = to - from > 86400000,
         label = (t: number) =>
-            new Date(t).toLocaleString(
-                [],
-                days
-                    ? { weekday: "short", hour: "2-digit", minute: "2-digit" }
-                    : { hour: "2-digit", minute: "2-digit" },
+            formatTime(
+                t,
+                days ? "ddd HH:mm" : step < 60000 ? "HH:mm:ss" : "HH:mm",
             );
     return (
         <Chart
@@ -94,6 +93,7 @@ function Histogram({ d }: { d: DashboardAnswer }) {
             how="Left and right arrows move, Enter narrows the range to that bar."
             height={200}
             labels={buckets.map((b) => label(b.t))}
+            timestamps={buckets.map((b) => b.t)}
             series={[
                 {
                     name: "Messages",
@@ -458,9 +458,7 @@ function Endpoints({
                                             class={`num${cls}`}
                                             title={
                                                 c.key === "last_ts" && v
-                                                    ? new Date(
-                                                          v,
-                                                      ).toLocaleString()
+                                                    ? formatDateTime(v)
                                                     : undefined
                                             }
                                         >

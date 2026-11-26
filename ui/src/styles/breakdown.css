@@ -81,6 +81,12 @@ dialog.sheet .dhead h2 { font-size: var(--text-xl); }
 .lfields { display: grid; grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr); gap: 3px var(--space-md); margin: 0; font-size: var(--text-xs); }
 .lfields dt { color: var(--color-muted); }
 .lfields dd { margin: 0; overflow-wrap: anywhere; }
+.lval { all: unset; cursor: pointer; border-radius: var(--radius-small); }
+.lval:hover { text-decoration: underline; color: var(--color-accent); }
+.lval:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.logs-scope { max-width: 100%; font-size: var(--text-xs); }
+.logs-scope .mono { max-width: 22rem; display: inline-block; vertical-align: bottom; }
+.logs-scope.off { color: var(--color-muted); }
 .lacts { display: flex; gap: var(--space-xs); flex-wrap: wrap; }
 .lmore { display: flex; justify-content: center; padding: var(--space-md); }
 

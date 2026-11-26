@@ -136,3 +136,13 @@ def test_version_refuses_an_unknown_argument():
     with pytest.raises(SystemExit) as stop:
         main(["version", "--bogus"])
     assert stop.value.code == 2
+
+
+def test_start_says_whether_investigation_links_will_work(monkeypatch):
+    from graylog_mcp.__main__ import _investigations_line
+
+    assert _investigations_line().startswith("on:") and "admin page" in _investigations_line()
+    monkeypatch.setenv("GRAYLOG_MCP_INVESTIGATIONS", "off")
+    assert _investigations_line().startswith("off") and "GRAYLOG_MCP_INVESTIGATIONS=off" in _investigations_line()
+    monkeypatch.delenv("GRAYLOG_MCP_INVESTIGATIONS")
+    assert "admin page" in _investigations_line() and _investigations_line().startswith("off")

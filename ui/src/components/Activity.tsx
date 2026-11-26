@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { formatDateTime, formatTime } from "../time";
 import type { ComponentChildren } from "preact";
 import { api, errorText } from "../api";
 import {
@@ -65,11 +66,9 @@ const bucketIndex = (c: Call, u: Usage) =>
         : -1;
 function bucketSpan(u: Usage, i: number) {
     if (!u.buckets[i]) return "";
-    const a = new Date(u.buckets[i].t * 1000),
-        b = new Date((u.buckets[i].t + u.bucket_hours * 3600) * 1000),
-        hm = (d: Date) =>
-            `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return `${a.toLocaleDateString([], { weekday: "short" })} ${hm(a)}–${hm(b)}`;
+    const a = u.buckets[i].t * 1000,
+        b = (u.buckets[i].t + u.bucket_hours * 3600) * 1000;
+    return `${formatTime(a, "ddd HH:mm")}–${formatTime(b, "HH:mm")}`;
 }
 function matches(c: Call, u: Usage) {
     const f = filters.value,
@@ -110,7 +109,7 @@ function CallRow({
         status = statusOf(c),
         env = instances.value.find((e) => e.name === c.instance);
     const kv: [string, ComponentChildren][] = [
-        ["when", new Date(c.ts * 1000).toLocaleString()],
+        ["when", formatDateTime(c.ts * 1000)],
         ["instance", c.instance || "-"],
     ];
     if (c.repo) kv.push(["repository", c.repo]);
@@ -177,10 +176,7 @@ function CallRow({
                         }
                     }}
                 >
-                    <span
-                        class="ct"
-                        title={new Date(c.ts * 1000).toLocaleString()}
-                    >
+                    <span class="ct" title={formatDateTime(c.ts * 1000)}>
                         {whenShort(c.ts)}
                     </span>
                     <span class="ctool">{c.tool}</span>

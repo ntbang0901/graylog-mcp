@@ -14,6 +14,8 @@
 @import "./shell.css";
 @import "./activity.css";
 @import "./logs.css";
+@import "./contexts.css";
+@import "./investigations.css";
 @import "./breakdown.css";
 @import "./playground.css";
 @import "./ask.css";

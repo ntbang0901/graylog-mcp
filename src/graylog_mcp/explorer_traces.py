@@ -111,6 +111,6 @@ async def trace(
             **shaper.message(m.fields, m.index, m.id, select=["*"]),
         })  # fmt: skip
     out = s.header()
-    out.update(trace=s.redact(s.trace, trace_id), total=total, shown=len(timeline), messages=timeline)
+    out.update(query=query, trace=s.redact(s.trace, trace_id), total=total, shown=len(timeline), messages=timeline)
     out["duration_ms"] = end - start if start is not None and end is not None else None
     return out

@@ -7,11 +7,84 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Agent context handoff from the monitoring UI: collect searches, individual logs and traces, review their fixed
+  scopes, add a question, and save an immutable `CTX-…` snapshot with a prompt to paste into an agent chat.
+  The `get_context` MCP tool reads the brief or individual evidence items without searching Graylog. Saved contexts
+  are redacted, bounded to the most recent 100, and restricted to environments available in the caller's configuration.
+- Investigation times (steps, attempts, the record itself) now carry milliseconds (`2026-11-18T02:31:00.512Z`), so checks
+  that follow each other inside one second keep their order on the page and parallel ones show side by side. The
+  `graylog-investigate` skill and the investigation tool's note tell agents what the page draws from each record: a
+  short `purpose` as a check's title, a one-line `check_result` with counts beside their total, one branch per question
+  under test, assessments as the explanations, and requests as what waits for the user.
+- The Investigations page's task flow numbers each piece of evidence (`E-003`), shows when each check ran in the
+  browser's time zone (named in the header; today's checks show the time, earlier ones the day, seconds on hover), draws
+  the checks of a branch (or steps that overlapped in time) side by side, folds older finished checks past twelve, and
+  ends with what the agent waits for. The evidence inspector is short: the query and its absolute window, a picture only
+  where it helps, at most three lines, a one-line coverage note, and "Why it matters" behind a disclosure. A traced
+  request is drawn as one row of log observations per service on a time axis, with the first observed error marked; it is
+  built from the whole timeline the tool returned and kept with the evidence (`summary.charts`, about 4 KB), so records
+  saved earlier show their lines and no chart. Histograms get a slim strip with the peak marked; the flow, top-value and
+  event charts are gone. Each explanation is labelled checking, supported, ruled out or undetermined, and the handoff row
+  can show the chips "Analysis complete" and "Fix not verified".
+- The Investigations page follows the journey prototype: a task flow (each check with its tool, result, status and
+  evidence) beside the agent's working explanations, which give way to the evidence inspector (query, saved window,
+  what it supports or contradicts, gaps), and a handoff row (observed, probable explanation, still unverified, a
+  prompt to resume). The Markdown export lists an object report's findings, limits and next checks.
+- Investigations keep what an agent concludes, not only what ran: records are refused when they claim more than they
+  carry (an assessment of "supported" with nothing cited, an identity whose value is a redaction placeholder, a link
+  called observed without evidence, a rate over an unknown denominator, a check result with only a step that ran), and
+  a link stays a candidate until an update gives evidence for it. Requests to the user keep who said what
+  (`user_reported`, `unverified`, `verified`). `start` takes `follows` to verify a fix in its own window without
+  changing the conclusion it follows. The briefing now lists assessments, requests waiting for an answer and checks
+  not yet run.
+- `graylog-mcp investigate list|show|resume|export` reads the investigations straight from the local file (no server
+  needed): `show` prints them as text or `--json`, `resume` prints the briefing and what to tell the agent (it starts
+  nothing), `export` writes Markdown. The admin page has the same export and shows assessments, identities, candidate
+  and observed links, requests and comparisons.
+- The admin page has an Investigations screen: the list (state in words, "needs attention" for an agent waiting or cut
+  off) and a workspace of branches, checks and steps with an evidence inspector (the query as asked beside the one that
+  ran, exact against shown counts, what was cut, excerpts as text), a live feed that survives reloads and reconnects
+  without repeating events, and an address per view (`/investigations/<id>/<branch>/<check>/<evidence>`). Steps run
+  without a check show as ad hoc steps, with no reason invented. `graylog-mcp start` says whether investigation links
+  work.
+- Persistent agent investigations: the `investigation` tool (`start`, `update`, `checkpoint`, `finish`, `cancel`,
+  `resume`) and `get_investigation` keep a local record in `investigations.db` of an investigation's scope (fixed in
+  absolute times), steps, bounded redacted evidence, the agent's checks and assessments, and its attempts. The Graylog
+  tools take optional `investigation_id`, `owner_fence` and `check_id` to run as recorded steps; ownership is a fence
+  with a 10-minute lease, so a session that vanished is taken over and its running steps read back as interrupted.
+  Graylog stays read-only; `investigation` is the one tool that is not annotated read-only and only writes this local
+  file. Off by default: the admin page's Investigations screen turns them on (a running server reads it at start), or
+  `GRAYLOG_MCP_INVESTIGATIONS=on|off`, which decides over the page. Off, the tool list is the previous one byte for
+  byte.
+- The log drawer on the Logs dashboard can search outside its filter: the filter (for example `service:"payment"`) is
+  shown as a chip with a ✕ that searches the whole time range, and a field value in an opened line is a button that
+  searches `field:value`.
+- `graylog-mcp skill install` copies a Claude Code skill (`graylog-investigate`) that teaches an agent the whole
+  investigation workflow: resume or start, run checks as steps, record and cite evidence, hand over and finish.
+- With investigations on, the server instructions give agents the working rules: when to start or resume one, what to
+  pass on each search, what to record before and after a check, that a supported or contradicted assessment must cite
+  evidence from a succeeded step, and how to end.
 - The admin page turns ChatGPT web on and off: Connect, *ChatGPT web* takes the tunnel's address, its port and
   the environments ChatGPT may read, writes `[http.oauth]` and `remote_access` into your config and restarts the
   server. The card says whether the channel actually answers on its port.
 
+### Changed
+- The admin page shows every time in the browser's time zone, on Overview, Activity, Logs and Investigations, and names
+  that zone on charts and range inputs. A custom range that falls in a clock hour skipped by a daylight-saving change is
+  refused. Overview and saved investigation histograms carry exact instants, so a bar opens its own window and the two
+  copies of a repeated hour at a daylight-saving change stay apart.
+
 ### Fixed
+- The ChatGPT web channel offers no investigations: not the `investigation` and `get_investigation` tools, nor the
+  arguments that record a search as a step. Investigations are kept per repository, not per environment, so a remote
+  client could read ones about environments without `remote_access`.
+- A saved trace marks the errors `trace_request` marked (the instance's technical error query, such as an HTTP 5xx
+  logged at INFO), in its chart and its excerpts, not the ones the log level suggests; a long trace is no longer
+  described as its earliest lines.
+- Investigation evidence lists now expand their `+n` links, so every saved piece can be opened. Long histograms
+  keep the full window and peak by grouping adjacent buckets, with each bar's maximum explained in the caption.
+  Root-cause event timelines no longer appear as request observations, and search coverage notes no longer call
+  arbitrary result pages the earliest lines.
 - The admin page's Logs with an empty search, and `scan` with `exclude` set and no query, no longer send Graylog
   `(*)`, which it refuses ("'*' or '?' not allowed as first character in WildcardQuery").
 

@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from graylog_mcp import usage
@@ -49,8 +49,10 @@ class RecordContext:
     codex_turn: dict[str, Any] | None = None  # _meta["x-codex-turn-metadata"]
     client: str | None = None  # clientInfo, "name/version"
     http_session: str | None = None  # the mcp-session-id header
-    investigation_id: str | None = None  # reserved for investigations, not set yet
-    step_id: str | None = None  # reserved for investigations, not set yet
+    investigation_id: str | None = None  # the investigation this call is a step of
+    check_id: str | None = None  # the check of that investigation it carries out, if any
+    owner_fence: str | None = field(default=None, repr=False)  # a credential: never written to usage
+    step_id: str | None = None  # set when the step is recorded
 
     @classmethod
     def from_mcp(cls, ctx: Any, tool_name: str) -> RecordContext:
@@ -138,6 +140,7 @@ async def run_recorded(
     app: Any = None
     result: Any = None
     text, error, status = "", None, "ok"
+    step: Any = None  # the investigation step this call is, when it names an investigation
     try:
         app = get_app()
         if inspect.isawaitable(app):
@@ -146,19 +149,31 @@ async def run_recorded(
         if refused:
             status = "refused"
             raise ToolInputError(refused)
+        if ctx.investigation_id:
+            from graylog_mcp.investigations import record
+
+            step = await record.begin(app, ctx, identity, op.name, kwargs)
         result = op.fn(app, **kwargs)
         if inspect.isawaitable(result):
             result = await result
         text = dumps(result)
+        if step is not None:
+            await record.close(app, step, op.name, state="succeeded", result=result)
         return result, text
     except asyncio.CancelledError:
         status, error = "cancelled", "cancelled"
+        if step is not None:
+            await record.close(app, step, op.name, state="cancelled", error="cancelled", shield=True)
         raise
     except (GraylogError, ConfigError, ValueError) as exc:
         status, error = ("refused" if status == "refused" else "error"), str(exc)
+        if step is not None:
+            await record.close(app, step, op.name, state="failed", error=error)
         raise
     except Exception as exc:
         status, error = "error", f"{type(exc).__name__}: {exc}"
+        if step is not None:
+            await record.close(app, step, op.name, state="failed", error=error)
         raise
     finally:
         # synchronous, so a cancelled call is still recorded: nothing here can be interrupted by a second cancel

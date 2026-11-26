@@ -27,12 +27,26 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from graylog_mcp import __version__, bundle, explorer, explorer_traces, operations, rca, recover, tools, ui_links, usage
+from graylog_mcp import (
+    __version__,
+    bundle,
+    contexts,
+    explorer,
+    explorer_traces,
+    investigations,
+    operations,
+    rca,
+    recover,
+    tools,
+    ui_links,
+    usage,
+)
 from graylog_mcp import secrets as secret_store
 from graylog_mcp import usage_conversations as conversations
 from graylog_mcp.admin import forms
@@ -53,6 +67,10 @@ from graylog_mcp.config import (
     resolve_repo_path,
 )
 from graylog_mcp.config import _parse_redaction as parse_redaction
+from graylog_mcp.investigations import stream
+from graylog_mcp.investigations.model import ANY_REPO, InvestigationError, NotFound
+from graylog_mcp.investigations.model import set_enabled as set_investigations_enabled
+from graylog_mcp.investigations.model import switch as investigations_switch
 from graylog_mcp.operations import Operation
 from graylog_mcp.recording import EXPLORER, RecordContext, run_recorded
 from graylog_mcp.redact import PACKS, PROFILES, Redactor
@@ -687,6 +705,133 @@ def build_app(state: AdminState) -> Starlette:
             }
         )
 
+    def _switch_state() -> dict[str, Any]:
+        on, source = investigations_switch()
+        return {"enabled": on, "source": source}
+
+    async def save_context(request: Request) -> Response:
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > contexts.MAX_BODY_BYTES:
+                return _err("context is too large; select fewer logs or traces", 413)
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                return _err("context must be a JSON object")
+            app = await state.app()
+            saved = await asyncio.to_thread(contexts.save, app, body)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in exc.errors(include_input=False)
+            )
+            return _err(f"invalid context: {details}")
+        except (ValueError, ConfigError) as exc:
+            return _err(str(exc))
+        return JSONResponse(saved, status_code=201)
+
+    async def list_contexts(request: Request) -> Response:
+        try:
+            found = await asyncio.to_thread(contexts.recent, await state.app())
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"contexts": found})
+
+    async def get_context(request: Request) -> Response:
+        try:
+            saved = await asyncio.to_thread(contexts.load, await state.app(), request.path_params["id"])
+        except tools.ToolInputError as exc:
+            return _err(str(exc), 404)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse(saved)
+
+    def _investigations_off() -> Response | None:
+        return None if investigations.enabled() else JSONResponse({**_switch_state(), "investigations": []})
+
+    async def set_investigations(request: Request) -> Response:
+        """The page's switch. ``GRAYLOG_MCP_INVESTIGATIONS`` wins over it, and says so. Agents' servers read the
+        choice when they start, so it applies to new sessions after a restart."""
+        body = await _body(request)
+        if not isinstance(body.get("enabled"), bool):
+            return _err("enabled must be true or false")
+        if investigations_switch()[1] == "env":
+            return _err(
+                "GRAYLOG_MCP_INVESTIGATIONS is set for this server and decides; unset it to use this switch", 409
+            )
+        set_investigations_enabled(body["enabled"])
+        return JSONResponse({**_switch_state(), "restart": True})
+
+    async def list_investigations(request: Request) -> Response:
+        if (off := _investigations_off()) is not None:
+            return off
+        state_filter = request.query_params.get("state") or None
+        instance = request.query_params.get("instance") or None
+        rows = await investigations.run(investigations.service().list, repo=ANY_REPO, state=state_filter, limit=200)
+        if instance:
+            rows = [r for r in rows if r["instance"] == instance]
+        return JSONResponse({**_switch_state(), "investigations": rows})
+
+    async def get_investigation(request: Request) -> Response:
+        if (off := _investigations_off()) is not None:
+            return off
+        svc = investigations.service()
+        try:
+            snap = await investigations.run(svc.get, repo=ANY_REPO, investigation_id=request.path_params["id"])
+        except InvestigationError as exc:
+            return _err(str(exc), 404 if isinstance(exc, NotFound) else 400)
+        return JSONResponse({**_switch_state(), **snap})
+
+    async def get_investigation_evidence(request: Request) -> Response:
+        if (off := _investigations_off()) is not None:
+            return off
+        try:
+            found = await investigations.run(
+                investigations.service().get,
+                repo=ANY_REPO,
+                investigation_id=request.path_params["id"],
+                view="evidence",
+                evidence_id=request.path_params["eid"],
+            )
+        except InvestigationError as exc:
+            return _err(str(exc), 404 if isinstance(exc, NotFound) else 400)
+        return JSONResponse(found)
+
+    async def export_investigation(request: Request) -> Response:
+        if (off := _investigations_off()) is not None:
+            return off
+        try:
+            got = await investigations.run(
+                investigations.service().get, repo=ANY_REPO, investigation_id=request.path_params["id"], view="export"
+            )
+        except InvestigationError as exc:
+            return _err(str(exc), 404 if isinstance(exc, NotFound) else 400)
+        name = re.sub(r"[^A-Za-z0-9_.-]", "-", request.path_params["id"])
+        return Response(
+            got["markdown"],
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}.md"'},
+        )
+
+    async def investigation_events(request: Request) -> Response:
+        if (off := _investigations_off()) is not None:
+            return off
+        try:
+            after = max(0, int(request.query_params.get("after") or request.headers.get("last-event-id") or 0))
+        except ValueError:
+            return _err("after must be a number")
+        key = request.path_params["id"]
+        try:  # a missing investigation is a 404 before the stream starts, not an error inside it
+            await investigations.run(investigations.service().get, repo=ANY_REPO, investigation_id=key, view="evidence")
+        except InvestigationError as exc:
+            return _err(str(exc), 404 if isinstance(exc, NotFound) else 400)
+        follow = request.query_params.get("follow") != "0"
+        return StreamingResponse(
+            stream.feed(key, after, follow=follow, gone=request.is_disconnected),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
     def _range(request: Request) -> tuple[str, int, int]:
         """24h in hourly buckets (default) or 7d in 6-hour buckets."""
         return ("7d", 168, 6) if request.query_params.get("range") == "7d" else ("24h", 24, 1)
@@ -752,7 +897,7 @@ def build_app(state: AdminState) -> Starlette:
 
             def histogram(query: str) -> Any:
                 return tools.log_histogram(
-                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name
+                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name, utc_labels=True
                 )
 
             try:
@@ -1095,6 +1240,15 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/redact", redact_preview, methods=["POST"]),
         Route("/api/run", run_tool, methods=["POST"]),
         Route("/api/doctor", run_doctor),
+        Route("/api/contexts", list_contexts),
+        Route("/api/contexts", save_context, methods=["POST"]),
+        Route("/api/contexts/{id}", get_context),
+        Route("/api/investigations", list_investigations),
+        Route("/api/investigations/switch", set_investigations, methods=["POST"]),
+        Route("/api/investigations/{id}", get_investigation),
+        Route("/api/investigations/{id}/events", investigation_events),
+        Route("/api/investigations/{id}/export", export_investigation),
+        Route("/api/investigations/{id}/evidence/{eid}", get_investigation_evidence),
         Route("/api/usage", get_usage),
         Route("/api/conversations", get_conversations),
         Route("/api/conversations/{id}", get_conversation),

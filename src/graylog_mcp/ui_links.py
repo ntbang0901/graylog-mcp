@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from graylog_mcp.setup import service
 from graylog_mcp.timerange import TimeRange, to_graylog
@@ -119,3 +119,17 @@ def link(
     host = f"[{ui['host']}]" if ":" in ui["host"] else ui["host"]
     base = ui["base"] if ui["base"].endswith("/") else ui["base"] + "/"
     return f"http://{host}:{ui['port']}{base}logs/{tab}?{urlencode(params)}"
+
+
+def investigation_link(app: Any, investigation: str, *path: str) -> str | None:
+    """The admin page's workspace for an investigation (or a branch, check, evidence within it), or None when no
+    admin page runs or ``ui_links = "off"``. Like every link here it never carries the admin token."""
+    if not app.config.ui_links:
+        return None
+    ui = current()
+    if ui is None:
+        return None
+    host = f"[{ui['host']}]" if ":" in ui["host"] else ui["host"]
+    base = ui["base"] if ui["base"].endswith("/") else ui["base"] + "/"
+    parts = "/".join(quote(p, safe="") for p in (investigation, *path))
+    return f"http://{host}:{ui['port']}{base}investigations/{parts}"

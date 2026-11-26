@@ -1,3 +1,4 @@
+import { formatDateTime, formatTime, parseTime, viewZone } from "../time";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, errorText } from "../api";
 import { instances, label, navigate, playground, toast } from "../store";
@@ -15,7 +16,12 @@ import { messageMarkdown } from "../markdown";
 import type { Fields, LogLine } from "../scripts/types";
 import { revealRows } from "../scripts/motion";
 import { AsyncButton, Close, Dialog, Icon, Segment, num } from "./UI";
+import { contextOpen, contextDraft, openContext } from "../contexts";
+import type { ContextScope } from "../contexts-model";
+import { AddLogToContext } from "./ContextActions";
 interface SearchResult {
+    range?: { from: string; to: string };
+    query?: string;
     messages?: LogLine[];
     next_offset?: number | null;
     total?: number;
@@ -23,9 +29,9 @@ interface SearchResult {
     suggestions?: { query: string; count?: number }[];
     rewritten?: { why?: string[]; ran: string };
 }
-function searchArgs(v: LogsView, narrow: string, offset = 0) {
+function searchArgs(v: LogsView, narrow: string, offset = 0, scoped = true) {
     const parts = [
-            v.query !== "*" ? v.query : "",
+            scoped && v.query !== "*" ? v.query : "",
             v.errorsOnly && v.errorQuery ? v.errorQuery : "",
             narrow.trim(),
         ].filter(Boolean),
@@ -66,26 +72,39 @@ function LogRow({
     m,
     index,
     view,
+    onSearch,
+    scope,
 }: {
     m: LogLine;
     index: number;
     view: LogsView;
+    onSearch: (term: string) => void;
+    scope: ContextScope | null;
 }) {
     const [open, setOpen] = useState(false),
         [detail, setDetail] = useState<Fields | null>(null),
+        [cutFields, setCutFields] = useState<string[]>([]),
         [error, setError] = useState("");
     const lv = levelOf(m.level),
         who = String((view.column && m[view.column]) || m.source || "");
     useEffect(() => {
         let live = true;
         if (open && !detail)
-            void api<{ result: { message: Fields } }>("/api/run", "POST", {
+            void api<{
+                result: {
+                    message: Fields;
+                    cut_fields?: Record<string, number>;
+                };
+            }>("/api/run", "POST", {
                 tool: "get_message",
                 instance: view.instance,
                 args: { ref: m.ref },
             })
                 .then((r) => {
-                    if (live) setDetail(r.result.message);
+                    if (live) {
+                        setDetail(r.result.message);
+                        setCutFields(Object.keys(r.result.cut_fields || {}));
+                    }
                 })
                 .catch((e) => {
                     if (live) setError(errorText(e));
@@ -116,11 +135,14 @@ function LogRow({
                 <time
                     class="lt mono"
                     dateTime={m.ts.replace(" ", "T")}
-                    title={m.ts}
+                    title={formatTime(m.ts, "YYYY-MM-DD HH:mm:ss.SSS [UTC]Z")}
                 >
-                    {view.range === "7d" || view.from
-                        ? m.ts.slice(5, 19).replace(" ", " · ")
-                        : m.ts.slice(11, 19)}
+                    {formatTime(
+                        m.ts,
+                        view.range === "7d" || view.from
+                            ? "MM-DD · HH:mm:ss"
+                            : "HH:mm:ss",
+                    )}
                 </time>
                 <span class={`lv ${lv.cls}`}>{lv.word}</span>
                 <span class="lsvc truncate" title={who}>
@@ -156,14 +178,40 @@ function LogRow({
                                         <>
                                             <dt class="mono">{k}</dt>
                                             <dd class="mono">
-                                                {typeof v === "object"
-                                                    ? JSON.stringify(v)
-                                                    : String(v ?? "")}
+                                                {typeof v === "object" ||
+                                                v == null ||
+                                                v === "" ? (
+                                                    typeof v === "object" ? (
+                                                        JSON.stringify(v)
+                                                    ) : (
+                                                        String(v ?? "")
+                                                    )
+                                                ) : (
+                                                    <button
+                                                        class="lval"
+                                                        title={`Search ${k}:${phrase(v)}`}
+                                                        onClick={() =>
+                                                            onSearch(
+                                                                `${k}:${phrase(v)}`,
+                                                            )
+                                                        }
+                                                    >
+                                                        {String(v)}
+                                                    </button>
+                                                )}
                                             </dd>
                                         </>
                                     ))}
                             </dl>
                             <div class="lacts">
+                                {scope && (
+                                    <AddLogToContext
+                                        m={{ ...m, ...detail }}
+                                        scope={scope}
+                                        loaded
+                                        cutFields={cutFields}
+                                    />
+                                )}
                                 {trace && (
                                     <button
                                         class="btn sm"
@@ -183,14 +231,13 @@ function LogRow({
                                 <button
                                     class="btn sm"
                                     onClick={() => {
-                                        const at = Date.parse(
-                                            m.ts.replace(" ", "T"),
-                                        );
+                                        const at = parseTime(m.ts)?.valueOf();
+                                        if (at == null) return;
                                         openLogs({
                                             instance: view.instance,
                                             column: view.column,
-                                            title: `Around ${m.ts.slice(11, 19)}`,
-                                            when: `${m.ts.slice(0, 19)} ± 30 s`,
+                                            title: `Around ${formatTime(m.ts)}`,
+                                            when: `${formatDateTime(m.ts)} ± 30 s`,
                                             query: "*",
                                             from: new Date(
                                                 at - 30000,
@@ -269,8 +316,10 @@ export function LogsDrawer() {
         rev = logsRevision.value,
         [query, setQuery] = useState(""),
         [narrow, setNarrow] = useState(""),
+        [scoped, setScoped] = useState(true),
         [lines, setLines] = useState<LogLine[]>([]),
         [result, setResult] = useState<SearchResult | null>(null),
+        [captureScope, setCaptureScope] = useState<ContextScope | null>(null),
         [error, setError] = useState(""),
         [loading, setLoading] = useState(false),
         list = useRef<HTMLDivElement>(null),
@@ -278,6 +327,7 @@ export function LogsDrawer() {
     useEffect(() => {
         setQuery("");
         setNarrow("");
+        setScoped(true);
     }, [rev]);
     useEffect(() => {
         const t = setTimeout(() => setNarrow(query), 450);
@@ -291,6 +341,7 @@ export function LogsDrawer() {
         if (!more) {
             setLines([]);
             setResult(null);
+            setCaptureScope(null);
             if (list.current) list.current.scrollTop = 0;
         }
         try {
@@ -298,14 +349,43 @@ export function LogsDrawer() {
                 await api<{ result: SearchResult }>("/api/run", "POST", {
                     tool: "search_logs",
                     instance: view.instance,
-                    args: searchArgs(
-                        view,
-                        narrow,
-                        more ? result?.next_offset || 0 : 0,
-                    ),
+                    args: {
+                        ...searchArgs(
+                            view,
+                            narrow,
+                            more ? result?.next_offset || 0 : 0,
+                            scoped,
+                        ),
+                        ...(more && captureScope
+                            ? {
+                                  range: null,
+                                  from_time: captureScope.from_time,
+                                  to_time: captureScope.to_time,
+                              }
+                            : {}),
+                    },
                 })
             ).result;
             if (id !== seq.current) return;
+            if (!more && r.range) {
+                setCaptureScope({
+                    instance: view.instance,
+                    query:
+                        r.rewritten?.ran ||
+                        r.query ||
+                        searchArgs(view, narrow, 0, scoped).query,
+                    streams: ["*"],
+                    from_time: new Date(
+                        r.range.from.replace(" ", "T"),
+                    ).toISOString(),
+                    to_time: new Date(
+                        r.range.to.replace(" ", "T"),
+                    ).toISOString(),
+                    timezone:
+                        r.range.from.match(/(Z|[+-]\d{2}:\d{2})$/)?.[1] ||
+                        "UTC",
+                });
+            }
             setLines((prev) =>
                 more ? [...prev, ...(r.messages || [])] : r.messages || [],
             );
@@ -324,7 +404,7 @@ export function LogsDrawer() {
         return () => {
             seq.current++;
         };
-    }, [view, narrow, rev]);
+    }, [view, narrow, rev, scoped]);
     useLayoutEffect(() => {
         if (list.current && lines.length)
             revealRows([...list.current.querySelectorAll(".lrow")].slice(-50));
@@ -335,18 +415,20 @@ export function LogsDrawer() {
         when = view
             ? view.when ||
               (view.from
-                  ? `${new Date(view.from).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })} to ${new Date(view.to!).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+                  ? `${formatDateTime(view.from)} to ${formatDateTime(view.to)}`
                   : `last ${view.range === "7d" ? "7 days" : "24 hours"}`)
             : "";
-    const effective = view ? searchArgs(view, narrow).query : "",
+    const effective = view ? searchArgs(view, narrow, 0, scoped).query : "",
         fix = result?.suggestions?.[0];
     return (
         <Dialog
             id="logsDlg"
             class="sheet"
             aria-labelledby="logsTitle"
-            open={!!view}
-            onClose={close}
+            open={!!view && !contextOpen.value}
+            onClose={() => {
+                if (!contextOpen.peek()) close();
+            }}
         >
             <div class="dhead">
                 <div class="min0">
@@ -363,7 +445,8 @@ export function LogsDrawer() {
                                             group: null,
                                         } as never),
                                 )}{" "}
-                                · {when} · <span class="mono">{effective}</span>
+                                · {when} · {viewZone()} ·{" "}
+                                <span class="mono">{effective}</span>
                             </>
                         )}
                     </div>
@@ -406,6 +489,26 @@ export function LogsDrawer() {
                             };
                         }}
                     />
+                )}
+                {view && view.query !== "*" && (
+                    <button
+                        class={`btn sm ghost logs-scope${scoped ? "" : " off"}`}
+                        title={
+                            scoped
+                                ? "Search the whole time range, without this filter"
+                                : "Put the filter back"
+                        }
+                        onClick={() => setScoped(!scoped)}
+                    >
+                        {scoped ? (
+                            <>
+                                <span class="mono truncate">{view.query}</span>{" "}
+                                ✕
+                            </>
+                        ) : (
+                            "Filter removed · restore"
+                        )}
+                    </button>
                 )}
                 <form
                     class="logs-q"
@@ -464,6 +567,12 @@ export function LogsDrawer() {
                     )}
                 </span>
                 <span class="spacer" />
+                <button class="btn sm" type="button" onClick={openContext}>
+                    Review context
+                    {contextDraft.value.items.length
+                        ? ` (${contextDraft.value.items.length})`
+                        : ""}
+                </button>
                 <button
                     class="btn sm ghost"
                     id="logsPg"
@@ -471,7 +580,7 @@ export function LogsDrawer() {
                     onClick={async () => {
                         if (!view) return;
                         const v = view,
-                            a = searchArgs(v, narrow);
+                            a = searchArgs(v, narrow, 0, scoped);
                         close();
                         if (await navigate("playground"))
                             playground.value = {
@@ -493,7 +602,7 @@ export function LogsDrawer() {
                         close();
                         void openInLogs({
                             instance: v.instance,
-                            query: searchArgs(v, narrow).query,
+                            query: searchArgs(v, narrow, 0, scoped).query,
                             range: v.range,
                             from: v.from,
                             to: v.to,
@@ -550,6 +659,14 @@ export function LogsDrawer() {
                                     m={m}
                                     index={i}
                                     view={view!}
+                                    scope={loading ? null : captureScope}
+                                    onSearch={(term) => {
+                                        const next = query.trim()
+                                            ? `${query.trim()} AND ${term}`
+                                            : term;
+                                        setQuery(next);
+                                        setNarrow(next);
+                                    }}
                                 />
                             ))}
                         {result?.next_offset != null && (

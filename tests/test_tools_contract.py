@@ -275,6 +275,9 @@ async def test_mcp_server_roundtrip(make_app):
     server = build_server(app)
     tools_list = await server.list_tools()
     assert {t.name for t in tools_list} - {"ask"} == {
+        "investigation",
+        "get_investigation",
+        "get_context",
         "search_logs",
         "aggregate",
         "get_message",
@@ -285,7 +288,10 @@ async def test_mcp_server_roundtrip(make_app):
         "describe",
         "run_preset",
     }
-    assert all(t.annotations.read_only_hint for t in tools_list)
+    # every tool is read-only towards Graylog; the one that keeps a local record says so, and nothing more
+    assert all(t.annotations.read_only_hint for t in tools_list if t.name != "investigation")
+    local = next(t for t in tools_list if t.name == "investigation").annotations
+    assert (local.read_only_hint, local.destructive_hint, local.open_world_hint) == (False, False, False)
     result = await server.call_tool("aggregate", {"kind": "count", "query": "level:3", "range": "2h"})
     payload = json.loads(result.content[0].text)
     assert payload["count"] == 32

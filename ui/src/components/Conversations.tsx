@@ -1,4 +1,5 @@
 // Activity's Conversations tab: the turns of every conversation, then one conversation (or one turn) call by call.
+import { formatDateTime, formatTime } from "../time";
 import { Fragment } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
@@ -93,7 +94,7 @@ function TurnLine({ t }: { t: TurnRow }) {
         <tr
             class="go"
             tabIndex={0}
-            aria-label={`${convShort(t.conversation)}, ${new Date(t.last_ts * 1000).toLocaleString()}, ${plural(t.calls, "call")}`}
+            aria-label={`${convShort(t.conversation)}, ${formatDateTime(t.last_ts * 1000)}, ${plural(t.calls, "call")}`}
             onClick={open}
             onKeyDown={(e) => {
                 if (e.key === "Enter" && e.target === e.currentTarget) {
@@ -102,12 +103,9 @@ function TurnLine({ t }: { t: TurnRow }) {
                 }
             }}
         >
-            <td
-                class="mono"
-                title={new Date(t.first_ts * 1000).toLocaleString()}
-            >
+            <td class="mono" title={formatDateTime(t.first_ts * 1000)}>
                 {cold
-                    ? new Date(t.last_ts * 1000).toLocaleDateString()
+                    ? formatTime(t.last_ts * 1000, "YYYY-MM-DD")
                     : whenShort(t.first_ts)}
             </td>
             <td class="num mono">
@@ -426,7 +424,7 @@ function Preview({ c }: { c: Call }) {
 }
 function CallDetail({ c, status }: { c: Call; status: string }) {
     const kv: [string, string][] = [
-        ["started", new Date(c.ts * 1000).toLocaleString()],
+        ["started", formatDateTime(c.ts * 1000)],
         ["environment", c.instance || "-"],
         [
             "status",
@@ -712,14 +710,8 @@ function ConversationView() {
                                 {plural(d.cold.calls, "call")},{" "}
                                 {plural(d.cold.errors, "error")},{" "}
                                 {d.cold.misses} found nothing, from{" "}
-                                {new Date(
-                                    d.cold.first_ts * 1000,
-                                ).toLocaleString()}{" "}
-                                to{" "}
-                                {new Date(
-                                    d.cold.last_ts * 1000,
-                                ).toLocaleString()}
-                                .
+                                {formatDateTime(d.cold.first_ts * 1000)} to{" "}
+                                {formatDateTime(d.cold.last_ts * 1000)}.
                             </p>
                             <ToolChips tools={d.cold.tools || []} />
                         </section>

@@ -96,7 +96,8 @@ search endpoints that execute or check a query without saving it (`/views/search
 
 ## Tools
 
-All tools are annotated `readOnlyHint` and accept an optional `instance`. Tools that do several related things
+Every tool is annotated `readOnlyHint` towards Graylog, except `investigation`, which keeps a local record (see
+[Investigations](#investigations)). The Graylog tools accept an optional `instance`. Tools that do several related things
 take a `kind`, `view` or `what`; an argument that does not apply to the one chosen is refused, not ignored.
 
 **Scan**
@@ -148,6 +149,18 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
     logged (`suggestions`).
 - `compare_periods` — two periods (e.g. before/after a deploy): which error groups are new, grew,
   disappeared or shrank, normalised per hour.
+
+**Keep an investigation**
+- `investigation` — a local record of one investigation: `start` (fixes the window in absolute times, returns an
+  `owner_fence`), `update` (branches, checks, hypotheses, assessments, a changed scope with its reason),
+  `checkpoint`, `finish`, `cancel`, `resume`. Changes this machine's `investigations.db`, never Graylog.
+- `get_investigation` — its snapshot, a short briefing to continue from, or one saved piece of evidence; without an
+  id, the recent investigations of this repository.
+
+**Bring UI evidence to an agent**
+- `get_context` — reads a saved `CTX-…` context collected in the admin UI: your task and an index of selected
+  evidence. Pass `item_id="I-1"` for one captured log, trace or search, or `offset` to continue a long index.
+  Reads the local snapshot without running a search.
 
 **Discover**
 - `describe` — `what="instances"` (default: detected version and the API in use), `"streams"`, `"fields"` (so
@@ -609,6 +622,65 @@ call `ask` first with their words, say how it understood them, ask back what `cl
 `trace_request`, and answer in their language. A guide for business analysts and testers, in Vietnamese, covers
 the admin page and these prompts: [docs/huong-dan-ba-qa.md](docs/huong-dan-ba-qa.md).
 
+## Agent context from the UI
+
+While browsing **Logs**, use **Add search to context**, **Add log to context** in an expanded message, or
+**Add trace to context** on a trace. The log drawer opened from Overview also has **Add log to context**.
+Selections keep the executed query, streams, environment and absolute time window of the answer you saw.
+Each item retains its own scope when you collect evidence across several searches or environments.
+
+Open **Agent context** in the top bar to review up to 20 items, remove selections, and write the question you
+want investigated. **Save & copy prompt** creates an immutable `CTX-…` snapshot and copies an instruction to
+paste into an agent connected to this Graylog MCP server. The agent uses `get_context` for the brief and
+individual evidence items. Large excerpts are shortened with an explicit coverage note; message references
+and the saved scope let the agent search further. Adding evidence after saving starts a new draft.
+
+Drafts last for the current page session. Saved contexts can be reopened from **Saved contexts** in the panel;
+the latest 100 are kept in `contexts.db` under `GRAYLOG_MCP_HOME`. Your redaction rules apply before anything is
+stored and again when a snapshot is read. A caller can only read a context when every selected environment is
+configured under the same name and Graylog URL. Context handoff works independently of the Investigations switch.
+
+## Investigations
+
+An investigation is a record the agent keeps while it works, so that the question, the scope, what was checked and
+concluded survive the conversation and a later session can pick it up:
+
+1. `investigation(action="start", ...)` turns the window into absolute times once (so "the last hour" cannot drift),
+   fixes the instance, and returns an `id`, an `owner_fence` and, while an admin page runs, a `ui` link for you.
+2. The Graylog tools (`search_logs`, `aggregate`, `compare_periods`, `get_message`, `trace_request`, `scan`,
+   `root_cause`, `run_preset`) take optional `investigation_id`, `owner_fence` and `check_id`. A call that has them is a
+   **step**: written as running before it is sent, then closed with a bounded, redacted **evidence** record (the exact
+   count apart from the lines returned, what was cut, the query asked beside the one run). A search that found nothing
+   is evidence of that; a search that failed is a failed step and no evidence. Calls without them are as they were.
+3. `investigation(action="update", items=[...])` records what the agent thinks: a branch (a question), a check (its
+   purpose and what each outcome would mean), a hypothesis, an assessment (`supported`, `contradicted_in_scope` or
+   `undetermined`, citing evidence ids). A successful call is not a finding; the agent says what it found.
+   A record claims no more than it carries: `supported` and `contradicted_in_scope` cite evidence, an identity has a
+   type, a namespace and a value that is not a redaction placeholder, a link is a `candidate` until an update gives
+   evidence for `observed`, a comparison shows a rate only over a known denominator, and a request to you records
+   whether the answer is `user_reported`, `unverified` or `verified`.
+4. `checkpoint` saves a briefing and waits for input; `resume` opens a new attempt from it; `finish` records the
+   outcome (`explanation_supported`, `cause_undetermined`, `no_matching_evidence`, `no_anomaly_detected`) and a report.
+
+Ownership is explicit: only the holder of the current `owner_fence` writes, a newer `resume` fences the old holder out,
+and a holder idle for 10 minutes can be taken over. A step that was running when its process ended, or its owner's
+lease ran out, is marked `interrupted`, never `succeeded`. A retry with the same `operation_id` repeats the answer
+instead of the action, and a record changed since it was read is refused (`revision`).
+
+Everything is stored redacted in `investigations.db` in the home directory (sqlite, WAL; two server processes may share
+it) under a size limit that drops the oldest ended investigations' excerpts first, keeping their summaries.
+Investigations are **off until you turn them on** (they add about 9 KB to every session's tool list): on the admin
+page's Investigations screen, or with `GRAYLOG_MCP_INVESTIGATIONS=on`, which decides over the page's switch (`=off`
+forces them off). Off, the two tools, the three arguments and their instructions are not there and the model sees
+exactly what it saw before. A running server reads the switch when it starts. The admin page's **Investigations** screen shows them live (the list, then branches, checks and steps, then one
+piece of evidence); `graylog-mcp investigate list|show|resume|export` reads them without the server (`resume` prints the briefing and the
+sentence to give an agent; it starts nothing), and the page exports Markdown; the concept is in
+[PR #48](https://github.com/ntbang0901/graylog-mcp/pull/48).
+
+A Claude Code **skill** teaches an agent how to work with them (when to start or resume, what to record and cite, how to
+finish): `graylog-mcp skill install` copies it into `~/.claude/skills/` (`--project` for this folder's `.claude/skills/`,
+`--dir` for another). It is read in new sessions.
+
 ## Root cause analysis
 
 Example verdict, from the scenario in the integration suite (a bad deploy of `payment`), identical on
@@ -727,6 +799,7 @@ Environment variables:
 | `GRAYLOG_MCP_CONFIG` | path of a TOML config file |
 | `GRAYLOG_MCP_HTTP_TOKEN` | bearer token required by the HTTP transport |
 | `GRAYLOG_MCP_HOME` | the server's state folder: admin token, pid, log and recorded calls (default `~/.config/graylog-mcp`) |
+| `GRAYLOG_MCP_INVESTIGATIONS` | `on` adds the `investigation` and `get_investigation` tools and the `investigation_id`, `check_id` and `owner_fence` arguments; `off` removes them. Without it, the admin page's switch decides, and the default is off (see [Investigations](#investigations)) |
 | `GRAYLOG_MCP_USAGE` | `calls` records the calls without their result previews, `off` records nothing (see [the admin UI](#setup-helpers-and-admin-ui)) |
 | `GRAYLOG_MCP_USAGE_HOT_DAYS`, `GRAYLOG_MCP_USAGE_DAYS`, `GRAYLOG_MCP_USAGE_SESSION_DAYS`, `GRAYLOG_MCP_USAGE_MAX_MB` | how long recorded calls keep every detail (default 2 days), their summary (15, at the least) and one line per conversation (90), and the folder's size limit (50 MB) |
 
@@ -1258,6 +1331,8 @@ What protects it:
   metadata; its name is shown cut to 80 characters.
 - A paired client sees only the environments with `remote_access = true`: the others are not listed, and an
   error names none of them. A group, `[environments]` and a repository's own file cannot set it.
+- The channel has no [investigations](#investigations): they are kept per repository, not per environment, so they
+  stay on this machine even while the switch is on.
 - Access tokens last an hour; a refresh token works once and is replaced. `~/.config/graylog-mcp/oauth.json`
   (owner-only) keeps the paired clients and hashes of the tokens and codes, never the tokens themselves.
   `graylog-mcp pair --list` lists the clients, `--revoke ID` (or `all`) unpairs, as does the admin page.

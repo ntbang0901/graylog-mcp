@@ -54,6 +54,7 @@ class ToolSpec:
     selects: frozenset[str] = frozenset()  # other parameters that decide the mode
     dropped: frozenset[str] = frozenset()  # ignored, not refused, when the mode's operation lacks them
     enabled: Callable[[App | None], bool] = _always  # the App is None on a shared server with no default
+    read_only: bool = True  # False for a tool that writes local state (never to Graylog)
 
 
 def single(op: str) -> Mapping[str, Mode]:

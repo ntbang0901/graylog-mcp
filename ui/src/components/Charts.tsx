@@ -1,4 +1,11 @@
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import {
+    formatDateTime,
+    formatTime,
+    parseTime,
+    viewZone,
+    type TimeValue,
+} from "../time";
 import { createPortal } from "preact";
 import { currentPage } from "../store";
 import { drawChart, growBars } from "../scripts/motion";
@@ -34,16 +41,22 @@ function niceMax(v: number) {
 }
 export function overall(envs: LogStatsEnv[], key: "buckets" | "error_buckets") {
     const ok = envs.filter((e) => !e.error && e[key]?.length);
-    if (!ok.length) return { labels: [], values: [] };
+    if (!ok.length) return { labels: [], values: [], timestamps: [] };
     const n = Math.max(...ok.map((e) => e[key].length)),
         ref = ok.find((e) => e[key].length === n)![key],
-        values: number[] = Array(n).fill(0);
+        values: number[] = Array(n).fill(0),
+        span =
+            (parseTime(ref[n - 1][0])?.valueOf() ?? 0) -
+            (parseTime(ref[0][0])?.valueOf() ?? 0);
     for (const e of ok)
         e[key].forEach(([, v], j) => {
             values[n - e[key].length + j] += v;
         });
     return {
-        labels: ref.map(([l]) => (l.length > 11 ? l.slice(5) : l)),
+        labels: ref.map(([l]) =>
+            formatTime(l, span > 86400000 ? "MM-DD HH:mm" : "HH:mm", l),
+        ),
+        timestamps: ref.map(([l]) => parseTime(l)?.valueOf() ?? null),
         values,
     };
 }
@@ -101,6 +114,7 @@ export interface Series {
 export function Chart({
     id,
     labels,
+    timestamps,
     values,
     name,
     series,
@@ -113,6 +127,7 @@ export function Chart({
 }: {
     id: string;
     labels: string[];
+    timestamps?: TimeValue[];
     values?: number[];
     name: string;
     series?: Series[];
@@ -161,7 +176,7 @@ export function Chart({
         y = (v: number) => H - padB - (v / max) * (H - padB - 12),
         hot = spike ? spikeIndex(totals) : -1,
         peak = totals.indexOf(Math.max(...totals));
-    const sig = `${line}|${CW}|${H}|${totals.join()}|${ss.map((s) => s.values.join()).join("|")}`;
+    const sig = `${line}|${CW}|${H}|${labels.join()}|${timestamps?.join()}|${totals.join()}|${ss.map((s) => s.values.join()).join("|")}`;
     const page = currentPage.value;
     useLayoutEffect(() => {
         setHover(-1);
@@ -180,7 +195,7 @@ export function Chart({
         setTip({
             x: clientX,
             y: clientY,
-            title: labels[i],
+            title: formatDateTime(timestamps?.[i], labels[i]),
             rows: ss.map((s) => [
                 s.name,
                 num(s.values[i]),
@@ -282,7 +297,7 @@ export function Chart({
                         aria-describedby={tip ? `${id}Tip` : undefined}
                         aria-label={
                             line
-                                ? `${name}: ${num(totals.reduce((a, b) => a + b, 0))} in total, peak ${num(totals[peak])} at ${labels[peak]}${pick ? ". " + how : ""}`
+                                ? `${name}: ${num(totals.reduce((a, b) => a + b, 0))} in total, peak ${num(totals[peak])} at ${formatDateTime(timestamps?.[peak], labels[peak])}${pick ? ". " + how : ""}`
                                 : `${name}${pick ? ". " + (how || "Left and right arrows move, Enter filters the list to that bar, Escape clears.") : ""}`
                         }
                         onKeyDown={(e) => keyboard(e)}
@@ -466,6 +481,9 @@ export function Chart({
                             </>
                         )}
                     </svg>
+                    {timestamps?.some((t) => t != null) && (
+                        <div class="muted small">Times in {viewZone()}</div>
+                    )}
                     {!line && ss.length > 1 && (
                         <div class="legend">
                             {ss.map((s) => (

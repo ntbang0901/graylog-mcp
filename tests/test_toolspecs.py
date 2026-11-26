@@ -137,7 +137,7 @@ def test_a_declared_default_is_the_operations_default():
 def test_tools_are_declared_in_the_order_they_are_listed():
     assert [s.name for s in TOOLS] == [
         "search_logs", "aggregate", "get_message", "trace_request", "compare_periods", "scan", "root_cause",
-        "ask", "describe", "run_preset",
+        "ask", "describe", "run_preset", "investigation", "get_investigation", "get_context",
     ]  # fmt: skip
 
 

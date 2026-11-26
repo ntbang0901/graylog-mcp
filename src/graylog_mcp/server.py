@@ -15,7 +15,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from graylog_mcp import __version__, prompts, tools
+from graylog_mcp import __version__, investigations, prompts, tools
 from graylog_mcp.client import GraylogError
 from graylog_mcp.config import Config, ConfigError
 from graylog_mcp.operations import Operation
@@ -23,6 +23,7 @@ from graylog_mcp.recording import RecordContext, run_recorded
 from graylog_mcp.shared import AppPool
 from graylog_mcp.tools import App
 from graylog_mcp.toolspecs import TOOLS
+from graylog_mcp.toolspecs.investigations import GET_INVESTIGATION, INVESTIGATION, NOTE, RECORDED, with_recording
 from graylog_mcp.toolspecs.spec import ToolSpec, flat_signature, resolve
 
 log = logging.getLogger(__name__)
@@ -111,6 +112,11 @@ open, fetch or edit it.
 """
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True)
+# the investigation tool writes a local record, never Graylog: not read-only, not destructive, closed world
+LOCAL_STATE = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+)
+INVESTIGATIONS_NOTE = NOTE
 
 
 def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = None) -> MCPServer:
@@ -123,6 +129,10 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
     else:
         single = app
         current, startup = (lambda: single), single
+
+    # Investigations stay on this machine. They are kept per repository, not per environment, so a remote client could
+    # read, and write, ones about environments it may not see.
+    investigating = auth is None and investigations.enabled()
 
     async def detect(app: App) -> None:
         try:
@@ -137,20 +147,22 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
     async def lifespan(_server: MCPServer) -> AsyncIterator[None]:
         # in the background: an unreachable Graylog (VPN off) must not hold the server's start
         task = asyncio.create_task(detect(startup)) if startup is not None else None
+        recovery = asyncio.create_task(investigations.recover())  # steps a dead process left running
         try:
             yield
         finally:
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            for pending in (task, recovery):
+                if pending is not None:
+                    pending.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pending
             await app.close()
 
     server = MCPServer(
         name="graylog-mcp",
         title="Graylog (read-only)",
         version=__version__,
-        instructions=INSTRUCTIONS,
+        instructions=INSTRUCTIONS + (INVESTIGATIONS_NOTE if investigating else ""),
         lifespan=lifespan,
         auth_server_provider=auth[0] if auth else None,
         auth=auth[1] if auth else None,
@@ -165,8 +177,15 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
             raise ToolError(str(exc)) from None
 
     def register(spec: ToolSpec) -> None:
+        if investigating:
+            spec = with_recording(spec)  # the three optional arguments
+
         async def run(**kwargs: Any) -> str:
             ctx = RecordContext.from_mcp(kwargs.pop(CONTEXT, None), spec.name)
+            if spec.name in RECORDED:  # not arguments of the operation: they make the call a step
+                ctx.investigation_id = kwargs.pop("investigation_id", "") or None
+                ctx.check_id = kwargs.pop("check_id", "") or None
+                ctx.owner_fence = kwargs.pop("owner_fence", "") or None
             op, refused, args = resolve(spec, kwargs)
             return await call(op, refused, ctx, **args)
 
@@ -186,12 +205,12 @@ def build_server(app: App | AppPool, auth: tuple[Any, AuthSettings] | None = Non
             name=spec.name,
             title=spec.title,
             description=spec.description,
-            annotations=READ_ONLY.model_copy(update={"title": spec.title}),
+            annotations=(READ_ONLY if spec.read_only else LOCAL_STATE).model_copy(update={"title": spec.title}),
             structured_output=False,
         )
 
     for spec in TOOLS:
-        if spec.enabled(startup):
+        if spec.enabled(startup) and (investigating or spec not in (INVESTIGATION, GET_INVESTIGATION)):
             register(spec)
 
     # a shared server's repositories may declare prompts of their own; the default config's are offered

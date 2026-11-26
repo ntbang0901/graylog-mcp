@@ -51,6 +51,10 @@ def results_of(result: Any) -> int | None:
     return None
 
 
+# the token start/resume hand to the agent: it works for one investigation, so it stays out of the usage files
+_FENCE = re.compile(r'("owner_fence"\s*:\s*")[^"]*(")')
+
+
 def _redactor(app: Any) -> Callable[[str], str]:
     # without an App (its config is broken) the core rules still apply
     return (app.redactor if app is not None else Redactor()).text
@@ -156,7 +160,7 @@ def track(
                 entry["spans_dropped"] = spans.dropped
         if text and ok and previews():
             # redacted whole, then cut: dumps() does not redact, and a cut could split a value the rules would catch
-            entry["preview"] = redact(text)[:PREVIEW_CHARS]
+            entry["preview"] = _FENCE.sub(r"\1[REDACTED]\2", redact(text))[:PREVIEW_CHARS]
             if len(text) > PREVIEW_CHARS:
                 entry["preview_truncated"] = True
         write({"event": "finished", **entry} if identity is not None else entry)
