@@ -20,6 +20,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 from graylog_mcp.setup.service import home_dir
 from graylog_mcp.shaping import dumps
 from graylog_mcp.tools import App, ToolInputError
+from graylog_mcp.wal_lock import wal_lock
 
 MAX_CONTEXTS = 100
 MAX_ITEMS = 20
@@ -73,16 +74,21 @@ def _target(app: App, name: str) -> str:
 def _database():
     path = home_dir() / "contexts.db"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    con = sqlite3.connect(path, timeout=10)
+    with wal_lock(path):  # the WAL switch of a new file is refused while another open runs; see wal_lock
+        con = sqlite3.connect(path, timeout=10)
+        try:
+            path.chmod(0o600)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS context ("
+                "seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, "
+                "created TEXT NOT NULL, targets TEXT NOT NULL, body TEXT NOT NULL)"
+            )
+        except BaseException:
+            con.close()
+            raise
     try:
-        path.chmod(0o600)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS context ("
-            "seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, "
-            "created TEXT NOT NULL, targets TEXT NOT NULL, body TEXT NOT NULL)"
-        )
         yield con
     finally:
         con.close()

@@ -21,6 +21,7 @@ from graylog_mcp.investigations.model import (
     MAX_EVENTS_KEPT,
     InvestigationError,
 )
+from graylog_mcp.wal_lock import wal_lock
 
 log = logging.getLogger("graylog_mcp.investigations")
 
@@ -201,17 +202,20 @@ class Store:
 
     def _prepare(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self._migrate()
-        except sqlite3.DatabaseError as exc:
-            if "locked" in str(exc):
-                raise
-            aside = self.path.with_name(f"{self.path.name}.corrupt-{int(time.time())}")
-            log.warning("investigations database unreadable (%s); moved to %s, starting a new one", exc, aside)
-            for suffix in ("", "-wal", "-shm"):
-                with contextlib.suppress(OSError):
-                    self.path.with_name(self.path.name + suffix).replace(aside.with_name(aside.name + suffix))
-            self._migrate()
+        # One process at a time, the move included: otherwise two processes starting on a new file both create its
+        # tables, and one that found a file unreadable moves aside the new one another has just started.
+        with wal_lock(self.path):
+            try:
+                self._migrate()
+            except sqlite3.DatabaseError as exc:
+                if "locked" in str(exc):
+                    raise
+                aside = self.path.with_name(f"{self.path.name}.corrupt-{int(time.time())}")
+                log.warning("investigations database unreadable (%s); moved to %s, starting a new one", exc, aside)
+                for suffix in ("", "-wal", "-shm"):
+                    with contextlib.suppress(OSError):
+                        self.path.with_name(self.path.name + suffix).replace(aside.with_name(aside.name + suffix))
+                self._migrate()
 
     def _migrate(self) -> None:
         con = self._connect()

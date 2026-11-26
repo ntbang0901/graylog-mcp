@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import pytest
 
 from graylog_mcp.config import RedactionConfig
 from graylog_mcp.investigations import briefing
+from graylog_mcp.investigations import store as store_module
 from graylog_mcp.investigations.model import (
     LEASE_SECONDS,
     Conflict,
@@ -552,3 +556,40 @@ def test_the_oldest_ended_investigation_loses_its_excerpts_first_and_keeps_its_s
     kept = svc.get(repo="acme-shop", investigation_id=new["id"], view="evidence", evidence_id=ev_new)
     assert gone["excerpts"] == [] and gone["excerpts_expired"] is True and gone["summary"] == {"total": 5}
     assert kept["excerpts"] and kept["excerpts_expired"] is False
+
+
+def _first_open(path, barrier, _):
+    barrier.wait()
+    with Store(path).read() as con:
+        return con.execute("SELECT count(*) FROM investigation").fetchone()[0]
+
+
+def test_first_opens_of_a_new_store_by_several_processes_keep_the_file(tmp_path):
+    # Each thread stands for a process with its own Store. Unless opening runs under wal_lock, two of them read
+    # version 0 together; the second then tries to create the tables again, and the healthy file is moved aside as
+    # unreadable. The WAL switch is refused as locked as well.
+    for round_ in range(30):
+        path = tmp_path / f"round-{round_}" / "investigations.db"
+        barrier = threading.Barrier(8)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            assert list(pool.map(partial(_first_open, path, barrier), range(8))) == [0] * 8
+        assert not list(path.parent.glob("*.corrupt-*"))
+
+
+def test_a_second_process_cannot_move_aside_the_file_that_replaces_an_unreadable_one(tmp_path, monkeypatch):
+    path = tmp_path / "investigations.db"
+    found = b"not a database " * 200
+    path.write_bytes(found)
+    second = threading.Thread(target=_first_open, args=(path, threading.Barrier(1), 1))
+
+    def open_second_before_the_move(*_):  # the first opener warns after it fails to read, before it moves the file
+        if second.ident is None:
+            second.start()
+            second.join(0.5)  # it has to wait for the first; without that it would finish here
+
+    monkeypatch.setattr(store_module.log, "warning", open_second_before_the_move)
+    assert _first_open(path, threading.Barrier(1), 0) == 0
+    second.join(10)
+    assert not second.is_alive()
+    aside = [p.read_bytes() for p in tmp_path.glob("*.corrupt-*") if not p.name.endswith(("-wal", "-shm"))]
+    assert aside == [found]

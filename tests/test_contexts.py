@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import httpx
 import pytest
@@ -213,6 +215,23 @@ def test_context_limit_and_concurrent_process_style_saves(make_app, monkeypatch)
     assert len(rows) == 3 and len({s["id"] for s in snapshots}) == 8
     for row in rows:
         assert contexts.load(app, row["id"])["items"][0]["data"]["message"]["message"] == "Timeout"
+
+
+def _first_use(app, barrier, i):
+    barrier.wait()
+    return contexts.recent(app) if i % 2 else contexts.save(app, draft())
+
+
+def test_first_saves_and_reads_of_a_new_database_do_not_collide(make_app, monkeypatch, tmp_path):
+    # Each round starts with no contexts.db. Switching a new file to WAL is refused at once with "database is
+    # locked" when another connection opens it at the same moment, whatever the busy timeout says; the opens must
+    # be serialised across threads and processes.
+    app, _ = make_app()
+    for round_ in range(40):
+        monkeypatch.setenv("GRAYLOG_MCP_HOME", str(tmp_path / f"home-{round_}"))
+        barrier = threading.Barrier(8)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(partial(_first_use, app, barrier), range(8)))  # a worker's exception is raised here
 
 
 def test_input_mutation_cannot_change_a_saved_snapshot(make_app):
