@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -109,7 +110,8 @@ async def test_redaction_covers_notes_nested_fields_queries_and_database(page):
         stored = con.execute("SELECT body FROM context").fetchone()[0]
     for text in (response.text, stored, (await client.get("/api/contexts")).text):
         assert all(secret not in text for secret in ("alice@example.com", "hunter2", "raw-secret", "4111 1111"))
-    assert (home_dir() / "contexts.db").stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":  # Windows has no owner-only mode bits
+        assert (home_dir() / "contexts.db").stat().st_mode & 0o777 == 0o600
 
 
 async def test_admin_auth_and_missing_records(page):
