@@ -23,6 +23,7 @@ import { Connect } from "./components/Connect";
 import { ConfigFile } from "./components/ConfigFile";
 import { EnvDrawer } from "./components/EnvDrawer";
 import { LogsDrawer } from "./components/LogsDrawer";
+import { AgentContext } from "./components/AgentContext";
 import { Palette } from "./components/Palette";
 import "./styles/main.css";
 function App() {
@@ -44,6 +45,7 @@ function App() {
                 <>
                     <EnvDrawer />
                     <LogsDrawer />
+                    <AgentContext />
                     <Palette />
                 </>
             }

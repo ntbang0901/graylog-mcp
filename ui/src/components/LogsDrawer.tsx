@@ -15,7 +15,12 @@ import { openInLogs } from "../explorer-store";
 import type { Fields, LogLine } from "../scripts/types";
 import { revealRows } from "../scripts/motion";
 import { AsyncButton, Close, Dialog, Icon, Segment, num } from "./UI";
+import { contextOpen, contextDraft, openContext } from "../contexts";
+import type { ContextScope } from "../contexts-model";
+import { AddLogToContext } from "./ContextActions";
 interface SearchResult {
+    range?: { from: string; to: string };
+    query?: string;
     messages?: LogLine[];
     next_offset?: number | null;
     total?: number;
@@ -56,27 +61,38 @@ function LogRow({
     index,
     view,
     onSearch,
+    scope,
 }: {
     m: LogLine;
     index: number;
     view: LogsView;
     onSearch: (term: string) => void;
+    scope: ContextScope | null;
 }) {
     const [open, setOpen] = useState(false),
         [detail, setDetail] = useState<Fields | null>(null),
+        [cutFields, setCutFields] = useState<string[]>([]),
         [error, setError] = useState("");
     const lv = levelOf(m.level),
         who = String((view.column && m[view.column]) || m.source || "");
     useEffect(() => {
         let live = true;
         if (open && !detail)
-            void api<{ result: { message: Fields } }>("/api/run", "POST", {
+            void api<{
+                result: {
+                    message: Fields;
+                    cut_fields?: Record<string, number>;
+                };
+            }>("/api/run", "POST", {
                 tool: "get_message",
                 instance: view.instance,
                 args: { ref: m.ref },
             })
                 .then((r) => {
-                    if (live) setDetail(r.result.message);
+                    if (live) {
+                        setDetail(r.result.message);
+                        setCutFields(Object.keys(r.result.cut_fields || {}));
+                    }
                 })
                 .catch((e) => {
                     if (live) setError(errorText(e));
@@ -176,6 +192,14 @@ function LogRow({
                                     ))}
                             </dl>
                             <div class="lacts">
+                                {scope && (
+                                    <AddLogToContext
+                                        m={{ ...m, ...detail }}
+                                        scope={scope}
+                                        loaded
+                                        cutFields={cutFields}
+                                    />
+                                )}
                                 {trace && (
                                     <button
                                         class="btn sm"
@@ -240,6 +264,7 @@ export function LogsDrawer() {
         [scoped, setScoped] = useState(true),
         [lines, setLines] = useState<LogLine[]>([]),
         [result, setResult] = useState<SearchResult | null>(null),
+        [captureScope, setCaptureScope] = useState<ContextScope | null>(null),
         [error, setError] = useState(""),
         [loading, setLoading] = useState(false),
         list = useRef<HTMLDivElement>(null),
@@ -261,6 +286,7 @@ export function LogsDrawer() {
         if (!more) {
             setLines([]);
             setResult(null);
+            setCaptureScope(null);
             if (list.current) list.current.scrollTop = 0;
         }
         try {
@@ -268,15 +294,43 @@ export function LogsDrawer() {
                 await api<{ result: SearchResult }>("/api/run", "POST", {
                     tool: "search_logs",
                     instance: view.instance,
-                    args: searchArgs(
-                        view,
-                        narrow,
-                        more ? result?.next_offset || 0 : 0,
-                        scoped,
-                    ),
+                    args: {
+                        ...searchArgs(
+                            view,
+                            narrow,
+                            more ? result?.next_offset || 0 : 0,
+                            scoped,
+                        ),
+                        ...(more && captureScope
+                            ? {
+                                  range: null,
+                                  from_time: captureScope.from_time,
+                                  to_time: captureScope.to_time,
+                              }
+                            : {}),
+                    },
                 })
             ).result;
             if (id !== seq.current) return;
+            if (!more && r.range) {
+                setCaptureScope({
+                    instance: view.instance,
+                    query:
+                        r.rewritten?.ran ||
+                        r.query ||
+                        searchArgs(view, narrow, 0, scoped).query,
+                    streams: ["*"],
+                    from_time: new Date(
+                        r.range.from.replace(" ", "T"),
+                    ).toISOString(),
+                    to_time: new Date(
+                        r.range.to.replace(" ", "T"),
+                    ).toISOString(),
+                    timezone:
+                        r.range.from.match(/(Z|[+-]\d{2}:\d{2})$/)?.[1] ||
+                        "UTC",
+                });
+            }
             setLines((prev) =>
                 more ? [...prev, ...(r.messages || [])] : r.messages || [],
             );
@@ -316,8 +370,10 @@ export function LogsDrawer() {
             id="logsDlg"
             class="sheet"
             aria-labelledby="logsTitle"
-            open={!!view}
-            onClose={close}
+            open={!!view && !contextOpen.value}
+            onClose={() => {
+                if (!contextOpen.peek()) close();
+            }}
         >
             <div class="dhead">
                 <div class="min0">
@@ -456,6 +512,12 @@ export function LogsDrawer() {
                     )}
                 </span>
                 <span class="spacer" />
+                <button class="btn sm" type="button" onClick={openContext}>
+                    Review context
+                    {contextDraft.value.items.length
+                        ? ` (${contextDraft.value.items.length})`
+                        : ""}
+                </button>
                 <button
                     class="btn sm ghost"
                     id="logsPg"
@@ -542,6 +604,7 @@ export function LogsDrawer() {
                                     m={m}
                                     index={i}
                                     view={view!}
+                                    scope={loading ? null : captureScope}
                                     onSearch={(term) => {
                                         const next = query.trim()
                                             ? `${query.trim()} AND ${term}`

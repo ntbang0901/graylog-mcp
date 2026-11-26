@@ -40,6 +40,8 @@ import {
 import { Dashboard } from "./LogsDashboard";
 import { MessagesTable, TraceView, TracesList } from "./LogsLists";
 import { Icon, Page, Panel, Refresh, Skeleton, Tabs } from "./UI";
+import { addContextItem } from "../contexts";
+import { searchItem } from "../contexts-model";
 
 const TABS: [LogTab, string][] = [
     ["dashboard", "Dashboard"],
@@ -383,6 +385,10 @@ export function Logs() {
         graylog = graylogSearchUrl(inst?.url, v.q, currentWindow()),
         at = formatTime(updated.value, "HH:mm:ss", ""),
         busy = inflight.value;
+    const request = requestOf(v),
+        answer = answerOf(request.slot),
+        captured =
+            answer?.key === request.url && !answer.error ? answer.data : null;
     return (
         <Page
             id="logs"
@@ -412,6 +418,16 @@ export function Logs() {
                         ))}
                     </select>
                     <Refresh run={() => load(true)} />
+                    <button
+                        class="btn sm"
+                        type="button"
+                        disabled={!captured || busy}
+                        onClick={() =>
+                            captured && addContextItem(searchItem(captured, v))
+                        }
+                    >
+                        Add search to context
+                    </button>
                     {graylog && (
                         <a
                             class="btn sm ghost"

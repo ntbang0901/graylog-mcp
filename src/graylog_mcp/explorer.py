@@ -67,7 +67,7 @@ class Scope:
 
     def header(self) -> dict[str, Any]:
         return {"instance": self.gl.cfg.name, "range": self.tr.display(self.gl.cfg.tz), "query": self.query,
-                "fields": self.fields()}  # fmt: skip
+                "fields": self.fields(), "streams": list(self.streams), "timezone": self.gl.cfg.timezone}  # fmt: skip
 
 
 async def open_scope(

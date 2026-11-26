@@ -27,6 +27,8 @@ import {
     rowKey,
 } from "./TraceTimeline";
 import { num, plural } from "./UI";
+import { addContextItem } from "../contexts";
+import { scopeOf, traceItem } from "../contexts-model";
 
 // Enter and Space open a focusable row like a click
 const activate = (go: () => void) => (e: KeyboardEvent) => {
@@ -120,6 +122,14 @@ export function TraceView({ d }: { d: TraceAnswer }) {
                     ← Traces
                 </button>
                 <h2 class="mono truncate">{d.trace}</h2>
+                <span class="spacer" />
+                <button
+                    class="btn sm"
+                    type="button"
+                    onClick={() => addContextItem(traceItem(d))}
+                >
+                    Add trace to context
+                </button>
             </div>
             <TraceTimeline
                 trace={d}
@@ -259,7 +269,10 @@ export function MessagesTable({
                                     {isOpen && (
                                         <tr class="lg-det">
                                             <td colSpan={4}>
-                                                <MessageDetail m={m} />
+                                                <MessageDetail
+                                                    m={m}
+                                                    scope={scopeOf(d)}
+                                                />
                                             </td>
                                         </tr>
                                     )}

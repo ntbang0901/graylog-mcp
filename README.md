@@ -143,6 +143,11 @@ take a `kind`, `view` or `what`; an argument that does not apply to the one chos
 - `get_investigation` — its snapshot, a short briefing to continue from, or one saved piece of evidence; without an
   id, the recent investigations of this repository.
 
+**Bring UI evidence to an agent**
+- `get_context` — reads a saved `CTX-…` context collected in the admin UI: your task and an index of selected
+  evidence. Pass `item_id="I-1"` for one captured log, trace or search, or `offset` to continue a long index.
+  Reads the local snapshot without running a search.
+
 **Discover**
 - `describe` — `what="instances"` (default: detected version and the API in use), `"streams"`, `"fields"` (so
   the model writes queries with real names), `"presets"` or `"scan_rules"` (query, condition, severity, tags).
@@ -322,6 +327,24 @@ Limits: the error groups come from the newest 500 error messages of the period, 
 looked up in one query of at most 500 messages. The error query and trace and service fields are the instance's
 (`error_query`, `trace_fields`, `service_fields`). A repository's own `.graylog-mcp.toml` may set the other `[ask]` keys but not `base_url` or
 `api_key_env`, which decide where the key and the error text go: set those in your user or a central config.
+
+## Agent context from the UI
+
+While browsing **Logs**, use **Add search to context**, **Add log to context** in an expanded message, or
+**Add trace to context** on a trace. The log drawer opened from Overview also has **Add log to context**.
+Selections keep the executed query, streams, environment and absolute time window of the answer you saw.
+Each item retains its own scope when you collect evidence across several searches or environments.
+
+Open **Agent context** in the top bar to review up to 20 items, remove selections, and write the question you
+want investigated. **Save & copy prompt** creates an immutable `CTX-…` snapshot and copies an instruction to
+paste into an agent connected to this Graylog MCP server. The agent uses `get_context` for the brief and
+individual evidence items. Large excerpts are shortened with an explicit coverage note; message references
+and the saved scope let the agent search further. Adding evidence after saving starts a new draft.
+
+Drafts last for the current page session. Saved contexts can be reopened from **Saved contexts** in the panel;
+the latest 100 are kept in `contexts.db` under `GRAYLOG_MCP_HOME`. Your redaction rules apply before anything is
+stored and again when a snapshot is read. A caller can only read a context when every selected environment is
+configured under the same name and Graylog URL. Context handoff works independently of the Investigations switch.
 
 ## Investigations
 

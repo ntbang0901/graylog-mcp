@@ -61,6 +61,8 @@ interface Header {
     range: { from: string; to: string };
     query: string;
     fields: ExplorerFields;
+    streams?: string[];
+    timezone?: string;
 }
 export interface AppRow {
     app: string;

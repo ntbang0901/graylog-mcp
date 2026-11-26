@@ -21,7 +21,7 @@ PRESET = {
 
 
 def test_the_table_offers_what_presets_admin_and_usage_offered():
-    assert len(OPERATIONS) == 22
+    assert len(OPERATIONS) == 23
     assert all(op.name == name == op.fn.__name__ for name, op in OPERATIONS.items())
     assert preset_names() == PRESET
     assert set(playground()) == PRESET | {"context_around", "get_message", "list_streams", "list_fields", "ask"}

@@ -275,6 +275,7 @@ async def test_mcp_server_roundtrip(make_app):
     assert {t.name for t in tools_list} - {"ask"} == {
         "investigation",
         "get_investigation",
+        "get_context",
         "search_logs",
         "aggregate",
         "get_message",

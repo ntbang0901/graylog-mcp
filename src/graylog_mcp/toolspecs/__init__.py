@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from graylog_mcp.toolspecs.contexts import GET_CONTEXT
 from graylog_mcp.toolspecs.discovery import DESCRIBE, RUN_PRESET
 from graylog_mcp.toolspecs.investigate import ASK, COMPARE_PERIODS, ROOT_CAUSE, TRACE_REQUEST
 from graylog_mcp.toolspecs.investigations import GET_INVESTIGATION, INVESTIGATION
@@ -23,4 +24,5 @@ TOOLS: tuple[ToolSpec, ...] = (
     RUN_PRESET,
     INVESTIGATION,
     GET_INVESTIGATION,
+    GET_CONTEXT,
 )

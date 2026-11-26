@@ -39,6 +39,7 @@ import { Icon, modKey, AsyncButton } from "./UI";
 import { Settings } from "./Settings";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { Toasts } from "./Toasts";
+import { AgentContextButton } from "./AgentContext";
 
 function EnvPicker() {
     const [q, setQ] = useState(""),
@@ -453,6 +454,7 @@ export function Shell({
                             <b id="crumb">{pageTitle.value.toLowerCase()}</b>
                         </span>
                         <div class="right">
+                            <AgentContextButton />
                             <button
                                 class="ctl envbtn"
                                 id="envBtn"

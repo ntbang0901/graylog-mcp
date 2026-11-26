@@ -35,11 +35,11 @@ def _check(text: str, path: Path) -> None:
 async def test_with_investigations_off_what_the_model_receives_is_what_it_always_was(make_app, monkeypatch):
     """The switch removes the two tools, the three arguments and the instructions paragraph: nothing else changed."""
     text, count = await _surface(make_app, monkeypatch, "off")
-    assert count == 10 and json.loads(text)["instructions"] == INSTRUCTIONS
+    assert count == 11 and json.loads(text)["instructions"] == INSTRUCTIONS
     _check(text, SNAPSHOT)
 
 
 async def test_what_the_model_receives_with_investigations(make_app, monkeypatch):
     text, count = await _surface(make_app, monkeypatch, "on")
-    assert count == 12
+    assert count == 13
     _check(text, SNAPSHOT_ON)

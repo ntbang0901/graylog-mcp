@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from graylog_mcp import rca, scan, tools
+from graylog_mcp import contexts, rca, scan, tools
 from graylog_mcp.ask.pipeline import ask
 from graylog_mcp.config import ConfigError
 from graylog_mcp.investigations import ops as investigation_ops
@@ -98,6 +98,7 @@ OPERATIONS: dict[str, Operation] = {
         _op(ask, playground=True),
         _op(investigation_ops.investigation),
         _op(investigation_ops.get_investigation),
+        _op(contexts.get_context),
     )
 }
 # the admin page's quick-run chips, in display order

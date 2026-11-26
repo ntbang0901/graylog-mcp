@@ -7,6 +7,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Agent context handoff from the monitoring UI: collect searches, individual logs and traces, review their fixed
+  scopes, add a question, and save an immutable `CTX-…` snapshot with a prompt to paste into an agent chat.
+  The `get_context` MCP tool reads the brief or individual evidence items without searching Graylog. Saved contexts
+  are redacted, bounded to the most recent 100, and restricted to environments available in the caller's configuration.
 - Investigation times (steps, attempts, the record itself) now carry milliseconds (`2026-11-18T02:31:00.512Z`), so checks
   that follow each other inside one second keep their order on the page and parallel ones show side by side. The
   `graylog-investigate` skill and the investigation tool's note tell agents what the page draws from each record: a

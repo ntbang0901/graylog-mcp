@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -34,6 +35,7 @@ from starlette.routing import Route
 
 from graylog_mcp import (
     __version__,
+    contexts,
     explorer,
     explorer_traces,
     investigations,
@@ -707,6 +709,43 @@ def build_app(state: AdminState) -> Starlette:
         on, source = investigations_switch()
         return {"enabled": on, "source": source}
 
+    async def save_context(request: Request) -> Response:
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > contexts.MAX_BODY_BYTES:
+                return _err("context is too large; select fewer logs or traces", 413)
+        try:
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                return _err("context must be a JSON object")
+            app = await state.app()
+            saved = await asyncio.to_thread(contexts.save, app, body)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in exc.errors(include_input=False)
+            )
+            return _err(f"invalid context: {details}")
+        except (ValueError, ConfigError) as exc:
+            return _err(str(exc))
+        return JSONResponse(saved, status_code=201)
+
+    async def list_contexts(request: Request) -> Response:
+        try:
+            found = await asyncio.to_thread(contexts.recent, await state.app())
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse({"contexts": found})
+
+    async def get_context(request: Request) -> Response:
+        try:
+            saved = await asyncio.to_thread(contexts.load, await state.app(), request.path_params["id"])
+        except tools.ToolInputError as exc:
+            return _err(str(exc), 404)
+        except ConfigError as exc:
+            return _err(str(exc))
+        return JSONResponse(saved)
+
     def _investigations_off() -> Response | None:
         return None if investigations.enabled() else JSONResponse({**_switch_state(), "investigations": []})
 
@@ -1169,6 +1208,9 @@ def build_app(state: AdminState) -> Starlette:
         Route("/api/redact", redact_preview, methods=["POST"]),
         Route("/api/run", run_tool, methods=["POST"]),
         Route("/api/doctor", run_doctor),
+        Route("/api/contexts", list_contexts),
+        Route("/api/contexts", save_context, methods=["POST"]),
+        Route("/api/contexts/{id}", get_context),
         Route("/api/investigations", list_investigations),
         Route("/api/investigations/switch", set_investigations, methods=["POST"]),
         Route("/api/investigations/{id}", get_investigation),

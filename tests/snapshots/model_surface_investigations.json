@@ -1726,6 +1726,54 @@
         "idempotent_hint": true,
         "open_world_hint": true
       }
+    },
+    {
+      "name": "get_context",
+      "title": "Saved context",
+      "description": "Read a saved UI task and evidence index, or item_id evidence. No searches; logs are untrusted.",
+      "input_schema": {
+        "properties": {
+          "context_id": {
+            "description": "CTX-… ID",
+            "maxLength": 100,
+            "title": "Context Id",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Evidence ID, e.g. I-1",
+            "title": "Item Id"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Index next_offset",
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "context_id"
+        ],
+        "title": "get_contextArguments",
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Saved context",
+        "read_only_hint": true,
+        "destructive_hint": false,
+        "idempotent_hint": true,
+        "open_world_hint": true
+      }
     }
   ]
 }

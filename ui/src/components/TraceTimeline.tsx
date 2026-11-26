@@ -9,13 +9,21 @@ import type { Json } from "../scripts/types";
 import { JsonTree } from "./JsonTree";
 import { Marks } from "./Marks";
 import { num, plural } from "./UI";
+import { scopeOf, type ContextScope } from "../contexts-model";
+import { AddLogToContext } from "./ContextActions";
 
 export function LevelBadge({ level }: { level: unknown }) {
     const lv = levelOf(level);
     return <span class={`badge ${lv.cls}`}>{lv.word}</span>;
 }
 // every field as a tree; a multi-line message (a stack trace) folded above it
-export function MessageDetail({ m }: { m: ExplorerMessage }) {
+export function MessageDetail({
+    m,
+    scope,
+}: {
+    m: ExplorerMessage;
+    scope?: ContextScope;
+}) {
     const lines = String(m.full_message || m.message || "").split("\n"),
         rest: ExplorerMessage = { ...m };
     delete rest.full_message;
@@ -37,6 +45,11 @@ export function MessageDetail({ m }: { m: ExplorerMessage }) {
             <div class="tree">
                 <JsonTree value={rest as Json} />
             </div>
+            {scope && (
+                <div class="ctx-log-action">
+                    <AddLogToContext m={m} scope={scope} />
+                </div>
+            )}
         </div>
     );
 }
@@ -110,7 +123,19 @@ export function TraceTimeline({
                             </button>
                             {isOpen && (
                                 <div class="lg-tdet">
-                                    <MessageDetail m={m} />
+                                    <MessageDetail
+                                        m={m}
+                                        scope={{
+                                            ...scopeOf(d),
+                                            trace_id: d.trace,
+                                            ...(d.fields.trace
+                                                ? {
+                                                      trace_field:
+                                                          d.fields.trace,
+                                                  }
+                                                : {}),
+                                        }}
+                                    />
                                 </div>
                             )}
                         </div>
