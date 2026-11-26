@@ -1,10 +1,8 @@
 import { useEffect } from "preact/hooks";
 import { currentPage, instances, toast } from "../store";
 import { openInLogs } from "../explorer-store";
-import { pathOf } from "../router";
 import {
     STATES,
-    chooseBranch,
     chooseCheck,
     chooseEvidence,
     close,
@@ -34,33 +32,44 @@ import {
     STATE_CLASS,
     STEP_CLASS,
     STEP_WORD,
-    blockedBranches,
+    aboutOf,
+    analysisComplete,
     bodyText,
-    checkState,
+    chartsOf,
     citedBy,
     countText,
-    evidenceOfSteps,
+    coverageLine,
+    cutText,
+    elapsedText,
+    evidenceNo,
+    fixNotVerified,
+    flowOf,
+    foldEarlier,
+    fullRequestOf,
+    interruptedWhy,
     itemsOf,
     leaseText,
     logsViewOf,
     needsAttention,
     nextCheck,
+    nodesIn,
     queryPair,
     reportOf,
-    resultsOf,
     stateWord,
+    traceExcerpts,
+    windowOfEvidence,
     windowText,
-    workspaceOf,
+    ranAt,
+    viewZone,
+    zoned,
     type CheckState,
-    type CheckView,
+    type ExcerptRow,
+    type FlowNode,
+    type FlowRow,
 } from "../investigations-model";
-import type {
-    Fields,
-    InvEvidence,
-    InvSnapshot,
-    InvStep,
-} from "../scripts/types";
-import { CitedList, Findings } from "./InvestigationFindings";
+import type { Fields, InvEvidence, InvSnapshot } from "../scripts/types";
+import { HistogramStrip, RequestObservations } from "./InvestigationCharts";
+import { CitedList, Findings, TokenList } from "./InvestigationFindings";
 import { AsyncButton, Page, Refresh, Skeleton } from "./UI";
 
 const when = (iso: string | null) =>
@@ -73,14 +82,15 @@ const LIVE_WORD = {
 } as const;
 // arrow keys move between the buttons of one list
 function listKeys(e: KeyboardEvent) {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const forward = e.key === "ArrowDown" || e.key === "ArrowRight";
+    if (!forward && e.key !== "ArrowUp" && e.key !== "ArrowLeft") return;
     const all = [
         ...(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>(
-            "button.inv-pick",
+            "button.inv-pick, button.inv-node-btn",
         ),
     ];
     const at = all.indexOf(document.activeElement as HTMLElement);
-    const next = all[at + (e.key === "ArrowDown" ? 1 : -1)];
+    const next = all[at + (forward ? 1 : -1)];
     if (next) {
         e.preventDefault();
         next.focus();
@@ -188,7 +198,10 @@ const OUTCOME_CLASS: Record<string, string> = {
 };
 function Head({ snap }: { snap: InvSnapshot }) {
     const attempt = snap.attempts.find((a) => a.current),
-        lease = leaseText(snap.lease_expires);
+        lease = leaseText(snap.lease_expires),
+        why = interruptedWhy(snap),
+        zone = zoned(snap.scope.from),
+        started = snap.scope_revisions[0]?.author;
     return (
         <header class="inv-head">
             <button class="btn sm ghost" onClick={() => void close()}>
@@ -199,7 +212,9 @@ function Head({ snap }: { snap: InvSnapshot }) {
             </h2>
             <div class="inv-tags">
                 <Badge cls={STATE_CLASS[snap.state]}>
-                    {stateWord(snap.state)}
+                    {why
+                        ? `${stateWord(snap.state)} · ${why}`
+                        : stateWord(snap.state)}
                 </Badge>
                 {snap.outcome && (
                     <Badge cls={OUTCOME_CLASS[snap.outcome]}>
@@ -207,7 +222,12 @@ function Head({ snap }: { snap: InvSnapshot }) {
                     </Badge>
                 )}
                 <span class="inv-tag">{snap.instance}</span>
-                <span class="inv-tag">{windowText(snap.scope)}</span>
+                <span
+                    class="inv-tag"
+                    title={`Times are shown in your browser's time zone, ${viewZone()}${zone ? ` (${zone.zone})` : ""}`}
+                >
+                    {windowText(snap.scope)}
+                </span>
             </div>
             <p class="inv-question">{snap.question}</p>
             <details class="inv-more">
@@ -217,23 +237,47 @@ function Head({ snap }: { snap: InvSnapshot }) {
                         <dt>Query</dt>
                         <dd class="mono">{snap.scope.query || "*"}</dd>
                     </div>
-                    {snap.scope_revisions.length > 1 && (
+                    {snap.repo && (
                         <div>
-                            <dt>Window</dt>
-                            <dd>revision {snap.scope.rev}</dd>
+                            <dt>Repository</dt>
+                            <dd class="mono">{snap.repo}</dd>
                         </div>
                     )}
-                    {attempt && (
+                    {started && (
                         <div>
-                            <dt>Attempt</dt>
-                            <dd>
-                                {attempt.n}
-                                {lease && snap.state === "running" && (
-                                    <span> · agent lease {lease}</span>
-                                )}
-                            </dd>
+                            <dt>Started by</dt>
+                            <dd>{started}</dd>
                         </div>
                     )}
+                    <div>
+                        <dt>Attempts</dt>
+                        <dd>
+                            {snap.attempts.length}
+                            {attempt && ` · current ${attempt.n}`}
+                            {lease && snap.state === "running" && (
+                                <span> · agent lease {lease}</span>
+                            )}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>Scope revisions</dt>
+                        <dd>
+                            {snap.scope_revisions.length || 1}
+                            {snap.scope.rev > 1 &&
+                                ` · now revision ${snap.scope.rev}`}
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>Time zone</dt>
+                        <dd>
+                            {viewZone()}
+                            <span class="inv-muted">
+                                {" "}
+                                · your browser; the instance uses{" "}
+                                {snap.scope.timezone}
+                            </span>
+                        </dd>
+                    </div>
                     <div>
                         <dt>Stream</dt>
                         <dd>{LIVE_WORD[invLive.value] || "Not connected"}</dd>
@@ -306,129 +350,130 @@ function pickNode(evidence: string | undefined, check: string | null) {
     void chooseCheck(check);
     if (evidence) void chooseEvidence(evidence);
 }
-const STATE_MARK: Record<CheckState, string> = {
+const GLYPH: Record<CheckState, string> = {
     done: "✓",
-    running: "◌",
+    running: "",
     failed: "!",
-    not_run: "○",
+    not_run: "",
 };
-// one step of the task flow: what was checked, with which tool, what it showed, and the evidence behind it
-function FlowNode({
-    title,
-    steps,
-    result,
-    check,
-    note,
-    snap,
-}: {
-    title: string;
-    steps: InvStep[];
-    result?: string;
-    check: string | null;
-    note?: string;
-    snap: InvSnapshot;
-}) {
+// one check: what it was for, the tool, what it showed, when it ran, and the evidence behind it
+function Node({ n, snap }: { n: FlowNode; snap: InvSnapshot }) {
     const sel = invSel.value,
-        state = checkState(steps),
-        evidence = evidenceOfSteps(steps),
         on =
-            (check !== null && sel.check === check) ||
-            (check === null && evidence.includes(sel.evidence ?? "")),
-        tools = [...new Set(steps.map((s) => s.operation))],
-        failed = steps.find((s) => s.error);
+            (n.check !== null && sel.check === n.check) ||
+            (n.check === null && n.evidence.includes(sel.evidence ?? "")),
+        failed = n.steps.find((s) => s.error),
+        at = ranAt(n.started);
     return (
-        <li class={`inv-node ${CHECK_CLASS[state]}${on ? " on" : ""}`}>
+        <li class={`inv-node ${CHECK_CLASS[n.state]}${on ? " on" : ""}`}>
             <button
                 class="inv-node-btn"
                 aria-current={on}
-                onClick={() => pickNode(evidence[0], check)}
+                onClick={() => pickNode(n.evidence[0], n.check)}
             >
-                <span class="inv-mark" aria-hidden="true">
-                    {STATE_MARK[state]}
+                <span class={`inv-mark ${n.state}`} aria-hidden="true">
+                    {GLYPH[n.state]}
                 </span>
-                <b>{title}</b>
-                {!!tools.length && (
-                    <small class="mono">tool: {tools.join(", ")}</small>
+                <b>{n.title}</b>
+                {!!n.tools.length && (
+                    <small class="mono">tool: {n.tools.join(", ")}</small>
                 )}
-                {result && <span class="inv-node-result">{result}</span>}
+                {n.result && <span class="inv-node-result">{n.result}</span>}
                 {failed && <span class="inv-err">{failed.error}</span>}
-                <span class={`inv-state ${CHECK_CLASS[state]}`}>
-                    {CHECK_WORD[state]}
-                    {on && " · Selected"}
-                    {note && ` · ${note}`}
+                <span
+                    class={`inv-state ${CHECK_CLASS[n.state]}`}
+                    title={at?.full}
+                >
+                    {[
+                        at?.text,
+                        n.state === "running"
+                            ? `Running ${elapsedText(n.started)}`.trim()
+                            : CHECK_WORD[n.state],
+                        on ? "Selected" : "",
+                        n.note ?? "",
+                    ]
+                        .filter(Boolean)
+                        .join(" · ")}
                 </span>
             </button>
-            {!!evidence.length && (
-                <span class="inv-cites">
-                    {evidence.map((id) => (
-                        <button
-                            class={`btn sm ${sel.evidence === id ? "primary" : "ghost"}`}
-                            aria-pressed={sel.evidence === id}
-                            onClick={() => void chooseEvidence(id)}
-                        >
-                            {snap.evidence.find((e) => e.id === id)?.kind ??
-                                "evidence"}
-                        </button>
-                    ))}
-                </span>
+            {!!n.evidence.length && (
+                <TokenList snap={snap} ids={n.evidence} on={sel.evidence} />
             )}
         </li>
     );
 }
+// a row of the flow: one node, or side by side the checks of a branch or the ones that ran together
+function Row({ row, snap }: { row: FlowRow; snap: InvSnapshot }) {
+    const n = row.nodes.length;
+    return (
+        <li class="inv-row">
+            {row.caption && <p class="inv-group">{row.caption}</p>}
+            <ul
+                class={n > 1 ? "inv-par" : "inv-solo"}
+                style={
+                    n > 1 ? ({ "--n": n } as Record<string, number>) : undefined
+                }
+            >
+                {row.nodes.map((node) => (
+                    <Node n={node} snap={snap} />
+                ))}
+            </ul>
+        </li>
+    );
+}
 function TaskFlow({ snap }: { snap: InvSnapshot }) {
-    const ws = workspaceOf(snap),
-        asks = itemsOf(snap, "evidence_request").filter(
-            (r) => r.data.status === "requested",
+    const flow = flowOf(snap),
+        { earlier, rest } = foldEarlier(flow.rows),
+        sel = invSel.value,
+        hidden = earlier.some((r) =>
+            r.nodes.some(
+                (n) =>
+                    (n.check !== null && n.check === sel.check) ||
+                    (!!sel.evidence && n.evidence.includes(sel.evidence)),
+            ),
         ),
-        node = (c: CheckView) => (
-            <FlowNode
-                snap={snap}
-                check={c.item.id}
-                title={bodyText(c.item, "purpose")}
-                steps={c.steps}
-                result={resultsOf(snap, c.item.id)[0]?.data.result as string}
-            />
-        );
+        zone = zoned(snap.scope.from)?.zone;
     return (
         <section class="inv-pane inv-flow" aria-label="Task flow">
             <h3>
-                Task flow <span class="inv-muted">evidence gathering</span>
+                Task flow{" "}
+                <span class="inv-muted">
+                    evidence gathering{zone ? ` · times in ${zone}` : ""}
+                </span>
             </h3>
-            <ol onKeyDown={listKeys}>
-                {ws.branches.map((b) => (
-                    <>
-                        <li class="inv-group">
-                            {bodyText(b.item, "question")}
-                        </li>
-                        {b.checks.map(node)}
-                    </>
-                ))}
-                {ws.branches.length > 0 && ws.loose.length > 0 && (
-                    <li class="inv-group">Other checks</li>
+            <ol class="inv-rows" onKeyDown={listKeys}>
+                {!!earlier.length && (
+                    <li class="inv-row">
+                        <details class="inv-earlier" open={hidden || undefined}>
+                            <summary>{nodesIn(earlier)} earlier checks</summary>
+                            <ol class="inv-rows">
+                                {earlier.map((r) => (
+                                    <Row row={r} snap={snap} />
+                                ))}
+                            </ol>
+                        </details>
+                    </li>
                 )}
-                {ws.loose.map(node)}
-                {ws.adHoc.map((s) => (
-                    <FlowNode
-                        snap={snap}
-                        check={null}
-                        title={String(s.requested.query ?? s.operation)}
-                        steps={[s]}
-                        note="no check recorded"
-                    />
+                {rest.map((r) => (
+                    <Row row={r} snap={snap} />
                 ))}
-                {asks.map((r) => (
-                    <li class="inv-node ask">
-                        <span class="inv-mark" aria-hidden="true">
-                            ?
-                        </span>
-                        <b>{bodyText(r, "question")}</b>
-                        <span class="inv-state warn">
-                            Waiting for your answer
-                        </span>
+                {flow.asks.map((r) => (
+                    <li class="inv-row">
+                        <ul class="inv-solo">
+                            <li class="inv-node ask">
+                                <span class="inv-mark ask" aria-hidden="true">
+                                    ?
+                                </span>
+                                <b>{bodyText(r, "question")}</b>
+                                <span class="inv-state warn">
+                                    Waiting for your answer
+                                </span>
+                            </li>
+                        </ul>
                     </li>
                 ))}
             </ol>
-            {!snap.steps.length && !asks.length && (
+            {!snap.steps.length && !flow.asks.length && (
                 <p class="inv-muted">No step has run yet.</p>
             )}
         </section>
@@ -450,39 +495,86 @@ const excerptText = (x: unknown): string =>
                 .map(([k, v]) => `${k} ${String(v)}`)
                 .join("  ")
           : String(x);
+// +270 ms  payment  ERROR  Connection pool exhausted
+function Line({ x }: { x: ExcerptRow }) {
+    return (
+        <li class={`inv-line${x.first ? " first" : ""}`}>
+            <span class="mono inv-line-t">{x.offset}</span>
+            <span class="inv-line-svc" title={x.service}>
+                {x.service}
+            </span>
+            <span class={`badge ${x.error ? "fail" : ""}`}>{x.level}</span>
+            <span class="mono inv-line-msg" title={x.message}>
+                {x.message}
+            </span>
+        </li>
+    );
+}
+function SearchIcon() {
+    return (
+        <svg class="inv-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="m10.5 10.5 3.5 3.5" />
+        </svg>
+    );
+}
+// The inspector: the evidence as asked and over which window, a picture where one helps, a few lines, and what it
+// means for the explanations behind a disclosure
 function EvidencePane({ snap }: { snap: InvSnapshot }) {
     const e: InvEvidence | null = invEvidence.value,
         sel = invSel.value;
     if (!e || e.id !== sel.evidence)
         return (
-            <aside class="inv-pane inv-evidence" aria-label="Evidence">
+            <aside
+                class="inv-pane inv-evidence inv-inspector"
+                aria-label="Evidence"
+            >
                 <Skeleton />
             </aside>
         );
     const pair = queryPair(e),
         logs = logsViewOf(e),
+        request = fullRequestOf(e),
         step = e.step,
         cited = citedBy(snap, e.id),
-        range = (step?.executed as { range?: { from: string; to: string } })
-            ?.range,
-        shown = e.excerpts.slice(0, 5),
-        more = e.excerpts.slice(5),
-        line = (x: unknown) => <li class="mono">{excerptText(x)}</li>;
+        window = windowOfEvidence(e, snap),
+        series = chartsOf(e.summary, e.kind, e.excerpts),
+        cut = cutText(e),
+        isTrace = e.kind === "trace_request",
+        hasChart = !!series.trace || !!series.histogram,
+        shown: ExcerptRow[] = isTrace ? traceExcerpts(e, 3) : [],
+        generic = isTrace || series.histogram ? [] : e.excerpts.slice(0, 3),
+        rest = isTrace
+            ? traceExcerpts(e, Infinity).slice(shown.length)
+            : series.histogram
+              ? []
+              : e.excerpts.slice(3),
+        hasError = !!series.trace?.first_error || shown.some((x) => x.error),
+        note = [
+            countText(e),
+            coverageLine(e.kind, !!series.trace),
+            series.trace ? "" : cut,
+        ]
+            .filter(Boolean)
+            .join(" · ");
     return (
-        <aside class="inv-pane inv-evidence" aria-label="Evidence">
-            <button
-                class="btn sm ghost"
-                onClick={() => void chooseEvidence(null)}
-            >
-                ← Explanations
-            </button>
-            <h3>
-                <span class="mono">{e.kind}</span>
-            </h3>
-            <div class="inv-tags">
-                <span class="inv-tag">{countText(e)}</span>
-                {e.sampled && <Badge cls="warn">Sampled</Badge>}
-                {e.truncated && <Badge cls="warn">Cut to fit</Badge>}
+        <aside
+            class="inv-pane inv-evidence inv-inspector"
+            aria-label="Evidence"
+        >
+            <div class="inv-ins-head">
+                <button
+                    class="btn sm ghost"
+                    onClick={() => void chooseEvidence(null)}
+                >
+                    ← Explanations
+                </button>
+                <span class="inv-muted">Saved query + absolute window</span>
+            </div>
+            <h3 class="inv-ins-title">
+                <span class="mono">
+                    {evidenceNo(snap, e.id)} / {aboutOf(e)}
+                </span>
                 {step?.fenced_out && (
                     <Badge cls="fail">Arrived after takeover</Badge>
                 )}
@@ -491,64 +583,94 @@ function EvidencePane({ snap }: { snap: InvSnapshot }) {
                         {STEP_WORD[step.state] ?? step.state}
                     </Badge>
                 )}
+            </h3>
+            <div class="inv-query">
+                <SearchIcon />
+                <code>{pair.asked ?? "—"}</code>
             </div>
-            <h4>Query</h4>
-            <code class="inv-code">{pair.asked ?? "—"}</code>
-            {range && (
-                <p class="inv-muted">
-                    Saved query · {range.from} → {range.to}
-                </p>
-            )}
             {pair.differs && (
                 <p class="inv-gap">
                     Ran a different query: <code>{pair.ran ?? "—"}</code>
                 </p>
             )}
-            {!!cited.supports.length && (
-                <CitedList
-                    title="Supports"
-                    cls="supports"
-                    items={cited.supports}
-                />
+            {window && <p class="inv-muted">Saved query · {window}</p>}
+            {series.trace && (
+                <RequestObservations chart={series.trace} cut={cut} />
             )}
-            {!!cited.contradicts.length && (
-                <CitedList
-                    title="Contradicts"
-                    cls="contradicts"
-                    items={cited.contradicts}
-                />
-            )}
-            {!!cited.noted.length && (
-                <CitedList title="Looked at" cls="" items={cited.noted} />
-            )}
-            {!!e.coverage.length && (
-                <div class="inv-gaps">
-                    <h4>Gaps</h4>
-                    <ul class="inv-bullets">
-                        {e.coverage.map((c) => (
-                            <li>{c}</li>
-                        ))}
-                    </ul>
-                </div>
-            )}
+            {series.histogram && <HistogramStrip chart={series.histogram} />}
             {e.excerpts_expired ? (
                 <p class="inv-muted">
                     Excerpts expired: the summary and counts are kept.
                 </p>
             ) : (
-                !!e.excerpts.length && (
-                    <>
-                        <h4>Excerpts</h4>
-                        <ol class="inv-excerpts">{shown.map(line)}</ol>
-                        {!!more.length && (
-                            <details class="inv-more">
-                                <summary>{more.length} more</summary>
-                                <ol class="inv-excerpts">{more.map(line)}</ol>
-                            </details>
-                        )}
-                    </>
+                (!!shown.length || !!generic.length) && (
+                    <ol class="inv-excerpts">
+                        {shown.map((x) => (
+                            <Line x={x} />
+                        ))}
+                        {generic.map((x) => (
+                            <li class="mono">{excerptText(x)}</li>
+                        ))}
+                    </ol>
                 )
             )}
+            <p class="inv-coverage">
+                {note || (hasChart ? "" : "No excerpts kept.")}
+                {e.sampled && <Badge cls="warn">Sampled</Badge>}
+                {e.truncated && <Badge cls="warn">Cut to fit</Badge>}
+            </p>
+            <details class="inv-more inv-why">
+                <summary>Why it matters</summary>
+                {!!cited.supports.length && (
+                    <CitedList
+                        title="Supports"
+                        cls="supports"
+                        items={cited.supports}
+                    />
+                )}
+                {!!cited.contradicts.length && (
+                    <CitedList
+                        title="Contradicts"
+                        cls="contradicts"
+                        items={cited.contradicts}
+                    />
+                )}
+                {!!e.coverage.length && (
+                    <div class="inv-gaps">
+                        <h4>Gaps</h4>
+                        <ul class="inv-bullets">
+                            {e.coverage.map((c) => (
+                                <li>{c}</li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                {!!cited.noted.length && (
+                    <CitedList title="Looked at" cls="" items={cited.noted} />
+                )}
+                {!cited.supports.length &&
+                    !cited.contradicts.length &&
+                    !cited.noted.length &&
+                    !e.coverage.length && (
+                        <p class="inv-muted">
+                            No explanation rests on this yet.
+                        </p>
+                    )}
+                {!!rest.length && !e.excerpts_expired && (
+                    <>
+                        <h4>More lines</h4>
+                        <ol class="inv-excerpts">
+                            {rest.map((x) =>
+                                typeof x === "object" && "offset" in x ? (
+                                    <Line x={x as ExcerptRow} />
+                                ) : (
+                                    <li class="mono">{excerptText(x)}</li>
+                                ),
+                            )}
+                        </ol>
+                    </>
+                )}
+            </details>
             <div class="inv-actions">
                 {logs && (
                     <button
@@ -557,6 +679,19 @@ function EvidencePane({ snap }: { snap: InvSnapshot }) {
                     >
                         Open in Logs
                     </button>
+                )}
+                {request && (
+                    <button
+                        class="btn sm"
+                        onClick={() => void openInLogs(request)}
+                    >
+                        Open full request
+                    </button>
+                )}
+                {hasError && series.trace && (
+                    <span class="inv-muted">
+                        First observed error does not establish root cause.
+                    </span>
                 )}
             </div>
         </aside>
@@ -599,6 +734,16 @@ function Handoff({ snap }: { snap: InvSnapshot }) {
                 <p>{unverified || "Nothing open."}</p>
             </div>
             <div class="inv-handoff-acts">
+                {(analysisComplete(snap) || fixNotVerified(snap)) && (
+                    <div class="inv-tags">
+                        {analysisComplete(snap) && (
+                            <Badge cls="ok">Analysis complete</Badge>
+                        )}
+                        {fixNotVerified(snap) && (
+                            <Badge>Fix not verified</Badge>
+                        )}
+                    </div>
+                )}
                 <AsyncButton
                     class="btn sm"
                     run={async () => {
@@ -635,7 +780,13 @@ function Handoff({ snap }: { snap: InvSnapshot }) {
 }
 function Workspace({ snap }: { snap: InvSnapshot }) {
     return (
-        <div class="inv-workspace">
+        <div
+            class="inv-workspace"
+            onKeyDown={(e) => {
+                if (e.key === "Escape" && invSel.value.evidence)
+                    void chooseCheck(null);
+            }}
+        >
             <Head snap={snap} />
             {snap.truncated && (
                 <p class="inv-muted">

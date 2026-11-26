@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import httpx
 import pytest
@@ -239,3 +240,31 @@ async def test_the_export_is_markdown_for_download(world):
     assert f"{inv['id']}.md" in got.headers["content-disposition"]
     assert got.text.startswith("# Failures (INV-1)") and "search_logs" in got.text
     assert (await client.get("/api/investigations/INV-999/export")).status_code == 404
+
+
+async def test_a_traced_request_keeps_the_per_service_series_the_page_draws(world):
+    server, inv, ids, client = world
+    await call(server, "trace_request", {"trace_id": "co-100", "range": "6h", **ids})
+    snap = (await client.get(f"/api/investigations/{inv['id']}")).json()
+    row = next(e for e in snap["evidence"] if e["kind"] == "trace_request")
+    found = (await client.get(f"/api/investigations/{inv['id']}/evidence/{row['id']}")).json()
+    (trace,) = [c for c in found["summary"]["charts"] if c["type"] == "trace"]
+    names = [s["service"] for s in trace["services"]]
+    assert names[0] == "gateway" and {"payment", "bank-adapter"} <= set(names)
+    assert [s["first_ms"] for s in trace["services"]] == sorted(s["first_ms"] for s in trace["services"])
+    assert trace["duration_ms"] == max(s["last_ms"] for s in trace["services"])
+    assert all(o["level"] in ("info", "error") for s in trace["services"] for o in s["observations"])
+    assert "t" in found["excerpts"][0]  # the offset the page shows beside each line
+
+
+async def test_step_times_keep_milliseconds_so_calls_inside_one_second_stay_in_order(world):
+    server, inv, ids, client = world
+    for _ in range(3):
+        await call(server, "aggregate", {"kind": "count", "range": "2h", **ids})
+    snap = (await client.get(f"/api/investigations/{inv['id']}")).json()
+    stamp = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+    steps = snap["steps"]
+    assert len(steps) == 5 and all(stamp.match(s["started"]) and stamp.match(s["ended"]) for s in steps)
+    starts = [s["started"] for s in steps]
+    assert starts == sorted(starts) and len(set(starts)) == len(starts)  # no two began at the same instant
+    assert stamp.match(snap["created"]) and stamp.match(snap["updated"])

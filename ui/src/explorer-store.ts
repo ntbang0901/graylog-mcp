@@ -220,16 +220,17 @@ export async function openInLogs(v: {
     range?: string;
     from?: string;
     to?: string;
+    trace?: string;
 }) {
     const patch: Partial<ExplorerView> = {
-        tab: "all",
+        tab: v.trace ? "traces" : "all",
         instance: v.instance,
         q: v.query === "*" ? "" : v.query,
         streams: "",
         range: v.range || "24h",
         from: v.from || "",
         to: v.to || "",
-        trace: null,
+        trace: v.trace ?? null,
         offset: 0,
     };
     if (isCurrent()) update(patch);

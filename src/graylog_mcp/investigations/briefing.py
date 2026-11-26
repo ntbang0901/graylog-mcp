@@ -17,7 +17,11 @@ HEAD = 160  # characters of a record's main sentence in a list
 
 
 def iso(ts: float | None) -> str | None:
-    return None if ts is None else datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    """A stored time as UTC ISO 8601 with milliseconds ('2026-11-18T02:31:00.512Z'): checks that follow each other
+    within a second keep their order, and the page can tell parallel ones apart."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _load(text: str | None, default: Any = None) -> Any:

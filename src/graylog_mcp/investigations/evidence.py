@@ -12,6 +12,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from graylog_mcp.investigations import charts
 from graylog_mcp.investigations.model import MAX_EVIDENCE_BYTES, MAX_EXCERPT_CHARS, MAX_EXCERPTS
 
 Redact = Callable[[Any], Any]
@@ -23,7 +24,7 @@ LINES = ("messages", "timeline", "samples", "findings", "errors", "groups", "ite
 MESSAGE_LISTS = ("messages", "timeline", "samples")
 # the parts of a result that say how it was run: kept on the step as what was executed
 EXECUTED = ("instance", "query", "range", "from", "to", "streams", "focus", "rewritten", "effective_query")
-LINE_FIELDS = ("ref", "ts", "level", "source", "service", "message", "count", "key", "value", "name", "trace_id")
+LINE_FIELDS = ("ref", "t", "ts", "level", "source", "service", "message", "count", "key", "value", "name", "trace_id")
 MAX_REFS = 50
 
 
@@ -109,6 +110,8 @@ def build(op: str, result: Any, redact: Redact) -> list[dict[str, Any]]:
     refs = [str(m["ref"]) for m in lines if isinstance(m, dict) and m.get("ref")][:MAX_REFS]
     summary = {k: _shallow(v) for k, v in result.items() if k not in LINES and k not in ("ui", "suggestions")}
     summary["lines"] = len(lines)
+    if drawn := charts.of(kind, result):
+        summary["charts"] = drawn
     if result.get("suggestions"):
         summary["suggestions"] = [
             {"query": _cut(s.get("query")), "count": s.get("count")}

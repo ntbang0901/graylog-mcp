@@ -37,6 +37,12 @@ def test_the_skill_names_only_what_the_server_has():
     assert "verification" in TEXT and set(VERIFICATIONS)
 
 
+def test_the_skill_tells_the_agent_what_the_page_draws_from_each_record():
+    # a check's purpose is the node's title, its result the node's line, assessments the explanations
+    for phrase in ("node's title", "one line its node", "explanations", "browser's zone", "waiting for the user"):
+        assert phrase in TEXT, phrase
+
+
 def test_the_skill_carries_no_secret():
     assert not re.search(r"(token|password|secret)\s*[=:]\s*\S{6,}", TEXT, re.I)
 

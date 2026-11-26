@@ -50,8 +50,9 @@ class InvestigationArgs(BaseModel):
         Field(
             description=(
                 "update: records {kind, id?, revision? to change one, ...fields}. kinds: branch (question), check "
-                "(purpose), hypothesis (statement), assessment (claim, assessment=supported|contradicted_in_scope|"
-                "undetermined; supported/contradicted cite evidence ids), check_result (check, result, evidence), "
+                "(short purpose: its title on the page), hypothesis (statement), assessment (claim, "
+                "assessment=supported|contradicted_in_scope|undetermined; supported/contradicted cite evidence ids), "
+                "check_result (check, result: one line, evidence), "
                 "identity (type, namespace, value, evidence), relationship (from, to, relation, status "
                 "candidate|observed; observed needs basis, evidence), evidence_request (question, status, "
                 "provenance), comparison (unit, cohorts)"
@@ -131,6 +132,9 @@ Investigations (a local record the user follows in the admin page and a later se
 - Write: record a check's purpose before running it; after it, a check_result and an assessment. supported or
   contradicted_in_scope must cite evidence ids from a step of this investigation that succeeded; with none, say
   undetermined. A call that succeeded is not a finding, and a conclusion no assessment cites is not one either.
+  The page shows each check as a node: purpose is its title (short, one per piece of work), result its one-line
+  outcome with counts beside their total ("126 of 4,200 requests failed"), and checks that test one explanation go
+  under one branch. Assessments are the explanations it lists. Times show in the user's browser zone.
 - Do not invent: identities come from evidence, never a placeholder such as [EMAIL]; a link between two is
   'candidate' until observed, with its basis; counts are compared only with their denominator, else it is unknown.
   What only the user has (a log you cannot see, a deploy time) is an evidence_request: ask, and record the answer.

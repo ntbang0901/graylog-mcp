@@ -1,3 +1,4 @@
+import { useId, useState } from "preact/hooks";
 import {
     ASSESSMENT_WORD,
     LINK_WORD,
@@ -6,10 +7,13 @@ import {
     bodyText,
     citesOf,
     cohortsOf,
+    evidenceNo,
+    explainedOf,
     itemsOf,
     sharedEvidence,
+    tokensOf,
 } from "../investigations-model";
-import { chooseEvidence } from "../investigations";
+import { chooseEvidence, invSel } from "../investigations";
 import type { InvItem, InvSnapshot } from "../scripts/types";
 
 const ASSESSMENT_CLASS: Record<string, string> = {
@@ -17,31 +21,84 @@ const ASSESSMENT_CLASS: Record<string, string> = {
     contradicted_in_scope: "fail",
     undetermined: "warn",
 };
+// "E-003": the evidence's number in this investigation; chosen, it is the one open in the inspector
+export function Token({
+    snap,
+    id,
+    on,
+}: {
+    snap: InvSnapshot;
+    id: string;
+    on: boolean;
+}) {
+    return (
+        <button
+            class={`inv-token${on ? " on" : ""}`}
+            aria-pressed={on}
+            title={snap.evidence.find((e) => e.id === id)?.kind}
+            onClick={() => void chooseEvidence(id)}
+        >
+            {evidenceNo(snap, id)}
+        </button>
+    );
+}
 function Cites({ item, snap }: { item: InvItem; snap: InvSnapshot }) {
     const ids = [...new Set(citesOf(item))],
-        shared = sharedEvidence(snap);
+        shared = sharedEvidence(snap),
+        at = invSel.value.evidence;
     if (!ids.length) return null;
     return (
-        <span class="inv-cites">
-            {ids.map((id) => {
-                const kind = snap.evidence.find((e) => e.id === id)?.kind ?? id;
-                return (
-                    <button
-                        class="btn sm ghost"
-                        onClick={() => void chooseEvidence(id)}
-                        title={
-                            shared.has(id)
-                                ? `Also cited by ${shared
-                                      .get(id)!
-                                      .filter((x) => x !== item.id)
-                                      .join(", ")}`
-                                : undefined
-                        }
-                    >
-                        {kind}
-                    </button>
-                );
-            })}
+        <TokenList snap={snap} ids={ids} on={at} item={item} shared={shared} />
+    );
+}
+export function TokenList({
+    snap,
+    ids,
+    on,
+    item,
+    shared,
+}: {
+    snap: InvSnapshot;
+    ids: string[];
+    on: string | null;
+    item?: InvItem;
+    shared?: Map<string, string[]>;
+}) {
+    const t = tokensOf(ids),
+        [expanded, setExpanded] = useState(false),
+        group = useId();
+    return (
+        <span class={`inv-cites${expanded ? " expanded" : ""}`} id={group}>
+            {(expanded ? ids : t.shown).map((id) => (
+                <span
+                    key={id}
+                    title={
+                        item && shared?.has(id)
+                            ? `Also cited by ${shared
+                                  .get(id)!
+                                  .filter((x) => x !== item.id)
+                                  .join(", ")}`
+                            : undefined
+                    }
+                >
+                    <Token snap={snap} id={id} on={on === id} />
+                </span>
+            ))}
+            {t.more > 0 && (
+                <button
+                    class="inv-token inv-more-tokens"
+                    aria-expanded={expanded}
+                    aria-controls={group}
+                    aria-label={
+                        expanded
+                            ? "Show fewer evidence links"
+                            : `Show ${t.more} more evidence links`
+                    }
+                    onClick={() => setExpanded(!expanded)}
+                >
+                    {expanded ? "Less" : `+${t.more}`}
+                </button>
+            )}
         </span>
     );
 }
@@ -53,29 +110,33 @@ export function Verdict({ a }: { a: InvItem }) {
         </span>
     );
 }
-// what the agent currently believes: each explanation with where it stands and the evidence it rests on
+// what the agent currently believes: each explanation with where it stands and the evidence it rests on. Believed is
+// not observed: the word says which, and a state has a mark of its own shape.
+const MARK: Record<string, string> = {
+    open: "",
+    supported: "✓",
+    ruled_out: "✓",
+    undetermined: "",
+};
 function Explained({ snap }: { snap: InvSnapshot }) {
-    const list = itemsOf(snap, "assessment"),
-        hypotheses = itemsOf(snap, "hypothesis");
-    if (!list.length && !hypotheses.length)
+    const list = explainedOf(snap),
+        at = invSel.value.evidence;
+    if (!list.length)
         return (
             <p class="inv-muted">The agent has not concluded anything yet.</p>
         );
     return (
         <ul class="inv-explained">
-            {list.map((a) => (
-                <li
-                    class={`inv-explain ${ASSESSMENT_CLASS[String(a.data.assessment)] ?? ""}`}
-                >
-                    <Verdict a={a} />
-                    <span>{bodyText(a, "claim")}</span>
-                    <Cites item={a} snap={snap} />
-                </li>
-            ))}
-            {hypotheses.map((h) => (
-                <li class="inv-explain">
-                    <span class="badge">Open</span>
-                    <span>{bodyText(h, "statement")}</span>
+            {list.map((x) => (
+                <li class={`inv-explain ${x.state}`}>
+                    <span class={`inv-mark ${x.state}`} aria-hidden="true">
+                        {MARK[x.state]}
+                    </span>
+                    <span class="inv-explain-text">{x.text}</span>
+                    <span class="inv-state">{x.word}</span>
+                    {!!x.evidence.length && (
+                        <TokenList snap={snap} ids={x.evidence} on={at} />
+                    )}
                 </li>
             ))}
         </ul>

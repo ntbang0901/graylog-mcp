@@ -7,6 +7,21 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Investigation times (steps, attempts, the record itself) now carry milliseconds (`2026-11-18T02:31:00.512Z`), so checks
+  that follow each other inside one second keep their order on the page and parallel ones show side by side. The
+  `graylog-investigate` skill and the investigation tool's note tell agents what the page draws from each record: a
+  short `purpose` as a check's title, a one-line `check_result` with counts beside their total, one branch per question
+  under test, assessments as the explanations, and requests as what waits for the user.
+- The Investigations page follows `docs/concepts/agent-investigations-v3/ui-spec.md`. The task flow numbers each piece of
+  evidence (`E-003`), shows when each check ran in the browser's time zone (named in the header; today's checks show the time, earlier ones the day, seconds on hover), draws the checks of a branch (or steps that
+  overlapped in time) side by side, folds older finished checks past twelve, and ends with what the agent waits for. The
+  evidence inspector is short: the query and its absolute window, a picture only where it helps, at most three lines, a
+  one-line coverage note, and "Why it matters" behind a disclosure. A traced request is drawn as one row of log
+  observations per service on a time axis, with the first observed error marked; it is built from the whole timeline the
+  tool returned and kept with the evidence (`summary.charts`, about 4 KB), so records saved earlier show their lines and
+  no chart. Histograms get a slim strip with the peak marked; the flow, top-value and event charts are gone. Header,
+  explanations (checking, supported, ruled out, undetermined) and the handoff chips ("Analysis complete", "Fix not
+  verified") follow the spec.
 - The Investigations page follows the journey prototype: a task flow (each check with its tool, result, status and
   evidence) beside the agent's working explanations, which give way to the evidence inspector (query, saved window,
   what it supports or contradicts, gaps), and a handoff row (observed, probable explanation, still unverified, a
@@ -115,6 +130,10 @@ All notable changes to this project are documented here. The format follows
   `GRAYLOG_MCP_USAGE_SESSION_DAYS` and `GRAYLOG_MCP_USAGE_MAX_MB` change the limits.
 
 ### Fixed
+- Investigation evidence lists now expand their `+n` links, so every saved piece can be opened. Long histograms
+  keep the full window and peak by grouping adjacent buckets, with each bar's maximum explained in the caption.
+  Root-cause event timelines no longer appear as request observations, and search coverage notes no longer call
+  arbitrary result pages the earliest lines.
 - Redaction now masks a secret after a field name ending in a wildcard (`password*:value`), as in a query a suggested
   fix rewrote.
 - A metric over no values, which Graylog 5.2 and later return as the text `NaN` or `-Infinity`, now reads as no
