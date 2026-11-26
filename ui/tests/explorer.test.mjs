@@ -1,32 +1,9 @@
-import { after, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { loadModules } from "./helpers/modules.mjs";
 
 // The Logs screen's address and request logic, loaded as the real modules; neither needs a browser.
-const output = await mkdtemp(join(tmpdir(), "graylog-admin-explorer-"));
-for (const name of ["explorer", "router"]) {
-    const source = await readFile(
-        new URL(`../src/${name}.ts`, import.meta.url),
-        "utf8",
-    );
-    const { outputText } = ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ESNext,
-            target: ts.ScriptTarget.ES2022,
-        },
-    });
-    await writeFile(
-        join(output, `${name}.mjs`),
-        outputText.replaceAll('"./router"', '"./router.mjs"'),
-    );
-}
-const router = await import(pathToFileURL(join(output, "router.mjs")).href);
-const explorer = await import(pathToFileURL(join(output, "explorer.mjs")).href);
-after(() => rm(output, { recursive: true, force: true }));
+const { router, explorer } = await loadModules(["explorer", "router", "time"]);
 const view = (url) =>
     explorer.viewOfRoute(router.readRoute(new URL(url, "http://admin.test")));
 

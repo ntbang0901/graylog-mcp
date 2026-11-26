@@ -858,7 +858,7 @@ def build_app(state: AdminState) -> Starlette:
 
             def histogram(query: str) -> Any:
                 return tools.log_histogram(
-                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name
+                    app, query=query, range=rng, interval=f"{step}h", streams=["*"], instance=name, utc_labels=True
                 )
 
             try:

@@ -1,5 +1,7 @@
 // What the Investigations screen derives from the records, with no page, store or network in it: the stream's frames
 // and cursor, the words for a state, and how steps and checks sit under branches. Tested in Node (tests/).
+import { zoned } from "./time";
+export { viewZone, zoned, type Zoned } from "./time";
 import type {
     Fields,
     InvEvent,
@@ -113,77 +115,11 @@ export const stateWord = (s: string) => STATE_WORD[s] ?? s;
 export const needsAttention = (i: Pick<InvSummary, "state">) =>
     i.state === "awaiting_input" || i.state === "interrupted";
 
-const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-];
-// The zone every time on the page is read in: the browser's, so what the page says matches the reader's clock
-export function viewZone() {
-    try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    } catch {
-        return "UTC";
-    }
-}
-// A UTC instant read in a time zone (an IANA name; the browser's unless one is given). A name this browser does not
-// know reads as UTC, and says so, instead of passing the clock of one zone off as another.
-export interface Zoned {
-    ymd: string;
-    day: string; // "18 Nov"
-    time: string; // "09:30"
-    seconds: string; // "09:30:07"
-    zone: string; // "GMT+7"
-}
-export function zoned(
-    iso: string | null | undefined,
-    tz: string = viewZone(),
-): Zoned | null {
-    const at = iso ? Date.parse(iso.replace(" ", "T")) : NaN;
-    if (Number.isNaN(at)) return null;
-    const read = (timeZone: string) =>
-        new Intl.DateTimeFormat("en-US", {
-            timeZone,
-            hourCycle: "h23",
-            year: "numeric",
-            month: "numeric",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            timeZoneName: "short",
-        }).formatToParts(at);
-    let parts: Intl.DateTimeFormatPart[];
-    try {
-        parts = read(tz || "UTC");
-    } catch {
-        parts = read("UTC");
-    }
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-    const two = (v: string) => v.padStart(2, "0");
-    const time = `${two(get("hour"))}:${two(get("minute"))}`;
-    return {
-        ymd: `${get("year")}-${two(get("month"))}-${two(get("day"))}`,
-        day: `${Number(get("day"))} ${MONTHS[Number(get("month")) - 1]}`,
-        time,
-        seconds: `${time}:${two(get("second"))}`,
-        zone: get("timeZoneName"),
-    };
-}
 // when a check ran, kept short: the time of day alone for today, with the day for an earlier one; the seconds and the
 // zone only in the full text, for telling apart checks that ran close together
 export function ranAt(iso: string | null | undefined, now = Date.now()) {
     const at = zoned(iso),
-        today = zoned(new Date(now).toISOString());
+        today = zoned(now);
     if (!at || !today) return null;
     const day = at.ymd === today.ymd ? "" : `${at.day} `;
     return {
@@ -945,6 +881,7 @@ export function coverageLine(kind: string, hasChart: boolean): string {
 export interface HistogramChart {
     type: "histogram";
     interval?: string | null;
+    timezone?: string;
     points: [string, number][];
     source_buckets?: number; // when grouped, each bar is the maximum of adjacent original buckets
     extent?: [string, string]; // the first and last original bucket labels

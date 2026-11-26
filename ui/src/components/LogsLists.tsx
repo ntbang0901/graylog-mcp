@@ -1,4 +1,5 @@
 import { Fragment } from "preact";
+import { formatDateTime, formatTime } from "../time";
 import {
     LOG_PAGE,
     LOG_TRACES,
@@ -27,8 +28,6 @@ import {
 } from "./TraceTimeline";
 import { num, plural } from "./UI";
 
-const time = (ms: number | null) =>
-    ms == null ? "-" : new Date(ms).toLocaleTimeString();
 // Enter and Space open a focusable row like a click
 const activate = (go: () => void) => (e: KeyboardEvent) => {
     if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " "))
@@ -71,9 +70,9 @@ export function TracesList({ d }: { d: TracesAnswer }) {
                                 >
                                     <td
                                         class="mono"
-                                        title={`from ${t.first_ts == null ? "-" : new Date(t.first_ts).toLocaleString()} to ${t.last_ts == null ? "-" : new Date(t.last_ts).toLocaleString()}`}
+                                        title={`from ${formatDateTime(t.first_ts)} to ${formatDateTime(t.last_ts)}`}
                                     >
-                                        {time(t.last_ts)}
+                                        {formatTime(t.last_ts)}
                                     </td>
                                     <td class="num mono">
                                         {t.duration_ms == null
@@ -224,8 +223,11 @@ export function MessagesTable({
                                         onClick={go}
                                         onKeyDown={activate(go)}
                                     >
-                                        <td class="mono">
-                                            {String(m.ts || "").slice(11, 23)}
+                                        <td
+                                            class="mono"
+                                            title={formatDateTime(m.ts)}
+                                        >
+                                            {formatTime(m.ts, "HH:mm:ss.SSS")}
                                         </td>
                                         <td>
                                             <LevelBadge level={m.level} />

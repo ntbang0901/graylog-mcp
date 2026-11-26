@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 from typing import Any
 
 from graylog_mcp.shaping import is_error_level
+from graylog_mcp.timerange import interval_seconds, parse_graylog_ts, to_graylog
 
 MAX_POINTS = 120
 MAX_SERVICES = 40
@@ -42,13 +44,34 @@ def _histogram(result: dict[str, Any]) -> dict[str, Any] | None:
     raw = result.get("buckets")
     if not (isinstance(raw, list) and raw and all(isinstance(b, list) and len(b) == 2 for b in raw)):
         return None
-    points = [[_text(label), count] for label, count in raw if _num(count) is not None]
+    start = parse_graylog_ts(result.get("bucket_start"))
+    try:
+        _, seconds = interval_seconds(str(result.get("interval")))
+    except ValueError:
+        seconds = 0
+    points = [
+        [to_graylog(start + timedelta(seconds=i * seconds)) if start and seconds else _text(label), count]
+        for i, (label, count) in enumerate(raw)
+        if _num(count) is not None
+    ]
     if not points:
         return None
     out: dict[str, Any] = {"type": "histogram", "interval": result.get("interval"), "points": points}
+    if result.get("timezone"):
+        out["timezone"] = _text(result["timezone"])
     for key in ("peak", "onset"):
         if isinstance(result.get(key), dict) and "at" in result[key]:
-            out[key] = {"at": _text(result[key]["at"]), "count": _num(result[key].get("count"))}
+            marker = result[key]
+            index = next(
+                (i for i, (label, count) in enumerate(raw) if label == marker["at"] and count == marker.get("count")),
+                None,
+            )
+            at = (
+                to_graylog(start + timedelta(seconds=index * seconds))
+                if start and seconds and index is not None
+                else _text(marker["at"])
+            )
+            out[key] = {"at": at, "count": _num(marker.get("count"))}
     # Keep the whole window and its peak within the chart budget. Each bar is the largest original bucket in an
     # adjacent group, not the group's sum; the page explains that change and labels the original window's ends.
     count = min(len(points), MAX_POINTS)

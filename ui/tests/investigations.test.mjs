@@ -1,30 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import ts from "typescript";
+import { loadModules } from "./helpers/modules.mjs";
 
 // the page reads times in the browser's zone: pin one so the expectations do not depend on the machine
 process.env.TZ = "Asia/Ho_Chi_Minh";
 
 // The model has no page, store or network in it: it loads in Node as it is.
-const output = await mkdtemp(join(tmpdir(), "graylog-admin-inv-"));
-const source = await readFile(
-    new URL("../src/investigations-model.ts", import.meta.url),
-    "utf8",
-);
-await writeFile(
-    join(output, "model.mjs"),
-    ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ESNext,
-            target: ts.ScriptTarget.ES2022,
-        },
-    }).outputText,
-);
-const m = await import(pathToFileURL(join(output, "model.mjs")).href);
+const { "investigations-model": m } = await loadModules([
+    "investigations-model",
+    "time",
+]);
 
 const ev = (seq, type = "step_finished") => ({
     seq,

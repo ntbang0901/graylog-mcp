@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, timedelta
 
 import pytest
 
+from graylog_mcp import tools
 from graylog_mcp.investigations import charts, evidence
+from graylog_mcp.timerange import parse_time
 
 
 def charts_of(op: str, result: dict) -> list[dict]:
@@ -49,6 +52,46 @@ def test_a_long_histogram_keeps_the_full_window_and_a_late_peak():
     assert ["05:00", 99] in chart["points"]
     assert chart["points"][-1] == buckets[-1]
     assert not draft["truncated"]  # grouping keeps the whole time window and is disclosed on the series
+
+
+def test_histogram_charts_keep_exact_instants_when_source_clocks_repeat():
+    (chart,) = charts_of(
+        "log_histogram",
+        {
+            "interval": "1h",
+            "bucket_start": "2026-11-01T05:00:00.000Z",
+            "timezone": "America/New_York (-05:00)",
+            "buckets": [["01:00", 4], ["01:00", 8], ["02:00", 2]],
+            "peak": {"at": "01:00", "count": 8},
+            "onset": {"at": "01:00", "count": 8},
+        },
+    )
+    assert chart["points"] == [
+        ["2026-11-01T05:00:00.000Z", 4],
+        ["2026-11-01T06:00:00.000Z", 8],
+        ["2026-11-01T07:00:00.000Z", 2],
+    ]
+    assert chart["peak"]["at"] == chart["onset"]["at"] == "2026-11-01T06:00:00.000Z"
+
+
+@pytest.mark.parametrize("timezone", ["America/New_York", "Asia/Ho_Chi_Minh"])
+async def test_histogram_time_axis_matches_the_tools_original_source_labels(make_app, timezone):
+    app, _ = make_app("6.1.2", timezone=timezone)
+    result = await tools.log_histogram(app, range="2h", interval="5m")
+    start = parse_time(result["bucket_start"], UTC)
+    for index, (label, _) in enumerate(result["buckets"]):
+        assert label == (start + timedelta(minutes=5 * index)).astimezone(app.gl(None).cfg.tz).strftime("%H:%M")
+    (chart,) = charts_of("log_histogram", result)
+    assert chart["points"][0][0] == result["bucket_start"]
+
+
+def test_legacy_histograms_keep_their_source_timezone_and_labels():
+    (chart,) = charts_of(
+        "log_histogram",
+        {"interval": "5m", "timezone": "Asia/Ho_Chi_Minh (+07:00)", "buckets": [["02:25", 4], ["02:30", 8]]},
+    )
+    assert chart["timezone"] == "Asia/Ho_Chi_Minh (+07:00)"
+    assert chart["points"] == [["02:25", 4], ["02:30", 8]]
 
 
 def test_histogram_grouping_also_obeys_the_size_budget_for_long_labels():

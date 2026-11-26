@@ -83,6 +83,7 @@ AGGREGATE = ToolSpec(
     switched(
         "kind",
         {"count": "count_logs", "histogram": "log_histogram", "top": "top_values", "errors": "error_summary"},
+        histogram={"hidden": frozenset({"utc_labels"})},
         top={
             "rename": {"group_by": "field"},
             "required": {"group_by": "kind='top' needs group_by, the field to count values of"},

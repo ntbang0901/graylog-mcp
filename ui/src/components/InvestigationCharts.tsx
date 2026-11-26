@@ -9,6 +9,7 @@ import {
     type HistogramChart,
     type TraceChart,
 } from "../investigations-model";
+import { absoluteTime, formatDateTime, formatTime, viewZone } from "../time";
 
 const W = 560,
     LABEL = 104,
@@ -211,13 +212,35 @@ export function RequestObservations({
 }
 
 // bars of the buckets with the peak marked: the one thing a count cannot show
-export function HistogramStrip({ chart }: { chart: HistogramChart }) {
+export function HistogramStrip({
+    chart,
+    sourceZone,
+}: {
+    chart: HistogramChart;
+    sourceZone?: string;
+}) {
     const n = chart.points.length,
         H = 56,
         slot = W / n,
         bar = Math.max(1, slot - Math.min(2, slot * 0.25)),
         max = Math.max(1, ...chart.points.map((p) => p[1])),
-        peak = chart.peak;
+        peak = chart.peak,
+        local = chart.points.every(([label]) => absoluteTime(label) !== null),
+        zone = local
+            ? `Times in ${viewZone()}`
+            : `Saved times in ${chart.timezone || sourceZone || "an unknown timezone"}`,
+        label = (value: string) =>
+            local
+                ? formatTime(
+                      value,
+                      chart.interval?.endsWith("s")
+                          ? "D MMM HH:mm:ss"
+                          : "D MMM HH:mm",
+                      value,
+                  )
+                : value,
+        full = (value: string) =>
+            local ? formatDateTime(value, value) : `${value} · ${zone}`;
     return (
         <figure class="inv-chart inv-strip">
             <svg
@@ -225,32 +248,34 @@ export function HistogramStrip({ chart }: { chart: HistogramChart }) {
                 viewBox={`0 0 ${W} ${H}`}
                 preserveAspectRatio="none"
                 role="img"
-                aria-label={`${chart.source_buckets ?? n} buckets${chart.interval ? ` of ${chart.interval}` : ""}${chart.source_buckets ? `; ${n} bars show the maximum in each group` : ""}${peak ? `; peak ${peak.count ?? "?"} at ${peak.at}` : ""}`}
+                aria-label={`${chart.source_buckets ?? n} buckets${chart.interval ? ` of ${chart.interval}` : ""}${chart.source_buckets ? `; ${n} bars show the maximum in each group` : ""}${peak ? `; peak ${peak.count ?? "?"} at ${full(peak.at)}` : ""}; ${zone}`}
             >
-                {chart.points.map(([label, v], i) => {
+                {chart.points.map(([at, v], i) => {
                     const h = Math.max(1, (v / max) * (H - 4));
                     return (
                         <rect
-                            class={`bar${label === peak?.at ? " peak" : ""}`}
+                            class={`bar${at === peak?.at ? " peak" : ""}`}
                             x={i * slot}
                             y={H - h}
                             width={bar}
                             height={h}
                         >
-                            <title>{`${label}: ${v}`}</title>
+                            <title>{`${full(at)}: ${v}`}</title>
                         </rect>
                     );
                 })}
             </svg>
             <figcaption class="inv-legend">
-                {chart.extent?.[0] ?? chart.points[0][0]} →{" "}
-                {chart.extent?.[1] ?? chart.points[n - 1][0]}
+                {label(chart.extent?.[0] ?? chart.points[0][0])} →{" "}
+                {label(chart.extent?.[1] ?? chart.points[n - 1][0])}
+                {" · "}
+                {zone}
                 {chart.source_buckets &&
                     ` · ${chart.source_buckets} buckets in ${n} bars (maximum per group)`}
                 {peak && (
                     <>
                         {" "}
-                        · peak {peak.count ?? "?"} at {peak.at}
+                        · peak {peak.count ?? "?"} at {label(peak.at)}
                     </>
                 )}
             </figcaption>

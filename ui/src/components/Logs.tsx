@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { formatTime, localInputToUtc, parseTime, viewZone } from "../time";
 import { currentPage, instances, label, openEnv, state, toast } from "../store";
 import {
     LOG_EVERY,
@@ -68,15 +69,20 @@ function submit(d: Draft) {
         from = "",
         to = "";
     if (d.range === "custom") {
-        const f = new Date(d.from),
-            t = new Date(d.to);
-        if (isNaN(+f) || isNaN(+t) || f >= t) {
+        // An untouched input keeps the exact instant, including seconds and a DST fold's offset.
+        const f =
+                d.from === localInput(v.from)
+                    ? v.from
+                    : localInputToUtc(d.from),
+            t = d.to === localInput(v.to) ? v.to : localInputToUtc(d.to),
+            start = parseTime(f),
+            end = parseTime(t);
+        if (!start || !end || start.valueOf() >= end.valueOf()) {
             toast("Pick a start before the end", "fail");
             return;
         }
-        // the inputs hold minutes: an untouched one keeps the view's exact instant
-        from = d.from === localInput(v.from) ? v.from : f.toISOString();
-        to = d.to === localInput(v.to) ? v.to : t.toISOString();
+        from = f!;
+        to = t!;
         range = "";
     }
     const before = explorerPath(v);
@@ -188,19 +194,22 @@ function Bar({ v }: { v: ExplorerView }) {
                     <input
                         ref={fromInput}
                         type="datetime-local"
-                        aria-label="From"
+                        aria-label={`From (${viewZone()})`}
                         value={draft.from}
                         onInput={(e) => set({ from: e.currentTarget.value })}
                     />
                     <span class="muted">to</span>
                     <input
                         type="datetime-local"
-                        aria-label="To"
+                        aria-label={`To (${viewZone()})`}
                         value={draft.to}
                         onInput={(e) => set({ to: e.currentTarget.value })}
                     />
                 </span>
             )}
+            <span class="muted small" title="Times use your browser's timezone">
+                {viewZone()}
+            </span>
             <button class="btn sm primary" type="submit">
                 Search logs
             </button>
@@ -372,7 +381,7 @@ export function Logs() {
     }, []);
     const inst = knownInstance(v.instance),
         graylog = graylogSearchUrl(inst?.url, v.q, currentWindow()),
-        at = updated.value?.toLocaleTimeString([], { hour12: false }),
+        at = formatTime(updated.value, "HH:mm:ss", ""),
         busy = inflight.value;
     return (
         <Page

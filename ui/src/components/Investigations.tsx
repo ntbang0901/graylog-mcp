@@ -71,9 +71,9 @@ import type { Fields, InvEvidence, InvSnapshot } from "../scripts/types";
 import { HistogramStrip, RequestObservations } from "./InvestigationCharts";
 import { CitedList, Findings, TokenList } from "./InvestigationFindings";
 import { AsyncButton, Page, Refresh, Skeleton } from "./UI";
+import { formatDateTime } from "../time";
 
-const when = (iso: string | null) =>
-    iso ? new Date(iso).toLocaleString([], { hour12: false }) : "";
+const when = (iso: string | null) => formatDateTime(iso, "");
 const LIVE_WORD = {
     live: "Live",
     connecting: "Connecting…",
@@ -597,7 +597,16 @@ function EvidencePane({ snap }: { snap: InvSnapshot }) {
             {series.trace && (
                 <RequestObservations chart={series.trace} cut={cut} />
             )}
-            {series.histogram && <HistogramStrip chart={series.histogram} />}
+            {series.histogram && (
+                <HistogramStrip
+                    chart={series.histogram}
+                    sourceZone={
+                        typeof e.summary.timezone === "string"
+                            ? e.summary.timezone
+                            : snap.scope.timezone
+                    }
+                />
+            )}
             {e.excerpts_expired ? (
                 <p class="inv-muted">
                     Excerpts expired: the summary and counts are kept.

@@ -1,3 +1,4 @@
+import { formatDateTime, formatTime, parseTime, viewZone } from "../time";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, errorText } from "../api";
 import { instances, label, navigate, playground, toast } from "../store";
@@ -106,11 +107,14 @@ function LogRow({
                 <time
                     class="lt mono"
                     dateTime={m.ts.replace(" ", "T")}
-                    title={m.ts}
+                    title={formatTime(m.ts, "YYYY-MM-DD HH:mm:ss.SSS [UTC]Z")}
                 >
-                    {view.range === "7d" || view.from
-                        ? m.ts.slice(5, 19).replace(" ", " · ")
-                        : m.ts.slice(11, 19)}
+                    {formatTime(
+                        m.ts,
+                        view.range === "7d" || view.from
+                            ? "MM-DD · HH:mm:ss"
+                            : "HH:mm:ss",
+                    )}
                 </time>
                 <span class={`lv ${lv.cls}`}>{lv.word}</span>
                 <span class="lsvc truncate" title={who}>
@@ -191,14 +195,13 @@ function LogRow({
                                 <button
                                     class="btn sm"
                                     onClick={() => {
-                                        const at = Date.parse(
-                                            m.ts.replace(" ", "T"),
-                                        );
+                                        const at = parseTime(m.ts)?.valueOf();
+                                        if (at == null) return;
                                         openLogs({
                                             instance: view.instance,
                                             column: view.column,
-                                            title: `Around ${m.ts.slice(11, 19)}`,
-                                            when: `${m.ts.slice(0, 19)} ± 30 s`,
+                                            title: `Around ${formatTime(m.ts)}`,
+                                            when: `${formatDateTime(m.ts)} ± 30 s`,
                                             query: "*",
                                             from: new Date(
                                                 at - 30000,
@@ -303,7 +306,7 @@ export function LogsDrawer() {
         when = view
             ? view.when ||
               (view.from
-                  ? `${new Date(view.from).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })} to ${new Date(view.to!).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+                  ? `${formatDateTime(view.from)} to ${formatDateTime(view.to)}`
                   : `last ${view.range === "7d" ? "7 days" : "24 hours"}`)
             : "";
     const effective = view ? searchArgs(view, narrow, 0, scoped).query : "",
@@ -331,7 +334,8 @@ export function LogsDrawer() {
                                             group: null,
                                         } as never),
                                 )}{" "}
-                                · {when} · <span class="mono">{effective}</span>
+                                · {when} · {viewZone()} ·{" "}
+                                <span class="mono">{effective}</span>
                             </>
                         )}
                     </div>

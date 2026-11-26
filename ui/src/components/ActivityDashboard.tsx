@@ -1,5 +1,6 @@
 // Activity's Dashboard tab: calls per bucket (a bar lists its calls), their outcome, the environments and the tools.
 import { useRef, useState } from "preact/hooks";
+import { formatDateTime, formatTime } from "../time";
 import { currentEnv, filters, loadErrors, usage } from "../store";
 import { setActivityTab } from "../activity";
 import type { ToolStat, Usage } from "../scripts/types";
@@ -8,16 +9,7 @@ import { fmtMs } from "./ActivityParts";
 import { Skeleton, num, short, timeAgo } from "./UI";
 
 const bucketLabel = (t: number, step: number) =>
-    step >= 6
-        ? new Date(t * 1000).toLocaleString([], {
-              weekday: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-          })
-        : new Date(t * 1000).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-          });
+    formatTime(t * 1000, step >= 6 ? "ddd HH:mm" : "HH:mm");
 function listCallsOf(tool: string) {
     filters.value = { ...filters.value, tool };
     setActivityTab("calls");
@@ -267,10 +259,10 @@ function ToolTable({ u }: { u: Usage | null }) {
                                                     class={`num${bad ? " bad" : warn ? " warn" : ""}`}
                                                     title={
                                                         k === "last_ts" && on
-                                                            ? new Date(
+                                                            ? formatDateTime(
                                                                   Number(v) *
                                                                       1000,
-                                                              ).toLocaleString()
+                                                              )
                                                             : undefined
                                                     }
                                                 >
@@ -347,6 +339,7 @@ export function ActivityDashboard() {
                             labels={u.buckets.map((b) =>
                                 bucketLabel(b.t, u.bucket_hours),
                             )}
+                            timestamps={u.buckets.map((b) => b.t * 1000)}
                             name="Tool calls"
                             height={220}
                             series={[

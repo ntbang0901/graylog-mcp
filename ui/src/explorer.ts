@@ -1,5 +1,7 @@
 // The Logs screen's view and the answers of /api/explorer/*. No DOM and no store here: the address round trip and
 // the agent's recent searches are plain functions of their input.
+import { parseTime } from "./time";
+export { localInput } from "./time";
 import { pathOf, type Route } from "./router";
 import type { Call, Fields } from "./scripts/types";
 
@@ -218,21 +220,15 @@ export function windowOf(
     answer: { range?: { from: string; to: string } } | null | undefined,
     v: ExplorerView,
 ): [Date, Date] | null {
-    const parse = (s: string) => new Date(String(s).replace(" ", "T"));
     if (answer?.range) {
-        const f = parse(answer.range.from),
-            t = parse(answer.range.to);
-        if (!isNaN(+f) && !isNaN(+t)) return [f, t];
+        const f = parseTime(answer.range.from),
+            t = parseTime(answer.range.to);
+        if (f && t) return [f.toDate(), t.toDate()];
     }
-    if (v.from && v.to) return [new Date(v.from), new Date(v.to)];
+    const f = parseTime(v.from),
+        t = parseTime(v.to);
+    if (f && t) return [f.toDate(), t.toDate()];
     return null;
-}
-// <input type="datetime-local"> holds local time without a zone
-export function localInput(iso: string | Date): string {
-    const d = new Date(iso);
-    if (isNaN(+d)) return "";
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 export function graylogSearchUrl(
     url: string | undefined,

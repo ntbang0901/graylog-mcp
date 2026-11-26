@@ -132,6 +132,9 @@ async def test_admin_usage_and_log_stats(admin_client):
     main = envs["main"]
     assert main["total"] > 0 and main["errors"] > 0 and main["total"] >= main["errors"]
     assert len(main["buckets"]) >= 24 and len(main["error_buckets"]) == len(main["buckets"])
+    # Axis labels carry actual instants; the UI reads them in the browser's timezone.
+    for label, _ in main["buckets"] + main["error_buckets"]:
+        assert label.endswith("Z") and "T" in label
     assert "error" in envs["down"] and "total" not in envs["down"]  # one unreachable environment, others still shown
     assert (await admin_client.get("/api/usage", headers={"X-Admin-Token": "bad"})).status_code == 401
 
